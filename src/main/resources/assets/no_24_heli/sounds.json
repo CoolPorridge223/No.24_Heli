@@ -1,0 +1,29 @@
+{
+  "rotor": {
+    "subtitle": "subtitles.no_24_heli.rotor",
+    "sounds": [
+      {
+        "name": "no_24_heli:rotor",
+        "stream": false
+      }
+    ]
+  },
+  "alarm": {
+    "subtitle": "subtitles.no_24_heli.alarm",
+    "sounds": [
+      {
+        "name": "no_24_heli:alarm",
+        "stream": false
+      }
+    ]
+  },
+  "rotor_damage": {
+    "subtitle": "subtitles.no_24_heli.rotor_damage",
+    "sounds": [
+      {
+        "name": "no_24_heli:rotor_damage",
+        "stream": false
+      }
+    ]
+  }
+}

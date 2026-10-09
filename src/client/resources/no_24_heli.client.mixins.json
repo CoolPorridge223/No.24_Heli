@@ -1,0 +1,18 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "org.DJB.no_24_heli.mixin.client",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "DrivingInputMixin",
+    "HeliCameraMixin",
+    "HeliMouseMixin",
+    "HeliCrewRendererMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}

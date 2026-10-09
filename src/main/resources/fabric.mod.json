@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "no_24_heli",
+  "version": "${version}",
+  "name": "24号直升机 / No.24 Heli",
+  "description": "DJB出品的24号直升机",
+  "authors": [],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "icon": "assets/no_24_heli/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-datagen": [
+      "org.DJB.no_24_heli.client.No_24_heliDataGenerator"
+    ],
+    "client": [
+      "org.DJB.no_24_heli.client.No_24_heliClient"
+    ],
+    "main": [
+      "org.DJB.no_24_heli.No_24_heli"
+    ]
+  },
+  "mixins": [
+    "no_24_heli.mixins.json",
+    {
+      "config": "no_24_heli.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}",
+    "java": ">=21"
+  }
+}

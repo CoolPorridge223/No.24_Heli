@@ -1,0 +1,8 @@
+.gradle/
+.gradle-user-home/
+.tools/
+build/
+run/
+run-test/
+logs/
+.idea/

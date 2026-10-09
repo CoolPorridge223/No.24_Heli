@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:smelting",
+  "category": "misc",
+  "ingredient": {
+    "item": "no_24_heli:crude_oil"
+  },
+  "result": {
+    "id": "no_24_heli:kerosene"
+  },
+  "experience": 0.2,
+  "cookingtime": 200
+}
