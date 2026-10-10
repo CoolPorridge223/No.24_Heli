@@ -25,5 +25,8 @@
         "stream": false
       }
     ]
+  },
+  "radio": {
+    "sounds": []
   }
 }

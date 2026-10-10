@@ -11,16 +11,20 @@ public final class FlightPhysics {
 
     /** 雨和风由世界提供；落地判定与碰撞由实体在积分之后处理。 */
     public static void step(FlightState s, HeliConfig c, boolean grounded, boolean rain, double altitude, long tick) {
+        // 约束在物理入口再次执行；即使旧存档或伪造数据包留下辅助标志，也不能绕过此模式。
+        if(c.unassisted()){s.trim=false;s.altitudeHold=false;s.cruise=false;s.autopilot=false;s.autoPhase=0;}
         if (s.wreck) { s.rpm = approach(s.rpm, 0, .012); s.vy -= GRAVITY; return; }
+        // 正常飞行磨损按20Hz计时：引擎每分钟约2.4点，机身/旋翼/尾桨较慢。
+        // 只在真正离地且旋翼工作时扣除，地面停放、残骸和菜单停机不会悄悄掉耐久。
+        if(c.unassisted()&&!grounded&&s.armed&&s.rpm>.2){
+            s.engine=Math.max(0,s.engine-.002);s.hull=Math.max(0,s.hull-.0005);
+            s.rotor=Math.max(0,s.rotor-.0006);s.tail=Math.max(0,s.tail-.0003);
+        }
         double speed = Math.hypot(s.vx, s.vz);
         boolean powered = s.running && s.engine > 0 && s.fuel > 0;
         if (!powered) { s.running = false; s.altitudeHold = false; s.cruise = false; }
         if (s.collectiveInput != 0) s.targetAltitude = altitude;
         s.collective = clamp(s.collective + s.collectiveInput * .008, 0, 1);
-        if (s.altitudeHold && s.armed && s.collectiveInput == 0 && !grounded) {
-            double target = .56 + (s.targetAltitude-altitude)*.035 - s.vy*.95;
-            s.collective = approach(s.collective, clamp(target, .1, 1), .015);
-        }
         // 启动必须达到额定转速；此后引擎损伤降低功率而不是绕过起飞门槛。
         double spool = 1.0 / c.spoolTicks();
         if (powered) {
@@ -52,6 +56,15 @@ public final class FlightPhysics {
         double pitch = Math.toRadians(s.pitch), roll = Math.toRadians(s.roll), yaw = Math.toRadians(s.yaw);
         double enginePower = powered ? (.45+.55*s.engine/100)*(rain ? .94 : 1) : 1;
         double rotorPower = s.rotor/100 * (rain ? .97 : 1);
+        // 高度外环生成受限垂速，垂速内环生成加速度。前馈实时补偿倾斜、雨天、
+        // 转速及部件损伤；不累积积分项，动力不足时不会积分饱和后突然蹿升。
+        if (s.altitudeHold && powered && s.armed && s.collectiveInput == 0 && !grounded) {
+            double targetVy = clamp((s.targetAltitude-altitude)*.025, -.16, .16);
+            double acceleration = clamp((targetVy-s.vy)*.18, -.018, .018);
+            double authority = .072*s.rpm*s.rpm*rotorPower*enginePower*Math.cos(pitch)*Math.cos(roll);
+            double target = clamp((GRAVITY+s.vy*(1/.985-1)+acceleration)/Math.max(.001,authority), 0, 1);
+            s.collective = approach(s.collective,target,.045);
+        }
         // 未完成预转禁止离地；已起飞后允许残余转速和自转产生升力。
         double lift = s.armed ? .072*s.collective*s.rpm*s.rpm*rotorPower*enginePower : 0;
         double forward = -Math.sin(pitch)*lift, lateral = -Math.sin(roll)*lift;
@@ -80,6 +93,11 @@ public final class FlightPhysics {
     }
     /** 跳机后先保持三秒高度，再丢失动力并持续倾斜；驾驶员重新登机可中断失控过程。 */
     public static void handleAbandonment(FlightState s, HeliConfig c, boolean grounded, boolean hasPilot, double altitude) {
+        if(c.unassisted()){
+            // 极限模式不提供弃机后的三秒自动悬停；有人驾驶时仍完全保留手动控制。
+            if(!hasPilot&&!grounded&&s.armed){s.clearInputs();s.running=false;s.collective=approach(s.collective,0,.006);}
+            return;
+        }
         if (hasPilot || grounded || !s.armed || s.wreck) {
             if (s.abandonedTicks>0) {
                 s.altitudeHold=false; s.cruise=false; s.trim=!c.hardcore();

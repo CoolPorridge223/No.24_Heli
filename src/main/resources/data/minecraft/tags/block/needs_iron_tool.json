@@ -1,6 +1,7 @@
 {
   "replace": false,
   "values": [
-    "no_24_heli:helipad"
+    "no_24_heli:helipad",
+    "no_24_heli:radar"
   ]
 }

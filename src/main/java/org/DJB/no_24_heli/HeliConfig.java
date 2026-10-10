@@ -7,7 +7,7 @@ import java.nio.file.*;
 
 /** 服务端飞控配置；界面切换立即生效，手动修改文件需重启。 */
 public final class HeliConfig {
-    public enum Difficulty { CASUAL, MAMBA }
+    public enum Difficulty { CASUAL, MAMBA, ZOBAYAN }
     public Difficulty difficulty = Difficulty.CASUAL;
     public boolean explosionBlockDamage = true;
     public boolean wind = true;
@@ -15,7 +15,9 @@ public final class HeliConfig {
     public double fuelCapacity = 1200;
     public double explosionPower = 5;
     public static HeliConfig INSTANCE = new HeliConfig();
-    public boolean hardcore() { return difficulty == Difficulty.MAMBA; }
+    public boolean hardcore() { return difficulty != Difficulty.CASUAL; }
+    /** 佐巴扬模式沿用曼巴物理，但额外强制关闭全部辅助并施加持续飞行磨损。 */
+    public boolean unassisted() { return difficulty == Difficulty.ZOBAYAN; }
     public int spoolTicks() { return rotorPreSpin ? (hardcore() ? 240 : 100) : 1; }
     /** 设置界面写入成功后才确认；服务端控制调用权限。 */
     public static boolean save() {
@@ -25,12 +27,12 @@ public final class HeliConfig {
         } catch(Exception e) { No_24_heli.LOGGER.error("直升机配置保存失败",e); return false; }
     }
     /** 保存成功后更新已加载载具；未加载载具在下次 tick 根据保存的模式补应用。 */
-    public static boolean changeDifficulty(net.minecraft.server.MinecraftServer server,boolean mamba){
+    public static boolean changeDifficulty(net.minecraft.server.MinecraftServer server,Difficulty mode){
         Difficulty old=INSTANCE.difficulty;
-        INSTANCE.difficulty=mamba?Difficulty.MAMBA:Difficulty.CASUAL;
+        INSTANCE.difficulty=mode;
         if(!save()){INSTANCE.difficulty=old;return false;}
         if(old!=INSTANCE.difficulty)for(var world:server.getWorlds())for(var entity:world.iterateEntities())
-            if(entity instanceof HelicopterEntity heli)heli.applyDifficulty(mamba);
+            if(entity instanceof HelicopterEntity heli)heli.applyDifficulty(mode);
         return true;
     }
     /** 配置非法时使用安全默认值，避免 NaN 进入物理积分。 */

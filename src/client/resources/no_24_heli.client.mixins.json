@@ -7,7 +7,10 @@
     "DrivingInputMixin",
     "HeliCameraMixin",
     "HeliMouseMixin",
-    "HeliCrewRendererMixin"
+    "HeliCrewRendererMixin",
+    "HeliDismountMixin",
+    "HeliHotbarMixin",
+    "RadioSoundLoaderMixin"
   ],
   "injectors": {
     "defaultRequire": 1

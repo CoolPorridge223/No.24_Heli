@@ -14,6 +14,10 @@ public final class HeliView {
     private static boolean initialized;
     private static float yaw, pitch;
     private static long frameTime;
+    /** 每次滚动改变一格，4–24 格范围内仍交给原版碰撞裁剪。 */
+    private static float distance=10;
+    public static float distance(){return distance;}
+    public static void zoom(double scroll){distance=MathHelper.clamp(distance-(float)scroll,4,24);}
     private HeliView() {}
 
     /** 登机切换后视第三人称，下机或断线恢复原视角。 */

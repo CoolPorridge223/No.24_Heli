@@ -13,7 +13,8 @@ import org.DJB.no_24_heli.DifficultyPayload;
 public class HeliSettingsScreen extends Screen {
     private final Screen parent;
     private ButtonWidget destructionButton,difficultyButton;
-    private boolean mamba,difficultyEditable,difficultyPending;
+    private int mode;
+    private boolean difficultyEditable,difficultyPending;
     private boolean destruction, editable, pending;
     private Text status = Text.empty();
     public HeliSettingsScreen(Screen parent) { super(Text.translatable("screen.no_24_heli.settings")); this.parent = parent; }
@@ -28,10 +29,10 @@ public class HeliSettingsScreen extends Screen {
             editable = false; pending = true; status = Text.translatable("screen.no_24_heli.loading");
             ClientPlayNetworking.send(new SettingsPayload(false, false, false, false));
             difficultyEditable=false;difficultyPending=ClientPlayNetworking.canSend(DifficultyPayload.ID);
-            if(difficultyPending)ClientPlayNetworking.send(new DifficultyPayload(false,false,false,false));
+            if(difficultyPending)ClientPlayNetworking.send(new DifficultyPayload(false,0,false,false));
         } else {
             destruction = HeliConfig.INSTANCE.explosionBlockDamage; editable = true; pending = false;
-            mamba=HeliConfig.INSTANCE.hardcore();difficultyEditable=true;difficultyPending=false;
+            mode=HeliConfig.INSTANCE.difficulty.ordinal();difficultyEditable=true;difficultyPending=false;
             status = Text.translatable("screen.no_24_heli.local");
         }
         refresh();
@@ -52,17 +53,17 @@ public class HeliSettingsScreen extends Screen {
     /** 难度和破坏开关独立发送，避免覆盖其他管理员刚修改的配置。 */
     private void changeDifficulty(){
         if(!difficultyEditable||difficultyPending)return;
-        if(client.world!=null){difficultyPending=true;refresh();ClientPlayNetworking.send(new DifficultyPayload(true,!mamba,false,false));}
+        if(client.world!=null){difficultyPending=true;refresh();ClientPlayNetworking.send(new DifficultyPayload(true,(mode+1)%3,false,false));}
         else{
             var old=HeliConfig.INSTANCE.difficulty;
-            HeliConfig.INSTANCE.difficulty=mamba?HeliConfig.Difficulty.CASUAL:HeliConfig.Difficulty.MAMBA;
-            if(HeliConfig.save())mamba=!mamba;
+            HeliConfig.INSTANCE.difficulty=HeliConfig.Difficulty.values()[(mode+1)%3];
+            if(HeliConfig.save())mode=HeliConfig.INSTANCE.difficulty.ordinal();
             else{HeliConfig.INSTANCE.difficulty=old;status=Text.translatable("screen.no_24_heli.save_failed");}
             refresh();
         }
     }
     public void receiveDifficulty(DifficultyPayload packet){
-        mamba=packet.mamba();difficultyEditable=packet.editable();difficultyPending=false;
+        mode=Math.clamp(packet.mode(),0,2);difficultyEditable=packet.editable();difficultyPending=false;
         status=Text.translatable(!difficultyEditable?"screen.no_24_heli.readonly":packet.saved()?"screen.no_24_heli.saved":"screen.no_24_heli.save_failed");
         refresh();
     }
@@ -76,7 +77,7 @@ public class HeliSettingsScreen extends Screen {
     private void refresh() {
         destructionButton.setMessage(Text.translatable("screen.no_24_heli.destruction", Text.translatable(destruction ? "options.on" : "options.off")));
         destructionButton.active = editable && !pending;
-        difficultyButton.setMessage(Text.translatable("screen.no_24_heli.mamba",Text.translatable(mamba?"options.on":"options.off")));
+        difficultyButton.setMessage(Text.translatable("screen.no_24_heli.mode",Text.translatable("mode.no_24_heli."+mode)));
         difficultyButton.active=difficultyEditable&&!difficultyPending;
     }
     @Override public void close() { client.setScreen(parent); }

@@ -27,6 +27,6 @@ public abstract class HeliCameraMixin {
         float[] rotation = HeliView.rotation(heli, getYaw(), getPitch(), inverse);
         setRotation(rotation[0], rotation[1]);
         setPos(focus.getCameraPosVec(delta));
-        moveBy(-clipToSpace(10), 0, 0);
+        moveBy(-clipToSpace(HeliView.distance()), 0, 0);
     }
 }

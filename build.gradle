@@ -28,6 +28,7 @@ fabricApi {
 }
 
 repositories {
+    mavenCentral()
     // Add repositories to retrieve artifacts from in here.
     // You should only use this when depending on other mods because
     // Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
@@ -36,6 +37,8 @@ repositories {
 }
 
 dependencies {
+    // JLayer 只负责 MP3 解码；打入发行包，玩家无需单独安装。
+    include implementation("javazoom:jlayer:1.0.1")
     // To change the versions see the gradle.properties file
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"

@@ -14,8 +14,8 @@ public class HelicopterItem extends Item {
         HelicopterEntity heli=new HelicopterEntity(No_24_heli.HELI,world);
         heli.refreshPositionAndAngles(pos.getX()+.5,pos.getY()+.05,pos.getZ()+.5,player.getYaw(),0);
         if(!world.isSpaceEmpty(heli,heli.getBoundingBox()))return ActionResult.FAIL;
-        heli.flight.yaw=player.getYaw();
-        if(world.spawnEntity(heli)){if(!player.isCreative())ctx.getStack().decrement(1);return ActionResult.CONSUME;}
+        heli.restorePacked(ctx.getStack());heli.flight.yaw=player.getYaw();
+        if(world.spawnEntity(heli)){if(!player.isCreative()||ctx.getStack().contains(net.minecraft.component.DataComponentTypes.CUSTOM_DATA))ctx.getStack().decrement(1);return ActionResult.CONSUME;}
         return ActionResult.FAIL;
     }
 }

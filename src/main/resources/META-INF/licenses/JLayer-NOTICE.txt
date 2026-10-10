@@ -1,0 +1,10 @@
+This distribution includes JLayer 1.0.1, an unmodified Java MP3 decoder.
+JLayer is provided by JavaZOOM and its contributors under the GNU Library
+General Public License, version 2 or (at your option) any later version.
+The library's author-specific copyright notices are retained in the enclosed
+jlayer-1.0.1-sources.jar. The license text is JLayer-LGPL-2.0.txt.
+
+Original artifact and corresponding source:
+https://repo.maven.apache.org/maven2/javazoom/jlayer/1.0.1/
+The runtime library is a separate nested JAR under META-INF/jars and can be
+rebuilt/replaced independently. Its license is separate from this mod's license.
