@@ -41,6 +41,8 @@ public final class RadioWheelScreen extends Screen {
         ctx.drawCenteredTextWithShadow(textRenderer,Text.translatable("radio.no_24_heli.hint"),cx,cy+radius+14,0xffc5d8c7);
     }
     @Override public void tick(){
+        // 服务器目录可能在圆盘打开后才到达，逐tick刷新，避免把仍在同步的槽位一直显示为空。
+        for(int i=0;i<8;i++)available[i]=RadioLibrary.available(i);
         if(client.player==null||!(client.player.getVehicle() instanceof HelicopterEntity)){close();return;}
         if(!InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_TAB)&&!released){
             released=true;

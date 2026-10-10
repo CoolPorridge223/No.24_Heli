@@ -126,5 +126,7 @@
   "radio.no_24_heli.empty": "Empty",
   "radio.no_24_heli.off": "Off",
   "radio.no_24_heli.hint": "Hold Tab and point · Release to select · Center: off",
-  "radio.no_24_heli.missing": "Slot %s has no MP3. See the radio setup in README."
+  "radio.no_24_heli.missing": "Slot %s has no MP3. See the radio setup in README.",
+  "radio.no_24_heli.downloading": "Receiving server radio slot %s; playback starts when ready.",
+  "radio.no_24_heli.download_failed": "Could not receive server radio slot %s. Retrying shortly."
 }

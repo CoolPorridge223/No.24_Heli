@@ -1,27 +1,27 @@
 package org.DJB.no_24_heli.client;
 
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import org.DJB.no_24_heli.No_24_heli;
+import org.DJB.no_24_heli.RadioFiles;
 import java.io.*;
 import java.nio.file.*;
 
 /**
- * 八个固定音乐槽位的公开接入点。优先读config/no_24_heli_radio/slot_1.mp3…slot_8.mp3，
- * 未找到时读资源包assets/no_24_heli/radio/slot_N.mp3。模组本身不内置歌曲。
- * 服务端只同步槽位/时间；联机请用相同资源包或相同本地MP3，音频不会通过网络上传。
+ * 八槽音乐的统一入口。单人读取本机config，多人读取服务器目录及其经过校验的下载缓存。
+ * LAN房主的整合服务器与本机共用config，LAN来宾则和专用服务器玩家一样从网络取曲。
+ * 不再回退到资源包或远程玩家自己的同名文件，保证同一服务器听到同一组音乐。
  */
 public final class RadioLibrary {
-    public static final int TRACK_COUNT=8;
-    public static Path directory(){return FabricLoader.getInstance().getConfigDir().resolve("no_24_heli_radio");}
+    public static final int TRACK_COUNT=RadioFiles.TRACKS;
+    public static Path directory(){return RadioFiles.directory();}
     public static void initialize(){try{Files.createDirectories(directory());}catch(IOException e){No_24_heli.LOGGER.warn("无法创建电台音乐目录",e);}}
-    private static String filename(int track){if(track<0||track>=TRACK_COUNT)throw new IllegalArgumentException("Invalid radio slot");return "slot_"+(track+1)+".mp3";}
+    /** 是否有本机整合服务器是实际连接类型，不依据服务器地址或菜单来源猜测单/多人。 */
+    private static boolean local(){return MinecraftClient.getInstance().getServer()!=null;}
     public static boolean available(int track){
-        return Files.isRegularFile(directory().resolve(filename(track)))||MinecraftClient.getInstance().getResourceManager().getResource(No_24_heli.id("radio/"+filename(track))).isPresent();
+        return local()?Files.isRegularFile(RadioFiles.file(track)):ServerRadioCache.available(track);
     }
+    public static boolean prepare(int track){return local()?available(track):ServerRadioCache.prepare(track);}
     public static InputStream open(int track)throws IOException{
-        Path file=directory().resolve(filename(track));
-        if(Files.isRegularFile(file))return Files.newInputStream(file);
-        return MinecraftClient.getInstance().getResourceManager().getResource(No_24_heli.id("radio/"+filename(track))).orElseThrow(()->new FileNotFoundException(filename(track))).getInputStream();
+        return local()?Files.newInputStream(RadioFiles.file(track)):ServerRadioCache.open(track);
     }
 }

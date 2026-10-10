@@ -37,6 +37,7 @@ public class No_24_heli implements ModInitializer {
     public static final SoundEvent DAMAGE_SOUND=Registry.register(Registries.SOUND_EVENT,id("rotor_damage"),SoundEvent.of(id("rotor_damage")));
     @Override public void onInitialize() {
         HeliConfig.load();
+        RadioTransferServer.register();
         PayloadTypeRegistry.playC2S().register(RadioPayload.ID,RadioPayload.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(RadioPayload.ID,(packet,context)->context.server().execute(()->{
             if(context.player().getVehicle() instanceof HelicopterEntity heli)heli.selectRadio(context.player(),packet.track());

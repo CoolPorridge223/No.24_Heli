@@ -70,7 +70,7 @@ public class No_24_heliClient implements ClientModInitializer {
         return 32;
     }
     @Override public void onInitializeClient(){
-        ExploredMap.register();RadioLibrary.initialize();
+        ExploredMap.register();RadioLibrary.initialize();ServerRadioCache.register();
         EntityRendererRegistry.register(No_24_heli.HELI,HelicopterRenderer::new);
         EntityRendererRegistry.register(No_24_heli.ROPE,RopeRenderer::new);
         HandledScreens.register(No_24_heli.SCREEN,HeliScreen::new);
@@ -95,7 +95,7 @@ public class No_24_heliClient implements ClientModInitializer {
             }
         });
         ClientTickEvents.END_CLIENT_TICK.register(client->{
-            migrateTrimKey(client);migrateMapKey(client); HeliView.tick(client);ExploredMap.tick();RadioManager.tick(client);
+            migrateTrimKey(client);migrateMapKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);
             if(client.world==null||client.player==null){sounds.clear();vehicleId=-1;HeliRadar.reset();return;}
             // 所有附近直升机都播放连续音源，转速决定音高和音量。
             sounds.entrySet().removeIf(e->e.getValue().isDone());

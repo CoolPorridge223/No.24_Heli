@@ -18,7 +18,7 @@ public final class RadioManager {
             mc.getSoundManager().stop(sound);return true;
         });
         for(var entity:mc.world.getEntities())if(entity instanceof HelicopterEntity h&&!h.flight.wreck&&h.flight.radioTrack>=0&&available[h.flight.radioTrack]
-                &&h.squaredDistanceTo(mc.player)<64*64&&!active.containsKey(h.getId())){
+                &&h.squaredDistanceTo(mc.player)<64*64&&!active.containsKey(h.getId())&&RadioLibrary.prepare(h.flight.radioTrack)){
             RadioSound sound=new RadioSound(h);active.put(h.getId(),sound);mc.getSoundManager().play(sound);
         }
     }
