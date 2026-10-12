@@ -9,7 +9,7 @@ import org.DJB.no_24_heli.HeliConfig;
 import org.DJB.no_24_heli.SettingsPayload;
 import org.DJB.no_24_heli.DifficultyPayload;
 
-/** 世界内由服务器确认权限并持久化；主菜单中编辑本地默认配置。 */
+/** 飞行模式为个人配置；爆炸破坏与着火由服务器确认管理员权限，主菜单编辑本机默认值。 */
 public class HeliSettingsScreen extends Screen {
     private final Screen parent;
     private ButtonWidget destructionButton,difficultyButton;
@@ -64,7 +64,7 @@ public class HeliSettingsScreen extends Screen {
     }
     public void receiveDifficulty(DifficultyPayload packet){
         mode=Math.clamp(packet.mode(),0,2);difficultyEditable=packet.editable();difficultyPending=false;
-        status=Text.translatable(!difficultyEditable?"screen.no_24_heli.readonly":packet.saved()?"screen.no_24_heli.saved":"screen.no_24_heli.save_failed");
+        status=Text.translatable(!difficultyEditable?"screen.no_24_heli.readonly":packet.saved()?"screen.no_24_heli.personal_saved":"screen.no_24_heli.save_failed");
         refresh();
     }
     /** 仅使用服务端返回值更新界面，避免无权限客户端显示假设置。 */

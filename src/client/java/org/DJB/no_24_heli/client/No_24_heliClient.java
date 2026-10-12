@@ -25,6 +25,10 @@ import java.util.*;
 public class No_24_heliClient implements ClientModInitializer {
     private static KeyBinding bind(String name,int key){return KeyBindingHelper.registerKeyBinding(new KeyBinding("key.no_24_heli."+name,InputUtil.Type.KEYSYM,key,"category.no_24_heli"));}
     private static final KeyBinding START=bind("engine",GLFW.GLFW_KEY_R), ALT=bind("altitude",GLFW.GLFW_KEY_H), TRIM=bind("trim",GLFW.GLFW_KEY_J), CRUISE=bind("cruise",GLFW.GLFW_KEY_I), GEAR=bind("gear",GLFW.GLFW_KEY_G), ROPE=bind("rope",GLFW.GLFW_KEY_B), EXIT=bind("rappel",GLFW.GLFW_KEY_Y), MENU=bind("service",GLFW.GLFW_KEY_O), MOUSE=bind("mouse",GLFW.GLFW_KEY_N), MAP=bind("map",GLFW.GLFW_KEY_M), AUTO=bind("autopilot",GLFW.GLFW_KEY_U), AUTO_FLIGHT=bind("auto_flight",GLFW.GLFW_KEY_K), LEFT=bind("pedal_left",GLFW.GLFW_KEY_Z), RIGHT=bind("pedal_right",GLFW.GLFW_KEY_V);
+    /** 原版控制菜单支持把视角锁定绑定到任意键盘键或鼠标键。 */
+    private static final KeyBinding FOLLOW=KeyBindingHelper.registerKeyBinding(new KeyBinding("key.no_24_heli.follow",InputUtil.Type.MOUSE,GLFW.GLFW_MOUSE_BUTTON_MIDDLE,"category.no_24_heli"));
+    public static boolean followMouseMatches(int button){return FOLLOW.matchesMouse(button);}
+    public static boolean followKeyMatches(int key,int scan){return FOLLOW.matchesKey(key,scan);}
     public static boolean mapKeyMatches(int key,int scan){return MAP.matchesKey(key,scan);}
     private boolean tabHeld;
     private boolean mouseControl=true;
@@ -75,6 +79,9 @@ public class No_24_heliClient implements ClientModInitializer {
         EntityRendererRegistry.register(No_24_heli.ROPE,RopeRenderer::new);
         HandledScreens.register(No_24_heli.SCREEN,HeliScreen::new);
         HudRenderCallback.EVENT.register(HeliHud::draw);
+        ClientPlayNetworking.registerGlobalReceiver(RadarContactsPayload.ID,(packet,context)->context.client().execute(()->{
+            HeliRadar.targets();HeliRadar.receive(packet);
+        }));
         ClientPlayNetworking.registerGlobalReceiver(AirspacePayload.ID,(packet,context)->context.client().execute(()->{HeliRadar.targets();HeliRadar.zones=packet.zones();}));
         ClientPlayNetworking.registerGlobalReceiver(RadarPayload.ID,(packet,context)->context.client().execute(()->{
             if(context.client().currentScreen instanceof RadarScreen screen)screen.receive(packet);
@@ -95,7 +102,7 @@ public class No_24_heliClient implements ClientModInitializer {
             }
         });
         ClientTickEvents.END_CLIENT_TICK.register(client->{
-            migrateTrimKey(client);migrateMapKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);
+            migrateTrimKey(client);migrateMapKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);GroundProximityWarning.tick(client);
             if(client.world==null||client.player==null){sounds.clear();vehicleId=-1;HeliRadar.reset();return;}
             // 所有附近直升机都播放连续音源，转速决定音高和音量。
             sounds.entrySet().removeIf(e->e.getValue().isDone());
@@ -112,8 +119,16 @@ public class No_24_heliClient implements ClientModInitializer {
             boolean tab=InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_TAB);
             if(tab&&!tabHeld&&client.currentScreen==null&&client.player.getVehicle() instanceof HelicopterEntity)client.setScreen(new RadioWheelScreen());
             tabHeld=tab;
+            if(client.currentScreen==null&&!(client.player.getVehicle() instanceof HelicopterEntity)){
+                if(client.player.getVehicle() instanceof RopeSeatEntity)
+                    ClientPlayNetworking.send(new ControlPayload(0,0,0,(client.options.jumpKey.isPressed()?1:0)-(InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_LEFT_CONTROL)?1:0),0));
+                else if((action&ControlPayload.EXIT_ROPE)!=0)ClientPlayNetworking.send(new ControlPayload(0,0,0,0,ControlPayload.EXIT_ROPE));
+            }
             if(!(client.player.getVehicle() instanceof HelicopterEntity heli)){vehicleId=-1;return;}
-            if(heli.age%40==0&&(heli.flight.restricted||((heli.flight.engine<20||heli.flight.fuel<40)&&heli.flight.running)))client.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(No_24_heli.ALARM,1,.6f));
+
+            if(heli.age%40==0&&(heli.flight.restricted||((heli.flight.engine<20||heli.flight.fuel<40)&&heli.flight.running)))
+                client.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(No_24_heli.ALARM,1,.6f));
+
             if(heli.age%25==0&&heli.flight.rotor<50&&heli.flight.rpm>.3)client.player.playSound(No_24_heli.DAMAGE_SOUND,.3f,1);
             float yaw=client.player.getYaw(),pitch=client.player.getPitch();
             if(vehicleId!=heli.getId()){oldYaw=yaw;oldPitch=pitch;vehicleId=heli.getId();}

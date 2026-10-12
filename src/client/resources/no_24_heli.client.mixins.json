@@ -10,7 +10,9 @@
     "HeliCrewRendererMixin",
     "HeliDismountMixin",
     "HeliHotbarMixin",
-    "RadioSoundLoaderMixin"
+    "RadioSoundLoaderMixin",
+    "HeliKeyBindingMixin",
+    "HeliKeyboardMixin"
   ],
   "injectors": {
     "defaultRequire": 1

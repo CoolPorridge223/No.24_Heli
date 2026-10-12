@@ -27,12 +27,21 @@ public final class ServerRadioCache {
     private static OutputStream output;
     private static MessageDigest digest;
     private static Path partial;
+    private static String session=UUID.randomUUID().toString();
+    private static final Set<InputStream> streams=ConcurrentHashMap.newKeySet();
+    private static Path cacheRoot(){return FabricLoader.getInstance().getConfigDir().resolve("no_24_heli_radio_cache");}
     private ServerRadioCache() {}
 
     public static void register(){
         // INIT早于播放阶段数据包；不能在JOIN重置，否则可能抹掉服务器刚发来的目录。
         ClientPlayConnectionEvents.INIT.register((handler,client)->reset());
-        ClientPlayConnectionEvents.DISCONNECT.register((handler,client)->reset());
+        ClientPlayConnectionEvents.DISCONNECT.register((handler,client)->clearSession());
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING.register(client->{
+            clearSession();
+            try{IO.submit(()->{}).get(5,TimeUnit.SECONDS);}catch(Exception e){No_24_heli.LOGGER.warn("电台缓存退出清理未完成",e);}
+        });
+        // 旧版放在根目录的完整/临时下载也在首次启动时清除，用户原始歌曲目录不受影响。
+        IO.execute(()->deleteCacheFiles(cacheRoot(),true));
         ClientPlayNetworking.registerGlobalReceiver(RadioCatalogPayload.ID,(p,c)->c.client().execute(()->{
             if(c.client().getServer()==null){reset();catalog=p;}
         }));
@@ -40,9 +49,26 @@ public final class ServerRadioCache {
     }
     /** 连接代数使异步摘要检查的旧回调失效；完成缓存可复用，未完成分片立即关闭删除。 */
     private static void reset(){generation++;discardPartial();catalog=null;ready.clear();Arrays.fill(state,0);Arrays.fill(retryAt,0);}
+    /** 先停音源并关闭下载/解码文件句柄，再清理退休会话；快速重连使用新目录，不会误删新下载。 */
+    private static synchronized void clearSession(){
+        RadioManager.stopAll(MinecraftClient.getInstance());reset();
+        for(var stream:List.copyOf(streams))try{stream.close();}catch(IOException e){No_24_heli.LOGGER.debug("关闭电台流失败",e);}
+        Path retired=cacheRoot().resolve(session);session=UUID.randomUUID().toString();
+        IO.execute(()->deleteCacheFiles(retired,false));
+    }
+    private static void deleteCacheFiles(Path directory,boolean legacy){
+        if(!Files.isDirectory(directory,LinkOption.NOFOLLOW_LINKS))return;
+        try(var files=Files.newDirectoryStream(directory)){
+            for(Path file:files){
+                String name=file.getFileName().toString();
+                if(Files.isRegularFile(file,LinkOption.NOFOLLOW_LINKS)&&(name.matches("[0-9a-f]{64}\\.mp3")||name.matches("radio-.*\\.part")))Files.deleteIfExists(file);
+            }
+        }catch(IOException e){No_24_heli.LOGGER.warn("无法清理客户端电台缓存 {}",directory,e);}
+        if(!legacy)try{Files.deleteIfExists(directory);}catch(IOException e){No_24_heli.LOGGER.debug("电台会话目录仍有占用",e);}
+    }
     public static boolean available(int slot){return catalog!=null&&slot>=0&&slot<RadioFiles.TRACKS&&catalog.tracks().get(slot).size()>0;}
     private static Path cacheFile(RadioCatalogPayload.Track entry){
-        return FabricLoader.getInstance().getConfigDir().resolve("no_24_heli_radio_cache").resolve(entry.hash()+".mp3");
+        return cacheRoot().resolve(session).resolve(entry.hash()+".mp3");
     }
     /** 只有正在播放且在听取范围内的槽位才调用本方法，因此不在登录时下载全部八首歌。 */
     public static boolean prepare(int slot){
@@ -64,8 +90,10 @@ public final class ServerRadioCache {
         }
         return false;
     }
-    public static InputStream open(int slot)throws IOException{
-        Path file=ready.get(slot);if(file==null)throw new FileNotFoundException("服务器电台歌曲尚未下载完成");return Files.newInputStream(file);
+    public static synchronized InputStream open(int slot)throws IOException{
+        Path file=ready.get(slot);if(file==null)throw new FileNotFoundException("服务器电台歌曲尚未下载完成");InputStream stream=new FilterInputStream(Files.newInputStream(file)){
+            @Override public void close()throws IOException{try{super.close();}finally{streams.remove(this);}}
+        };streams.add(stream);return stream;
     }
     /** 下载串行进行，每收到一包再请求下一包；15秒无响应释放文件，10秒后可重新尝试。 */
     public static void tick(){
@@ -76,7 +104,7 @@ public final class ServerRadioCache {
             try{
                 Path file=cacheFile(catalog.tracks().get(slot));Files.createDirectories(file.getParent());
                 partial=Files.createTempFile(file.getParent(),"radio-",".part");output=new BufferedOutputStream(Files.newOutputStream(partial));digest=RadioFiles.digest();
-                request();message("downloading",slot+1);
+                request(); // 下载在后台进行，不向任何玩家显示加载状态。
             }catch(IOException e){No_24_heli.LOGGER.warn("无法建立电台下载缓存",e);fail();}
             break;
         }

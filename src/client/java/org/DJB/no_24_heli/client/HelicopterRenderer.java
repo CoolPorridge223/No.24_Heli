@@ -36,6 +36,10 @@ public class HelicopterRenderer extends EntityRenderer<HelicopterEntity>{
         root.addChild("number",digits,ModelTransform.NONE);
         model=TexturedModelData.of(data,256,256).createModel();number=model.getChild("number");rotor=model.getChild("rotor");tail=model.getChild("tail");gear=model.getChild("gear");rope=model.getChild("rope");
     }
+    /** 绳索与旋翼计入视锥包围盒，机身离开屏幕时仍绘制可见绳段。 */
+    @Override public boolean shouldRender(HelicopterEntity h,Frustum frustum,double x,double y,double z){
+        return h.shouldRender(x,y,z)&&frustum.isVisible(h.getBoundingBox().expand(4).stretch(0,-h.ropeLength,0));
+    }
     @Override public void render(HelicopterEntity h,float yaw,float delta,MatrixStack matrices,VertexConsumerProvider consumers,int light){
         // 第一人称提供清晰座舱 HUD 视野，避免机身实心模型遮挡驾驶员。
         var client=net.minecraft.client.MinecraftClient.getInstance();
@@ -49,7 +53,7 @@ public class HelicopterRenderer extends EntityRenderer<HelicopterEntity>{
         number.visible=h.flight.paint==5;model.getChild("number_plate").visible=number.visible;
         var buffer=consumers.getBuffer(RenderLayer.getEntityCutoutNoCull(getTexture(h)));
         model.render(matrices,buffer,light,OverlayTexture.DEFAULT_UV,h.flight.wreck?0xff545454:0xffffffff);matrices.pop();
-        if(h.flight.rope&&h.ropeLength>0){matrices.push();matrices.scale(1,-h.ropeLength,1);rope.visible=true;rope.render(matrices,buffer,light,OverlayTexture.DEFAULT_UV);rope.visible=false;matrices.pop();}
+        if(h.flight.rope&&h.ropeLength>0&&!h.hasRopeCarrier()){matrices.push();matrices.scale(1,-h.ropeLength,1);rope.visible=true;rope.render(matrices,buffer,light,OverlayTexture.DEFAULT_UV);rope.visible=false;matrices.pop();}
         super.render(h,yaw,delta,matrices,consumers,light);
     }
     @Override public Identifier getTexture(HelicopterEntity h){return No_24_heli.id("textures/entity/heli_"+h.flight.paint+".png");}

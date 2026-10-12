@@ -9,6 +9,7 @@ public final class RadioManager {
     private static final Map<Integer,RadioSound> active=new HashMap<>();
     private static final boolean[] available=new boolean[8];
     private static Object world;
+    public static void stopAll(MinecraftClient mc){for(var sound:active.values())mc.getSoundManager().stop(sound);active.clear();world=null;Arrays.fill(available,false);}
     public static void tick(MinecraftClient mc){
         if(world!=mc.world){for(var sound:active.values())mc.getSoundManager().stop(sound);active.clear();world=mc.world;}
         if(mc.world==null||mc.player==null)return;

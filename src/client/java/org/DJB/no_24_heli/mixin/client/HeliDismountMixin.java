@@ -18,10 +18,13 @@ public class HeliDismountMixin extends Input {
     @Inject(method="tick",at=@At("TAIL"))
     private void confirmExit(boolean slowDown,float factor,CallbackInfo ci){
         var client=MinecraftClient.getInstance();boolean pressed=sneaking;
-        if(client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity){
+        if(client.player!=null&&(client.player.getVehicle() instanceof HelicopterEntity||client.player.getVehicle() instanceof RopeSeatEntity)){
             if(pressed&&!no24$shiftHeld&&client.currentScreen==null)
                 ClientPlayNetworking.send(new ControlPayload(0,0,0,0,ControlPayload.DISMOUNT));
             sneaking=false;
+            // 原版双击跳跃在消费 Input 前被阻止；直升机总距直接读取 jumpKey，不受影响。
+            jumping=false;
+            client.player.getAbilities().flying=false;
         }
         no24$shiftHeld=pressed;
     }

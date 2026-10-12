@@ -21,6 +21,9 @@ import java.util.concurrent.Executors;
  * 只记录客户端真正收到的区块，不为填满地图强制加载远处世界，也不暴露未探索地形。
  */
 public final class ExploredMap {
+    private static long generation,revision;
+    private static final Set<Long> loading=new HashSet<>();
+    public static long revision(){return revision;}
     private static ClientWorld world;
     private static Path directory;
     private static final Map<Long,WorldChunk> pending=new LinkedHashMap<>();
@@ -34,7 +37,7 @@ public final class ExploredMap {
         ClientChunkEvents.CHUNK_UNLOAD.register((w,chunk)->{selectWorld(w);pending.remove(chunk.getPos().toLong());capture(chunk);});
     }
     private static void selectWorld(ClientWorld next){
-        if(world==next)return;world=next;pending.clear();tiles.clear();
+        if(world==next)return;world=next;pending.clear();tiles.clear();loading.clear();generation++;revision++;
         if(next==null){directory=null;return;}
         MinecraftClient mc=MinecraftClient.getInstance();
         String source=mc.getServer()!=null?mc.getServer().getSavePath(WorldSavePath.ROOT).toAbsolutePath().toString()
@@ -63,23 +66,34 @@ public final class ExploredMap {
             colors[z*16+x]=state.getMapColor(world,pos).getRenderColorByte(shade);
         }
         long key=origin.toLong();byte[] old=tiles.put(key,colors);trim();
-        if(Arrays.equals(old,colors))return;
+        if(Arrays.equals(old,colors))return;revision++;
         Path target=directory.resolve(origin.x+"_"+origin.z+".bin");
         WRITER.execute(()->{try{
             Files.createDirectories(target.getParent());Path temp=target.resolveSibling(target.getFileName()+".tmp");
             Files.write(temp,colors);Files.move(temp,target,StandardCopyOption.REPLACE_EXISTING);
         }catch(java.io.IOException e){No_24_heli.LOGGER.warn("无法保存探索地图区块 {}",target,e);}});
     }
-    private static void trim(){while(tiles.size()>4096)tiles.remove(tiles.keySet().iterator().next());}
+    private static void trim(){while(tiles.size()>32768)tiles.remove(tiles.keySet().iterator().next());}
     /** 未在内存中的旧区块按需从256字节磁盘瓦片读取；空瓦片也缓存，避免逐像素重复查文件。 */
     public static int color(int x,int z){
         if(directory==null)return 0xffd7c28e;
         long key=ChunkPos.toLong(x>>4,z>>4);byte[] tile=tiles.get(key);
         if(tile==null){
-            Path file=directory.resolve((x>>4)+"_"+(z>>4)+".bin");
-            try{tile=Files.exists(file)&&Files.size(file)==256?Files.readAllBytes(file):new byte[0];}
-            catch(java.io.IOException e){tile=new byte[0];}
-            tiles.put(key,tile);trim();
+            // 渲染线程只排队；负缓存与32K瓦片LRU覆盖缩小地图，最多256个在途磁盘任务。
+            if(loading.size()<256&&loading.add(key)){
+                Path file=directory.resolve((x>>4)+"_"+(z>>4)+".bin");long epoch=generation;
+                WRITER.execute(()->{
+                    byte[] loaded;
+                    try{loaded=Files.isRegularFile(file)&&Files.size(file)==256?Files.readAllBytes(file):new byte[0];}
+                    catch(java.io.IOException e){loaded=new byte[0];}
+                    byte[] result=loaded;
+                    MinecraftClient.getInstance().execute(()->{
+                        if(epoch!=generation)return;loading.remove(key);
+                        if(!tiles.containsKey(key)){tiles.put(key,result);trim();revision++;}
+                    });
+                });
+            }
+            return 0xffd7c28e;
         }
         if(tile.length!=256)return ((x+z)&8)==0?0xffd7c28e:0xffd4be89;
         int abgr=MapColor.getRenderColor(Byte.toUnsignedInt(tile[(z&15)*16+(x&15)]));

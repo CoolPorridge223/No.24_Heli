@@ -14,6 +14,8 @@ public final class AirspaceState extends PersistentState {
         /** 禁飞范围为覆盖全部高度的圆柱，不因飞得高而失效。 */
         public boolean contains(double x,double z){return Math.hypot(x-pos.getX()-.5,z-pos.getZ()-.5)<=radius;}
     }
+    private long revision;
+    public long revision(){return revision;}
     private final Map<BlockPos,Zone> zones=new LinkedHashMap<>();
     private static final Type<AirspaceState> TYPE=new Type<>(AirspaceState::new,AirspaceState::read,null);
     public static AirspaceState get(ServerWorld world){return world.getPersistentStateManager().getOrCreate(TYPE,"no_24_heli_airspace");}
@@ -21,9 +23,9 @@ public final class AirspaceState extends PersistentState {
     public Zone at(BlockPos pos){return zones.get(pos);}
     public boolean put(BlockPos pos,int radius,UUID owner){
         if(!zones.containsKey(pos)&&zones.size()>=MAX_ZONES)return false;
-        zones.put(pos.toImmutable(),new Zone(pos.toImmutable(),Math.clamp(radius,MIN_RADIUS,MAX_RADIUS),owner));markDirty();return true;
+        zones.put(pos.toImmutable(),new Zone(pos.toImmutable(),Math.clamp(radius,MIN_RADIUS,MAX_RADIUS),owner));revision++;markDirty();return true;
     }
-    public void remove(BlockPos pos){if(zones.remove(pos)!=null)markDirty();}
+    public void remove(BlockPos pos){if(zones.remove(pos)!=null){revision++;markDirty();}}
     private static AirspaceState read(NbtCompound n,RegistryWrapper.WrapperLookup lookup){
         AirspaceState state=new AirspaceState();NbtList list=n.getList("Zones",NbtElement.COMPOUND_TYPE);
         for(int i=0;i<Math.min(list.size(),MAX_ZONES);i++){

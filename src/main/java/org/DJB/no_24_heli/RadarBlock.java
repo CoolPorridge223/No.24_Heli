@@ -16,6 +16,12 @@ import net.minecraft.world.World;
 /** 放置即创建 64 格禁飞区；右键由服务端打开设置，拆除/爆炸自动移除对应范围。 */
 public final class RadarBlock extends Block {
     public RadarBlock(Settings settings){super(settings);}
+    /** 非整块外形与模型底座一致；不再把下方方块的整个顶面剔除。 */
+    @Override protected net.minecraft.util.shape.VoxelShape getOutlineShape(BlockState state,net.minecraft.world.BlockView world,BlockPos pos,net.minecraft.block.ShapeContext context){
+        return net.minecraft.util.shape.VoxelShapes.union(
+            Block.createCuboidShape(1,0,1,15,3,15),Block.createCuboidShape(6,3,6,10,10,10),
+            Block.createCuboidShape(0,10,1,16,15,15),Block.createCuboidShape(7,15,7,9,16,9));
+    }
     @Override public void onPlaced(World world,BlockPos pos,BlockState state,LivingEntity placer,ItemStack stack){
         super.onPlaced(world,pos,state,placer,stack);
         if(world instanceof ServerWorld sw&&placer!=null&&!AirspaceState.get(sw).put(pos,64,placer.getUuid())&&placer instanceof PlayerEntity p)

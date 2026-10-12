@@ -26,7 +26,7 @@ public class HeliMouseMixin {
     private void followCamera(long window, int button, int action, int modifiers, CallbackInfo ci) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (window != client.getWindow().getHandle() || client.currentScreen != null || client.player == null
-                || !(client.player.getVehicle() instanceof HelicopterEntity) || button != GLFW.GLFW_MOUSE_BUTTON_MIDDLE) return;
+                || !(client.player.getVehicle() instanceof HelicopterEntity) || !org.DJB.no_24_heli.client.No_24_heliClient.followMouseMatches(button)) return;
         if (action == GLFW.GLFW_PRESS) HeliView.toggleFollow();
         ci.cancel();
     }

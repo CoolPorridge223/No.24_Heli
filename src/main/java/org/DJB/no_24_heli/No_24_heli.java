@@ -24,7 +24,7 @@ public class No_24_heli implements ModInitializer {
     public static final Item[] PAINTS={item("paint_olive"),item("paint_snow"),item("paint_desert"),item("paint_black"),item("paint_rescue"),item("paint_purple_gold")};
     public static final Block HELIPAD=Registry.register(Registries.BLOCK,id("helipad"),new HelipadBlock(AbstractBlock.Settings.create().strength(4).requiresTool()));
     /** 地面雷达的可放置物品与方块使用同一注册 ID。 */
-    public static final Block RADAR=Registry.register(Registries.BLOCK,id("radar"),new RadarBlock(AbstractBlock.Settings.create().strength(3).requiresTool().pistonBehavior(net.minecraft.block.piston.PistonBehavior.BLOCK)));
+    public static final Block RADAR=Registry.register(Registries.BLOCK,id("radar"),new RadarBlock(AbstractBlock.Settings.create().strength(3).requiresTool().nonOpaque().pistonBehavior(net.minecraft.block.piston.PistonBehavior.BLOCK)));
     public static final Item RADAR_ITEM=Registry.register(Registries.ITEM,id("radar"),new BlockItem(RADAR,new Item.Settings()));
     public static final Item HELIPAD_ITEM=Registry.register(Registries.ITEM,id("helipad"),new BlockItem(HELIPAD,new Item.Settings()));
     public static final Item HELICOPTER=Registry.register(Registries.ITEM,id("helicopter"),new HelicopterItem(new Item.Settings().maxCount(1)));
@@ -46,6 +46,7 @@ public class No_24_heli implements ModInitializer {
         ServerPlayNetworking.registerGlobalReceiver(NavigationPayload.ID,(p,c)->c.server().execute(()->{
             if(c.player().getVehicle() instanceof HelicopterEntity h)h.navigate(c.player(),p);
         }));
+        PayloadTypeRegistry.playS2C().register(RadarContactsPayload.ID,RadarContactsPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(AirspacePayload.ID,AirspacePayload.CODEC);
         PayloadTypeRegistry.playC2S().register(RadarPayload.ID,RadarPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(RadarPayload.ID,RadarPayload.CODEC);
@@ -75,17 +76,21 @@ public class No_24_heli implements ModInitializer {
         PayloadTypeRegistry.playC2S().register(DifficultyPayload.ID,DifficultyPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(DifficultyPayload.ID,DifficultyPayload.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(DifficultyPayload.ID,(packet,context)->context.server().execute(()->{
-            boolean allowed=context.player().hasPermissionLevel(2)||context.server().isHost(context.player().getGameProfile());
-            // 枚举编号先校验再索引；禁止越界值以及无权限请求改变全服飞行规则。
+            var player=context.player();var settings=PlayerFlightSettings.get(context.server());
+            // 只能修改发包者自己的 UUID，普通玩家和管理员使用相同的个人模式接口。
             boolean valid=packet.mode()>=0&&packet.mode()<HeliConfig.Difficulty.values().length;
-            boolean saved=!packet.update()||(allowed&&valid&&HeliConfig.changeDifficulty(context.server(),HeliConfig.Difficulty.values()[packet.mode()]));
-            ServerPlayNetworking.send(context.player(),new DifficultyPayload(false,HeliConfig.INSTANCE.difficulty.ordinal(),allowed,saved));
+            boolean saved=!packet.update()||valid;
+            if(packet.update()&&valid){
+                var mode=HeliConfig.Difficulty.values()[packet.mode()];settings.set(player.getUuid(),mode);
+                if(player.getVehicle() instanceof HelicopterEntity heli&&heli.isPilot(player))heli.applyDifficulty(mode);
+            }
+            ServerPlayNetworking.send(player,new DifficultyPayload(false,settings.mode(player.getUuid()).ordinal(),true,saved));
         }));
         PayloadTypeRegistry.playC2S().register(SettingsPayload.ID,SettingsPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(SettingsPayload.ID,SettingsPayload.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(SettingsPayload.ID,(packet,context)->context.server().execute(()->{
             boolean allowed=context.player().hasPermissionLevel(2)||context.server().isHost(context.player().getGameProfile());
-            boolean saved=true;
+            boolean saved=!packet.update()||allowed;
             if(packet.update()&&allowed){
                 boolean old=HeliConfig.INSTANCE.explosionBlockDamage;
                 HeliConfig.INSTANCE.explosionBlockDamage=packet.destruction();
@@ -97,6 +102,13 @@ public class No_24_heli implements ModInitializer {
         PayloadTypeRegistry.playC2S().register(ControlPayload.ID,ControlPayload.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(ControlPayload.ID,(packet,context)->context.server().execute(()->{
             if(context.player().getVehicle() instanceof HelicopterEntity heli) heli.control(context.player(),packet);
+            else if(context.player().getVehicle() instanceof RopeSeatEntity rope)rope.control(context.player(),packet);
+            else if(packet.valid()&&(packet.actions()&ControlPayload.EXIT_ROPE)!=0&&!context.player().hasVehicle()&&!context.player().isSpectator()){
+                var player=context.player();
+                player.getWorld().getOtherEntities(player,player.getBoundingBox().expand(2.5),e->e instanceof RopeSeatEntity&&!e.hasPassengers())
+                    .stream().filter(e->e.squaredDistanceTo(player)<9).min(java.util.Comparator.comparingDouble(e->e.squaredDistanceTo(player)))
+                    .ifPresent(e->((RopeSeatEntity)e).board(player,true));
+            }
         }));
     }
 }

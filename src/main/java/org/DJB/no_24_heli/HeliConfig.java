@@ -26,14 +26,12 @@ public final class HeliConfig {
             return true;
         } catch(Exception e) { No_24_heli.LOGGER.error("直升机配置保存失败",e); return false; }
     }
-    /** 保存成功后更新已加载载具；未加载载具在下次 tick 根据保存的模式补应用。 */
-    public static boolean changeDifficulty(net.minecraft.server.MinecraftServer server,Difficulty mode){
-        Difficulty old=INSTANCE.difficulty;
-        INSTANCE.difficulty=mode;
-        if(!save()){INSTANCE.difficulty=old;return false;}
-        if(old!=INSTANCE.difficulty)for(var world:server.getWorlds())for(var entity:world.iterateEntities())
-            if(entity instanceof HelicopterEntity heli)heli.applyDifficulty(mode);
-        return true;
+    /** 飞控取得本机驾驶员的模式副本，共享天气、燃油和爆炸配置仍由服务器管理。 */
+    public static HeliConfig forMode(Difficulty mode){
+        var config=new HeliConfig();config.difficulty=mode;
+        config.explosionBlockDamage=INSTANCE.explosionBlockDamage;config.wind=INSTANCE.wind;
+        config.rotorPreSpin=INSTANCE.rotorPreSpin;config.fuelCapacity=INSTANCE.fuelCapacity;
+        config.explosionPower=INSTANCE.explosionPower;return config;
     }
     /** 配置非法时使用安全默认值，避免 NaN 进入物理积分。 */
     public static void load() {
