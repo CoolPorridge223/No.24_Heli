@@ -75,6 +75,7 @@ public class No_24_heliClient implements ClientModInitializer {
     }
     @Override public void onInitializeClient(){
         ExploredMap.register();RadioLibrary.initialize();ServerRadioCache.register();
+        net.minecraft.client.render.block.entity.BlockEntityRendererFactories.register(No_24_heli.HELIPAD_ENTITY,HelipadRenderer::new);
         EntityRendererRegistry.register(No_24_heli.HELI,HelicopterRenderer::new);
         EntityRendererRegistry.register(No_24_heli.ROPE,RopeRenderer::new);
         HandledScreens.register(No_24_heli.SCREEN,HeliScreen::new);

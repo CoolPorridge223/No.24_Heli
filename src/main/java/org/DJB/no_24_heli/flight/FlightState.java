@@ -20,7 +20,7 @@ public final class FlightState {
     /** 一键起降阶段：0关闭、1预转、2爬升、3降落；重载不恢复自动动作，防止无人起飞。 */
     public int autoPhase;
     public double autoX,autoZ,autoY;
-    /** 导航先在当前位置制动并对正航向；对正后才开始前飞，近目标处不追逐抖动航向。 */
+    /** 导航初次接管先制动对正；开始前飞后沿弯道连续转向，不在途经节点重新停车对齐。 */
     public boolean navAligned;
     /** 电台只同步槽位和切歌序号；-1为关闭，0–7对应用户自己提供的八首MP3。 */
     public int radioTrack=-1,radioRevision;

@@ -103,8 +103,11 @@ public class HelicopterEntity extends Entity {
         // 连续轴量每 tick 接收一次，离散按键另行限流，避免同 tick 的中性包吞掉开关动作。
         if(lastInput!=tick){
         lastInput=tick;
+        // 自动驾驶接管期间，中性网络包只刷新在线时间；有效手动输入已在上方解除接管。
+        if(!flight.autopilot){
         flight.cyclicPitch=(float)FlightPhysics.clamp(p.pitch(),-1,1);flight.cyclicRoll=(float)FlightPhysics.clamp(p.roll(),-1,1);
         flight.pedal=(float)FlightPhysics.clamp(p.pedal(),-1,1);flight.collectiveInput=(float)FlightPhysics.clamp(p.collective(),-1,1);
+        }
         }
         int action=p.actions();
         if((action&ControlPayload.ENGINE)!=0&&tick-lastEngine>=20){
@@ -170,7 +173,7 @@ public class HelicopterEntity extends Entity {
             var fuel=cargo.getStack(0);double amount=fuel.isOf(No_24_heli.KEROSENE)?150:fuel.isOf(No_24_heli.CRUDE)?80:0;
             if(amount>0&&flight.fuel<=HeliConfig.INSTANCE.fuelCapacity-amount){flight.fuel+=amount;fuel.decrement(1);cargo.markDirty();}
             // 停机坪自动从货仓中的燃料补给；必须停机，防止地面维护与起飞冲突。
-            if(!flight.running&&getWorld().getBlockState(getBlockPos().down()).isOf(No_24_heli.HELIPAD)){
+            if(!flight.running&&HelipadBlock.supports(getWorld(),BlockPos.ofFloored(getX(),getY()-.05,getZ()))){
                 for(int i=1;i<cargo.size();i++)if(cargo.getStack(0).isEmpty()&&(cargo.getStack(i).isOf(No_24_heli.KEROSENE)||cargo.getStack(i).isOf(No_24_heli.CRUDE))){cargo.setStack(0,cargo.removeStack(i));break;}
             }
         }
@@ -424,10 +427,29 @@ public class HelicopterEntity extends Entity {
         flight.vx=flight.vy=flight.vz=flight.pitch=flight.roll=flight.yawRate=0;flight.abandonedTicks=0;
     }
     public void stopAutopilot(){
+        navigation.reset();
         if(!flight.autopilot)return;
         flight.autopilot=false;flight.clearInputs();flight.trim=flight.priorTrim;flight.altitudeHold=flight.priorAltitude;flight.cruise=flight.priorCruise;
         flight.targetAltitude=getY();flight.targetSpeed=Math.hypot(flight.vx,flight.vz);
     }
+    /**
+     * 功能：到点停稳后结束导航，使用正常配平与高度保持继续悬停。
+     * 引用 MC API：net.minecraft.entity.Entity#getY 记录当前悬停高度。
+     * 端侧/线程：逻辑服务端 tick；仅由 NavigationPilot 在最终点附近低速调用。
+     * 返回：无。副作用：取消后台任务并重设辅助，不瞬移、不清零实际速度或旋翼。
+     * 故障排查：完成后继续前飞查 cruise 是否关闭；手动退出恢复仍由 stopAutopilot 处理。
+     */
+    public void finishAutopilot(){
+        stopAutopilot();flight.trim=true;flight.altitudeHold=true;flight.cruise=false;
+        flight.targetSpeed=0;flight.clearInputs();
+    }
+    /**
+     * 功能：在卸载、销毁或移除实体时取消其后台规划，防止无效请求占用队列。
+     * 引用 MC API：net.minecraft.entity.Entity#onRemoved 为当前映射的实体移除回调。
+     * 端侧/线程：世界主线程。返回：无。副作用：只清理临时导航，不改存档。
+     * 故障排查：卸载后仍计算查是否覆盖并调用父类回调。
+     */
+    @Override public void onRemoved(){navigation.reset();super.onRemoved();}
     /** 机上乘员均可设置导航点；开启自动驾驶仍必须通过驾驶员控制接口。 */
     public void navigate(PlayerEntity player,NavigationPayload p){
         if(!hasPassenger(player)||flight.wreck||!Double.isFinite(p.x())||!Double.isFinite(p.z())

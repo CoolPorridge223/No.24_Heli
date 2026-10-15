@@ -22,11 +22,14 @@ public class No_24_heli implements ModInitializer {
     private static Item item(String name) { return Registry.register(Registries.ITEM,id(name),new Item(new Item.Settings())); }
     public static final Item ROTOR=item("rotor_assembly"), TAIL=item("tail_rotor"), ENGINE=item("engine_module"), TANK=item("fuel_tank"), FUSELAGE=item("fuselage"), REPAIR=item("repair_kit"), KEROSENE=item("kerosene"), CRUDE=item("crude_oil");
     public static final Item[] PAINTS={item("paint_olive"),item("paint_snow"),item("paint_desert"),item("paint_black"),item("paint_rescue"),item("paint_purple_gold")};
-    public static final Block HELIPAD=Registry.register(Registries.BLOCK,id("helipad"),new HelipadBlock(AbstractBlock.Settings.create().strength(4).requiresTool()));
+    public static final Block HELIPAD=Registry.register(Registries.BLOCK,id("helipad"),new HelipadBlock(AbstractBlock.Settings.create().strength(4).requiresTool().nonOpaque().pistonBehavior(net.minecraft.block.piston.PistonBehavior.BLOCK)));
+    /** 圆盘承重碎片和渲染实体与中心使用同一材质，不能由活塞拆散。 */
+    public static final Block HELIPAD_SURFACE=Registry.register(Registries.BLOCK,id("helipad_surface"),new HelipadSurfaceBlock(AbstractBlock.Settings.create().strength(4).requiresTool().nonOpaque().pistonBehavior(net.minecraft.block.piston.PistonBehavior.BLOCK)));
+    public static final net.minecraft.block.entity.BlockEntityType<HelipadBlockEntity> HELIPAD_ENTITY=Registry.register(Registries.BLOCK_ENTITY_TYPE,id("helipad"),net.minecraft.block.entity.BlockEntityType.Builder.create(HelipadBlockEntity::new,HELIPAD,HELIPAD_SURFACE).build(null));
     /** 地面雷达的可放置物品与方块使用同一注册 ID。 */
     public static final Block RADAR=Registry.register(Registries.BLOCK,id("radar"),new RadarBlock(AbstractBlock.Settings.create().strength(3).requiresTool().nonOpaque().pistonBehavior(net.minecraft.block.piston.PistonBehavior.BLOCK)));
     public static final Item RADAR_ITEM=Registry.register(Registries.ITEM,id("radar"),new BlockItem(RADAR,new Item.Settings()));
-    public static final Item HELIPAD_ITEM=Registry.register(Registries.ITEM,id("helipad"),new BlockItem(HELIPAD,new Item.Settings()));
+    public static final Item HELIPAD_ITEM=Registry.register(Registries.ITEM,id("helipad"),new HelipadItem(HELIPAD,new Item.Settings()));
     public static final Item HELICOPTER=Registry.register(Registries.ITEM,id("helicopter"),new HelicopterItem(new Item.Settings().maxCount(1)));
     public static final EntityType<HelicopterEntity> HELI=Registry.register(Registries.ENTITY_TYPE,id("helicopter"),EntityType.Builder.<HelicopterEntity>create(HelicopterEntity::new,SpawnGroup.MISC).dimensions(3.4f,2.6f).maxTrackingRange(12).trackingTickInterval(1).build());
     public static final EntityType<RopeSeatEntity> ROPE=Registry.register(Registries.ENTITY_TYPE,id("rope_seat"),EntityType.Builder.<RopeSeatEntity>create(RopeSeatEntity::new,SpawnGroup.MISC).dimensions(.6f,.4f).maxTrackingRange(8).trackingTickInterval(1).build());
