@@ -31,6 +31,8 @@ public class No_24_heliClient implements ClientModInitializer {
     public static boolean followKeyMatches(int key,int scan){return FOLLOW.matchesKey(key,scan);}
     public static boolean mapKeyMatches(int key,int scan){return MAP.matchesKey(key,scan);}
     private boolean tabHeld;
+    /** 绳上 E 只发送按下边沿，长按不能在到顶时自动入舱。 */
+    private boolean ropeBoardHeld;
     private boolean mouseControl=true;
     private boolean migrated;
     private boolean migratedMap;
@@ -83,6 +85,9 @@ public class No_24_heliClient implements ClientModInitializer {
         ClientPlayNetworking.registerGlobalReceiver(RadarContactsPayload.ID,(packet,context)->context.client().execute(()->{
             HeliRadar.targets();HeliRadar.receive(packet);
         }));
+        ClientPlayNetworking.registerGlobalReceiver(HelipadMapPayload.ID,(packet,context)->context.client().execute(()->{
+            HeliRadar.targets();HeliRadar.receive(packet);
+        }));
         ClientPlayNetworking.registerGlobalReceiver(AirspacePayload.ID,(packet,context)->context.client().execute(()->{HeliRadar.targets();HeliRadar.zones=packet.zones();}));
         ClientPlayNetworking.registerGlobalReceiver(RadarPayload.ID,(packet,context)->context.client().execute(()->{
             if(context.client().currentScreen instanceof RadarScreen screen)screen.receive(packet);
@@ -120,11 +125,15 @@ public class No_24_heliClient implements ClientModInitializer {
             boolean tab=InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_TAB);
             if(tab&&!tabHeld&&client.currentScreen==null&&client.player.getVehicle() instanceof HelicopterEntity)client.setScreen(new RadioWheelScreen());
             tabHeld=tab;
-            if(client.currentScreen==null&&!(client.player.getVehicle() instanceof HelicopterEntity)){
-                if(client.player.getVehicle() instanceof RopeSeatEntity)
-                    ClientPlayNetworking.send(new ControlPayload(0,0,0,(client.options.jumpKey.isPressed()?1:0)-(InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_LEFT_CONTROL)?1:0),0));
-                else if((action&ControlPayload.EXIT_ROPE)!=0)ClientPlayNetworking.send(new ControlPayload(0,0,0,0,ControlPayload.EXIT_ROPE));
-            }
+            boolean ropeBoard=InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_E);
+            if(client.player.getVehicle() instanceof RopeSeatEntity){
+                float climb=client.currentScreen==null?(client.options.forwardKey.isPressed()?1:0)-(client.options.backKey.isPressed()?1:0):0;
+                int ropeAction=client.currentScreen==null&&ropeBoard&&!ropeBoardHeld?ControlPayload.ROPE_BOARD:0;
+                ClientPlayNetworking.send(new ControlPayload(0,0,0,climb,ropeAction));
+            }else if(client.currentScreen==null&&!(client.player.getVehicle() instanceof HelicopterEntity)
+                    &&(action&ControlPayload.EXIT_ROPE)!=0)
+                ClientPlayNetworking.send(new ControlPayload(0,0,0,0,ControlPayload.EXIT_ROPE));
+            ropeBoardHeld=ropeBoard;
             if(!(client.player.getVehicle() instanceof HelicopterEntity heli)){vehicleId=-1;return;}
 
             if(heli.age%40==0&&(heli.flight.restricted||((heli.flight.engine<20||heli.flight.fuel<40)&&heli.flight.running)))

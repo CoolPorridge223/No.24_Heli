@@ -50,6 +50,7 @@ public class No_24_heli implements ModInitializer {
             if(c.player().getVehicle() instanceof HelicopterEntity h)h.navigate(c.player(),p);
         }));
         PayloadTypeRegistry.playS2C().register(RadarContactsPayload.ID,RadarContactsPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(HelipadMapPayload.ID,HelipadMapPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(AirspacePayload.ID,AirspacePayload.CODEC);
         PayloadTypeRegistry.playC2S().register(RadarPayload.ID,RadarPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(RadarPayload.ID,RadarPayload.CODEC);
@@ -108,8 +109,9 @@ public class No_24_heli implements ModInitializer {
             else if(context.player().getVehicle() instanceof RopeSeatEntity rope)rope.control(context.player(),packet);
             else if(packet.valid()&&(packet.actions()&ControlPayload.EXIT_ROPE)!=0&&!context.player().hasVehicle()&&!context.player().isSpectator()){
                 var player=context.player();
-                player.getWorld().getOtherEntities(player,player.getBoundingBox().expand(2.5),e->e instanceof RopeSeatEntity&&!e.hasPassengers())
-                    .stream().filter(e->e.squaredDistanceTo(player)<9).min(java.util.Comparator.comparingDouble(e->e.squaredDistanceTo(player)))
+                player.getWorld().getOtherEntities(player,player.getBoundingBox().expand(27),e->e instanceof RopeSeatEntity)
+                    .stream().filter(e->((RopeSeatEntity)e).distanceToRope(player.getPos())<=3)
+                    .min(java.util.Comparator.comparingDouble(e->((RopeSeatEntity)e).distanceToRope(player.getPos())))
                     .ifPresent(e->((RopeSeatEntity)e).board(player,true));
             }
         }));

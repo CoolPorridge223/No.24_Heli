@@ -1,104 +1,251 @@
 package org.DJB.no_24_heli;
 
-import net.minecraft.entity.*;
-import net.minecraft.entity.data.*;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityType;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.MovementType;
+import net.minecraft.entity.data.DataTracker;
+import net.minecraft.entity.data.TrackedData;
+import net.minecraft.entity.data.TrackedDataHandlerRegistry;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtElement;
+import net.minecraft.nbt.NbtList;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.*;
+import net.minecraft.world.RaycastContext;
+import net.minecraft.world.World;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
-/** 一根救援绳承载一人：空闲绳端、攀升、下降与满舱悬挂由服务端管理。 */
+/**
+ * 职责：救援绳的分段惯性、弯曲及多名独立攀爬乘员；注册名 no_24_heli:rope_seat。
+ * net.minecraft.entity.Entity 提供乘骑，net.minecraft.entity.data.DataTracker 同步绳形和挂点。
+ * 直升机部署时创建；仅服务端 tick 积分，客户端插值。自动滑动查输入回中，错位查各 UUID 挂点。
+ */
 public class RopeSeatEntity extends Entity {
+    /** 最长二十四格采用十六段；两端固定节点数，保证同步和插值一致。 */
+    public static final int SEGMENTS=16;
+    /** 距机腹最近 0.8 格；手动上升/下降速度为格/tick。 */
+    private static final double TOP_DISTANCE=.8,CLIMB_SPEED=.14,DESCEND_SPEED=.23;
+    /** Verlet 阻尼和重力（格/tick²）；迭代次数限制绳段拉伸。 */
+    private static final double DAMPING=.985,GRAVITY=.04;
+    private static final int CONSTRAINT_PASSES=12;
+    /** 权威锚点与形状快照，不接受原版载具移动包回写。 */
     private static final TrackedData<Integer> ANCHOR=DataTracker.registerData(RopeSeatEntity.class,TrackedDataHandlerRegistry.INTEGER);
+    private static final TrackedData<NbtCompound> SHAPE=DataTracker.registerData(RopeSeatEntity.class,TrackedDataHandlerRegistry.NBT_COMPOUND);
+    /** 持久锚点 UUID，避免重载后实体 ID 改变；长度不随攀爬改变。 */
     private UUID anchorUuid;
     private double length=2.5;
-    private int direction,missingTicks;
-    private long inputTick=-100,exitUntil=-1;
-    private float input;
+    /** 节点、上次积分位置和客户端帧间位置，单位为世界坐标。 */
+    private final Vec3d[] nodes=new Vec3d[SEGMENTS+1],previous=new Vec3d[SEGMENTS+1],frame=new Vec3d[SEGMENTS+1];
+    /** 每位乘员独立挂点与输入；不能共用第一名玩家的攀爬方向。 */
+    private final Map<UUID,Rider> riders=new HashMap<>();
+    /** 跨区块锚点等待与客户端标准位置插值。 */
+    private int missingTicks,lerpTicks;
     private double lerpX,lerpY,lerpZ;
-    private int lerpTicks;
-    /** 独立绳端沿服务器位置插值，避免摆动绳段和乘员出现20Hz跳变。 */
-    @Override public void updateTrackedPositionAndAngles(double x,double y,double z,float yaw,float pitch,int steps){lerpX=x;lerpY=y;lerpZ=z;lerpTicks=Math.max(1,steps);}
 
+    /** 距离单位为格；新挂绳无输入，超时十 tick 回中，确认窗口每人独立。 */
+    private static final class Rider {
+        private double distance;
+        private float input;
+        private long inputTick=-100,exitUntil=-1;
+        /** 新挂点只记录位置，必须手动输入才上下移动。 */
+        private Rider(double distance){this.distance=distance;}
+    }
+    /** net.minecraft.entity.EntityType 工厂入口，COMMON；节点在部署或恢复时建立。 */
     public RopeSeatEntity(EntityType<?> type,World world){super(type,world);}
-    @Override protected void initDataTracker(DataTracker.Builder b){b.add(ANCHOR,-1);}
-    /** 客户端载具移动包不能改写绳上乘员位置。 */
+    /** 注册锚点与形状默认值，服务端计算后同步。 */
+    @Override protected void initDataTracker(DataTracker.Builder builder){builder.add(ANCHOR,-1);builder.add(SHAPE,new NbtCompound());}
+    /** 禁用客户端载具坐标权威，多人挂点由服务端计算。 */
     @Override public LivingEntity getControllingPassenger(){return null;}
+    /** 同一根绳允许多名乘员，不沿用机舱两座上限。 */
+    @Override protected boolean canAddPassenger(Entity passenger){return helicopter()!=null;}
+    /** net.minecraft.server.world.ServerWorld 按 UUID 找锚点；客户端按跟踪 ID 查找。 */
     public HelicopterEntity helicopter(){
-        Entity e=getWorld().isClient?getWorld().getEntityById(dataTracker.get(ANCHOR))
+        Entity entity=getWorld().isClient?getWorld().getEntityById(dataTracker.get(ANCHOR))
                 :anchorUuid==null?null:((ServerWorld)getWorld()).getEntity(anchorUuid);
-        return e instanceof HelicopterEntity h&&!h.isRemoved()&&!h.flight.wreck?h:null;
+        return entity instanceof HelicopterEntity heli&&!heli.isRemoved()&&!heli.flight.wreck?heli:null;
     }
-    public void attach(HelicopterEntity h){anchorUuid=h.getUuid();dataTracker.set(ANCHOR,h.getId());length=Math.max(.8,Math.min(h.ropeLength,h.heightAboveGround()-.2));setPosition(h.getPos().add(0,-length,0));}
-    public boolean board(Entity rider,boolean climbing){
-        if(hasPassengers())return false;
-        HelicopterEntity h=helicopter();if(h==null||!h.flight.rope)return false;
-        if(!climbing){length=.8;setPosition(h.getPos().add(0,-length,0));}
-        if(!rider.startRiding(this,true))return false;
-        direction=climbing?1:-1;input=0;inputTick=-100;exitUntil=-1;rider.fallDistance=0;return true;
+    /** 部署时初始化完整绳形；后续乘员攀爬只改变自己的距离。 */
+    public void attach(HelicopterEntity heli){
+        anchorUuid=heli.getUuid();dataTracker.set(ANCHOR,heli.getId());
+        length=availableLength(heli);initializeNodes(heli.getPos());setPosition(nodes[SEGMENTS]);syncShape();
     }
-    public void control(PlayerEntity player,ControlPayload p){
-        if(!p.valid()||!hasPassenger(player))return;
-        input=p.collective();inputTick=getWorld().getTime();
-        if((p.actions()&ControlPayload.DISMOUNT)!=0){
+    /** 总长取展开长度和机腹离地净空的较小值，留 0.2 格端点间隙。 */
+    private double availableLength(HelicopterEntity heli){return Math.max(0,Math.min(heli.ropeLength,heli.heightAboveGround()-.2));}
+    /** 恢复垂直初始形状，不写入世界方块。 */
+    private void initializeNodes(Vec3d anchor){
+        for(int i=0;i<=SEGMENTS;i++)nodes[i]=previous[i]=frame[i]=anchor.add(0,-length*i/SEGMENTS,0);
+    }
+    /**
+     * 吸附到最近绳段，机内挂顶部；net.minecraft.entity.Entity#startRiding 建立服务端乘骑。
+     * 服务端复核外部抓取距离不超过三格；挂绳不自动上升/下降。
+     */
+    public boolean board(Entity passenger,boolean fromOutside){
+        HelicopterEntity heli=helicopter();
+        if(getWorld().isClient||heli==null||!heli.flight.rope||passenger.isSpectator())return false;
+        if(nodes[0]==null)initializeNodes(heli.getPos());
+        double distance=fromOutside?nearestDistance(passenger.getPos()):Math.min(TOP_DISTANCE,length);
+        if(fromOutside&&pointAt(distance).squaredDistanceTo(passenger.getPos())>9)return false;
+        if(!passenger.startRiding(this,true))return false;
+        riders.put(passenger.getUuid(),new Rider(distance));passenger.fallDistance=0;syncShape();return true;
+    }
+    /** 沿真实折线投影，允许抓取绳中部而非仅抓取末端。 */
+    private double nearestDistance(Vec3d position){
+        double best=Double.POSITIVE_INFINITY,result=0;
+        for(int i=0;i<SEGMENTS;i++){
+            Vec3d segment=nodes[i+1].subtract(nodes[i]);double square=segment.lengthSquared();
+            double t=square==0?0:Math.clamp(position.subtract(nodes[i]).dotProduct(segment)/square,0,1);
+            double error=nodes[i].add(segment.multiply(t)).squaredDistanceTo(position);
+            if(error<best){best=error;result=length*(i+t)/SEGMENTS;}
+        }
+        return result;
+    }
+    /** 候选绳按玩家到实际曲线的距离筛选，不能用绳端距离。 */
+    public double distanceToRope(Vec3d position){return nodes[0]==null?Double.POSITIVE_INFINITY:pointAt(nearestDistance(position)).distanceTo(position);}
+    /** 沿绳距离插值；该距离不作为总长或绳端位置。 */
+    private Vec3d pointAt(double distance){
+        double at=length<=0?0:Math.clamp(distance/length*SEGMENTS,0,SEGMENTS);
+        int index=Math.min(SEGMENTS-1,(int)at);return nodes[index].lerp(nodes[index+1],at-index);
+    }
+    /**
+     * 校验真实乘骑关系后记录 W/S；E 只在顶部且副驾空闲时入舱。
+     * Shift 沿用离地三格与三秒二次确认；各人按实际脚下 net.minecraft.world.World#raycast 判断。
+     */
+    public void control(PlayerEntity player,ControlPayload packet){
+        if(!packet.valid()||!hasPassenger(player))return;
+        Rider rider=riders.computeIfAbsent(player.getUuid(),id->new Rider(nearestDistance(player.getPos())));
+        rider.input=Math.clamp(packet.collective(),-1,1);rider.inputTick=getWorld().getTime();
+        if((packet.actions()&ControlPayload.ROPE_BOARD)!=0&&rider.distance<=TOP_DISTANCE+.2){
+            HelicopterEntity heli=helicopter();
+            if(heli!=null&&player.squaredDistanceTo(heli)<10&&heli.boardRopeCopilot(player))return;
+        }
+        if((packet.actions()&ControlPayload.DISMOUNT)!=0){
             long now=getWorld().getTime();
-            if(groundDistance()<=3||isTouchingWater()||(exitUntil>=now)){
-                Vec3d velocity=getVelocity();player.stopRiding();player.setVelocity(velocity);exitUntil=-1;
-            }else{exitUntil=now+60;player.sendMessage(Text.translatable("message.no_24_heli.rope_exit_warning"),true);}
+            if(groundDistance(player)<=3||player.isTouchingWater()||rider.exitUntil>=now){
+                Vec3d velocity=getVelocity();player.stopRiding();player.setVelocity(velocity);
+            }else{rider.exitUntil=now+60;player.sendMessage(Text.translatable("message.no_24_heli.rope_exit_warning"),true);}
         }
     }
-    private double groundDistance(){
-        // 乘员脚部固定在绳端上方0.15格，确认门槛必须使用人物脚部而非载体原点。
-        Vec3d feet=getPos().add(0,.15,0);
+    /** 读取每名乘员脚下四格碰撞/水面，不能用整根绳端高度判断所有玩家。 */
+    private double groundDistance(Entity passenger){
+        Vec3d feet=passenger.getPos();
         var hit=getWorld().raycast(new RaycastContext(feet.add(0,.05,0),feet.add(0,-4,0),RaycastContext.ShapeType.COLLIDER,RaycastContext.FluidHandling.ANY,this));
         return hit.getType()==HitResult.Type.MISS?5:Math.max(0,feet.y-hit.getPos().y);
     }
-    @Override protected void readCustomDataFromNbt(NbtCompound n){
-        anchorUuid=n.containsUuid("Anchor")?n.getUuid("Anchor"):null;
-        double saved=n.getDouble("Length");length=Double.isFinite(saved)?Math.clamp(saved,.8,24):2.5;direction=Math.clamp(n.getInt("Direction"),-1,1);
+    /** 离绳、转移或退出清理该人的输入和确认，不影响其他乘员。 */
+    @Override protected void removePassenger(Entity passenger){super.removePassenger(passenger);riders.remove(passenger.getUuid());}
+    /**
+     * Verlet 积分保留每段惯性，固定机腹后迭代约束段长；节点碰撞可使绳子弯曲。
+     * net.minecraft.world.World#raycast 防止节点穿障，不对机体施力或更改飞控。
+     */
+    private void simulate(HelicopterEntity heli){
+        length=availableLength(heli);if(nodes[0]==null)initializeNodes(heli.getPos());
+        Vec3d[] before=nodes.clone();double segmentLength=length/SEGMENTS;nodes[0]=heli.getPos();
+        for(int i=1;i<=SEGMENTS;i++){
+            Vec3d current=nodes[i];nodes[i]=current.add(current.subtract(previous[i]).multiply(DAMPING)).add(0,-GRAVITY,0);previous[i]=current;
+        }
+        for(int pass=0;pass<CONSTRAINT_PASSES;pass++){
+            nodes[0]=heli.getPos();
+            for(int i=0;i<SEGMENTS;i++){
+                Vec3d offset=nodes[i+1].subtract(nodes[i]);double distance=offset.length();
+                if(distance<.000001)continue;
+                Vec3d correction=offset.multiply((distance-segmentLength)/distance);
+                if(i==0)nodes[i+1]=nodes[i+1].subtract(correction);
+                else{nodes[i]=nodes[i].add(correction.multiply(.5));nodes[i+1]=nodes[i+1].subtract(correction.multiply(.5));}
+            }
+        }
+        for(int i=1;i<=SEGMENTS;i++){
+            // 最后一遍从固定端投影，消除迭代误差累积，保证总长不超过展开长度。
+            Vec3d offset=nodes[i].subtract(nodes[i-1]);
+            nodes[i]=nodes[i-1].add(offset.lengthSquared()<.00000001?new Vec3d(0,-segmentLength,0):offset.normalize().multiply(segmentLength));
+        }
+        for(int i=1;i<=SEGMENTS;i++){
+            var hit=getWorld().raycast(new RaycastContext(before[i],nodes[i],RaycastContext.ShapeType.COLLIDER,RaycastContext.FluidHandling.NONE,this));
+            if(hit.getType()!=HitResult.Type.MISS){nodes[i]=hit.getPos().add(before[i].subtract(nodes[i]).normalize().multiply(.03));previous[i]=nodes[i];}
+        }
+        Vec3d old=getPos();setPosition(nodes[SEGMENTS]);setVelocity(getPos().subtract(old));
     }
-    @Override protected void writeCustomDataToNbt(NbtCompound n){if(anchorUuid!=null)n.putUuid("Anchor",anchorUuid);n.putDouble("Length",length);n.putInt("Direction",direction);}
+    /** 绳形与各人挂点同 tick 同步，渲染和乘员使用同一折线。 */
+    private void syncShape(){
+        NbtCompound shape=new NbtCompound();NbtList points=new NbtList(),positions=new NbtList();shape.putDouble("Length",length);
+        for(Vec3d node:nodes){NbtCompound point=new NbtCompound();point.putDouble("X",node.x);point.putDouble("Y",node.y);point.putDouble("Z",node.z);points.add(point);}
+        for(var entry:riders.entrySet()){NbtCompound rider=new NbtCompound();rider.putUuid("Id",entry.getKey());rider.putDouble("Distance",entry.getValue().distance);positions.add(rider);}
+        shape.put("Points",points);shape.put("Riders",positions);dataTracker.set(SHAPE,shape);
+    }
+    /** 客户端仅插值服务器节点，不积分、不预测攀爬输入。 */
+    private void tickClient(){
+        if(lerpTicks>0){setPosition(getX()+(lerpX-getX())/lerpTicks,getY()+(lerpY-getY())/lerpTicks,getZ()+(lerpZ-getZ())/lerpTicks);lerpTicks--;}
+        NbtCompound shape=dataTracker.get(SHAPE);NbtList points=shape.getList("Points",NbtElement.COMPOUND_TYPE);
+        if(points.size()!=SEGMENTS+1)return;length=shape.getDouble("Length");
+        for(int i=0;i<=SEGMENTS;i++){
+            NbtCompound point=points.getCompound(i);Vec3d target=new Vec3d(point.getDouble("X"),point.getDouble("Y"),point.getDouble("Z"));
+            frame[i]=nodes[i]==null?target:nodes[i];nodes[i]=frame[i].lerp(target,.65);
+        }
+        for(NbtElement element:shape.getList("Riders",NbtElement.COMPOUND_TYPE)){
+            NbtCompound saved=(NbtCompound)element;UUID id=saved.getUuid("Id");double distance=saved.getDouble("Distance");
+            Rider rider=riders.computeIfAbsent(id,key->new Rider(distance));rider.distance+=(distance-rider.distance)*.65;
+        }
+    }
+    /** 更新完整绳形和独立挂点；松键保持距离，机体运动仍会带动整绳。 */
     @Override public void tick(){
-        super.tick();if(getWorld().isClient){
-            if(lerpTicks>0){setPosition(getX()+(lerpX-getX())/lerpTicks,getY()+(lerpY-getY())/lerpTicks,getZ()+(lerpZ-getZ())/lerpTicks);lerpTicks--;}
-            return;
-        }
-        fallDistance=0;for(Entity e:getPassengerList())e.fallDistance=0;
-        HelicopterEntity h=helicopter();
-        if(h==null||!h.flight.rope){
+        super.tick();if(getWorld().isClient){tickClient();return;}
+        fallDistance=0;for(Entity passenger:getPassengerList())passenger.fallDistance=0;
+        HelicopterEntity heli=helicopter();
+        if(heli==null||!heli.flight.rope){
             if(!hasPassengers()){discard();return;}
-            // 跨区块加载先等待锚点；飞机被毁或绳子消失后沿用原有安全下降。
-            if(h==null&&anchorUuid!=null&&missingTicks++<100)return;
-            move(MovementType.SELF,new Vec3d(0,-.23,0));
-            if(isOnGround()||isTouchingWater()){removeAllPassengers();discard();}return;
+            if(heli==null&&anchorUuid!=null&&missingTicks++<100)return;
+            Vec3d descent=new Vec3d(0,-DESCEND_SPEED,0),before=getPos();move(MovementType.SELF,descent);
+            if(nodes[0]!=null)for(int i=0;i<=SEGMENTS;i++)nodes[i]=nodes[i].add(getPos().subtract(before));
+            if(isOnGround()||isTouchingWater()){removeAllPassengers();discard();}else if(nodes[0]!=null)syncShape();return;
         }
-        missingTicks=0;dataTracker.set(ANCHOR,h.getId());
-        if(!hasPassengers()){length=Math.max(.8,Math.min(h.ropeLength,h.heightAboveGround()-.2));setVelocity(Vec3d.ZERO);setPosition(h.getPos().add(0,-length,0));return;}
-        if(getWorld().getTime()-inputTick<10&&Math.abs(input)>.1)direction=input>0?1:-1;
-        length=Math.clamp(length+(direction>0?-.14:.23),2.5,24);
-        // 保留速度，以重力、阻尼和绳长约束形成摆动；切向速度不会被每 tick 清零。
-        Vec3d velocity=getVelocity().multiply(.985).add(0,-.04,0);
-        Vec3d predicted=getPos().add(velocity),offset=predicted.subtract(h.getPos());
-        if(offset.length()>length){
-            Vec3d normal=offset.normalize();predicted=h.getPos().add(normal.multiply(length));
-            double radial=velocity.subtract(h.getVelocity()).dotProduct(normal);
-            if(radial>0)velocity=velocity.subtract(normal.multiply(radial));
+        missingTicks=0;dataTracker.set(ANCHOR,heli.getId());simulate(heli);
+        for(Entity passenger:java.util.List.copyOf(getPassengerList())){
+            Rider rider=riders.computeIfAbsent(passenger.getUuid(),id->new Rider(Math.min(TOP_DISTANCE,length)));
+            // 村民保留原有部署后自动送到地面的救援行为；玩家必须自己按 W/S。
+            float input=passenger instanceof PlayerEntity?(getWorld().getTime()-rider.inputTick<10?rider.input:0):-1;
+            rider.distance=Math.clamp(rider.distance+(input>0?-CLIMB_SPEED*input:-DESCEND_SPEED*input),Math.min(TOP_DISTANCE,length),length);
+            if(!(passenger instanceof PlayerEntity)&&rider.distance>=length&&groundDistance(passenger)<.4)passenger.stopRiding();
         }
-        Vec3d before=getPos();move(MovementType.SELF,predicted.subtract(before));
-        if(horizontalCollision)velocity=new Vec3d(0,velocity.y,0);
-        if(verticalCollision)velocity=new Vec3d(velocity.x,0,velocity.z);
-        setVelocity(velocity);
-        for(Entity e:getPassengerList())e.fallDistance=0;
-        if(direction<0&&(isOnGround()||isTouchingWater())){removeAllPassengers();return;}
-        // 到顶只在确实有空座且距离足够近时转移；满舱保持绳长并继续惯性悬挂。
-        if(direction>0&&length<=2.5&&squaredDistanceTo(h)<10&&h.getPassengerList().size()<2){
-            Entity rider=getFirstPassenger();if(rider!=null&&rider.startRiding(h,true))rider.fallDistance=0;
+        syncShape();
+    }
+    /** 渲染线程读取帧插值节点，顶部始终跟随飞机插值坐标。 */
+    public Vec3d ropePoint(int index,float delta){
+        HelicopterEntity heli=helicopter();if(index==0&&heli!=null)return heli.getLerpedPos(delta);
+        if(nodes[index]==null)return getLerpedPos(delta);
+        return frame[index]==null?nodes[index]:frame[index].lerp(nodes[index],delta);
+    }
+    /** 按整根弯曲绳形做视锥裁剪，避免绳端出屏幕后整绳消失。 */
+    public Box ropeBounds(){
+        Box bounds=getBoundingBox();for(Vec3d node:nodes)if(node!=null)bounds=bounds.union(new Box(node,node));return bounds.expand(1);
+    }
+    /** net.minecraft.entity.Entity 的标准服务端位置插值入口。 */
+    @Override public void updateTrackedPositionAndAngles(double x,double y,double z,float yaw,float pitch,int steps){lerpX=x;lerpY=y;lerpZ=z;lerpTicks=Math.max(1,steps);}
+    /** 挂绳期间不累计跌落伤害，主动脱离后的原版跌落照常处理。 */
+    @Override public boolean handleFallDamage(float distance,float multiplier,net.minecraft.entity.damage.DamageSource source){return false;}
+    /** net.minecraft.entity.Entity.PositionUpdater 按各人的距离定位到当前曲线。 */
+    @Override protected void updatePassengerPosition(Entity passenger,PositionUpdater updater){
+        if(nodes[0]==null)return;Rider rider=riders.get(passenger.getUuid());Vec3d point=pointAt(rider==null?TOP_DISTANCE:rider.distance);
+        updater.accept(passenger,point.x,point.y+.15,point.z);passenger.fallDistance=0;
+    }
+    /** 存档边界恢复有限挂点；旧 Direction 忽略，重载不恢复自动移动。 */
+    @Override protected void readCustomDataFromNbt(NbtCompound nbt){
+        anchorUuid=nbt.containsUuid("Anchor")?nbt.getUuid("Anchor"):null;
+        double saved=nbt.getDouble("Length");length=Double.isFinite(saved)?Math.clamp(saved,0,24):2.5;riders.clear();
+        for(NbtElement element:nbt.getList("Riders",NbtElement.COMPOUND_TYPE)){
+            NbtCompound rider=(NbtCompound)element;double distance=rider.getDouble("Distance");
+            if(rider.containsUuid("Id")&&Double.isFinite(distance))riders.put(rider.getUuid("Id"),new Rider(Math.clamp(distance,0,24)));
         }
     }
-    @Override public boolean handleFallDamage(float distance,float multiplier,net.minecraft.entity.damage.DamageSource source){return false;}
-    @Override protected void updatePassengerPosition(Entity passenger,PositionUpdater updater){updater.accept(passenger,getX(),getY()+.15,getZ());passenger.fallDistance=0;}
+    /** 保存位置但不保存按住状态和确认窗口，重载必须重新按 W/S。 */
+    @Override protected void writeCustomDataToNbt(NbtCompound nbt){
+        if(anchorUuid!=null)nbt.putUuid("Anchor",anchorUuid);nbt.putDouble("Length",length);NbtList saved=new NbtList();
+        for(var entry:riders.entrySet()){NbtCompound rider=new NbtCompound();rider.putUuid("Id",entry.getKey());rider.putDouble("Distance",entry.getValue().distance);saved.add(rider);}
+        nbt.put("Riders",saved);
+    }
 }

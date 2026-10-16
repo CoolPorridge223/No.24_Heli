@@ -16,13 +16,22 @@ public class HelipadBlock extends BlockWithEntity {
     /** 圆盘直径十格、厚四像素，碎片偏移用状态保存，不依赖额外存档表。 */
     public static final double RADIUS=5,THICKNESS=.25;
     public static final net.minecraft.state.property.IntProperty OFFSET_X=net.minecraft.state.property.IntProperty.of("offset_x",0,10),OFFSET_Z=net.minecraft.state.property.IntProperty.of("offset_z",0,10);
+    /** H 两根长笔的固定方向，axis=x 为东西向、axis=z 为南北向；旧停机坪默认保持南北向。 */
+    public static final net.minecraft.state.property.EnumProperty<Direction.Axis> MARKING_AXIS=net.minecraft.state.property.Properties.HORIZONTAL_AXIS;
     private static final net.minecraft.util.shape.VoxelShape[][] SHAPES=new net.minecraft.util.shape.VoxelShape[11][11];
     public static final com.mojang.serialization.MapCodec<HelipadBlock> CODEC=createCodec(HelipadBlock::new);
     @Override protected com.mojang.serialization.MapCodec<? extends BlockWithEntity> getCodec(){return CODEC;}
     protected boolean isCenter(){return true;}
     /** 创造模式选取圆盘任意位置，均返回完整停机坪物品。 */
     @Override public ItemStack getPickStack(net.minecraft.world.WorldView world,BlockPos pos,BlockState state){return new ItemStack(No_24_heli.HELIPAD_ITEM);}
-    @Override protected void appendProperties(net.minecraft.state.StateManager.Builder<Block,BlockState> builder){builder.add(OFFSET_X,OFFSET_Z);}
+    @Override protected void appendProperties(net.minecraft.state.StateManager.Builder<Block,BlockState> builder){builder.add(OFFSET_X,OFFSET_Z,MARKING_AXIS);}
+    /**
+     * 放置时用 net.minecraft.item.ItemPlacementContext#getHorizontalPlayerFacing 确定 H 的轴向。
+     * 方块状态由原版保存和同步，放好后不随观察者或相机改变；圆形碰撞、禁区检查保持。
+     */
+    @Override public BlockState getPlacementState(ItemPlacementContext context){
+        return getDefaultState().with(MARKING_AXIS,context.getHorizontalPlayerFacing().getAxis());
+    }
     @Override public net.minecraft.block.entity.BlockEntity createBlockEntity(BlockPos pos,BlockState state){return new HelipadBlockEntity(pos,state);}
     @Override protected BlockRenderType getRenderType(BlockState state){return BlockRenderType.ENTITYBLOCK_ANIMATED;}
     /** 圆周与方格相交才占用该位置，不使用十乘十的方形碰撞面。 */
@@ -54,10 +63,10 @@ public class HelipadBlock extends BlockWithEntity {
     }
     /**
      * 拦截落在受限旧停机坪上的普通地图标点，防止绕过停机坪按钮的禁用状态。
-     * 已放置后新覆盖禁区的圆盘也适用；仅服务端主线程查询已加载中心。
+     * 已放置后新覆盖禁区的圆盘也适用；查询持久中心，远处和已卸载停机坪也不能绕过限制。
      */
     public static boolean isRestrictedTarget(ServerWorld world,double x,double z){
-        for(BlockPos pos:HelipadBlockEntity.centers(world))
+        for(BlockPos pos:HelipadState.get(world).centers())
             if(Math.hypot(x-pos.getX()-.5,z-pos.getZ()-.5)<=RADIUS&&isRestricted(world,pos))return true;
         return false;
     }
@@ -76,13 +85,16 @@ public class HelipadBlock extends BlockWithEntity {
     @Override public void onPlaced(World world,BlockPos pos,BlockState state,net.minecraft.entity.LivingEntity placer,ItemStack stack){
         super.onPlaced(world,pos,state,placer,stack);if(world.isClient||!isCenter())return;
         for(int x=-5;x<=5;x++)for(int z=-5;z<=5;z++)if((x!=0||z!=0)&&covers(x,z))
-            world.setBlockState(pos.add(x,0,z),No_24_heli.HELIPAD_SURFACE.getDefaultState().with(OFFSET_X,x+5).with(OFFSET_Z,z+5),Block.NOTIFY_ALL);
+            world.setBlockState(pos.add(x,0,z),No_24_heli.HELIPAD_SURFACE.getDefaultState().with(OFFSET_X,x+5).with(OFFSET_Z,z+5)
+                    .with(MARKING_AXIS,state.get(MARKING_AXIS)),Block.NOTIFY_ALL);
     }
     /** 拆除任意碎片都拆除整个结构，碎片本身没有掉落，中心只掉落一个物品。 */
     @Override protected void onStateReplaced(BlockState state,World world,BlockPos pos,BlockState replacement,boolean moved){
         if(!world.isClient&&!state.isOf(replacement.getBlock())){
             BlockPos origin=center(pos,state);
             if(isCenter()){
+                // 真实中心替换才删除固定地图目录；区块卸载只移除已加载雷达索引。
+                if(world instanceof ServerWorld serverWorld)HelipadState.get(serverWorld).remove(origin);
                 for(int x=-5;x<=5;x++)for(int z=-5;z<=5;z++)if(x!=0||z!=0){
                     BlockPos p=origin.add(x,0,z);BlockState part=world.getBlockState(p);
                     if(part.isOf(No_24_heli.HELIPAD_SURFACE)&&center(p,part).equals(origin))world.removeBlock(p,false);
@@ -96,7 +108,7 @@ public class HelipadBlock extends BlockWithEntity {
         var state=world.getBlockState(pos);return state.isOf(No_24_heli.HELIPAD)||state.isOf(No_24_heli.HELIPAD_SURFACE);
     }
 
-    public HelipadBlock(Settings settings){super(settings);setDefaultState(getStateManager().getDefaultState().with(OFFSET_X,5).with(OFFSET_Z,5));}
+    public HelipadBlock(Settings settings){super(settings);setDefaultState(getStateManager().getDefaultState().with(OFFSET_X,5).with(OFFSET_Z,5).with(MARKING_AXIS,Direction.Axis.Z));}
     @Override protected ItemActionResult onUseWithItem(ItemStack stack,BlockState state,World world,BlockPos pos,PlayerEntity player,Hand hand,BlockHitResult hit){
         if(!isCenter()){
             BlockPos origin=center(pos,state);BlockState pad=world.getBlockState(origin);

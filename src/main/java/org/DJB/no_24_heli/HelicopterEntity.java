@@ -30,6 +30,8 @@ public class HelicopterEntity extends Entity {
     private float smoothPitch,smoothRoll;
     private final java.util.Map<java.util.UUID,Long> exitWarnings=new java.util.HashMap<>();
     public int ropeLength;
+    /** 从绳索进入的指定副驾，空驾驶座不能把该乘员自动提升为驾驶员。 */
+    private java.util.UUID ropeCopilot;
     private long lastRadio=-100;
     private long lastInput=-100,lastActions=-100,lastEngine=-100;
     private int collisionCooldown,repairCooldown,entityImpactCooldown;
@@ -66,11 +68,23 @@ public class HelicopterEntity extends Entity {
         flight.targetAltitude=getY();flight.targetSpeed=Math.hypot(flight.vx,flight.vz);
     }
     @Override protected boolean canAddPassenger(Entity passenger){return !flight.wreck&&getPassengerList().size()<2;}
-    public boolean isPilot(Entity e){return getFirstPassenger()==e;}
+    public boolean isPilot(Entity e){return e!=null&&pilot()==e;}
+    /** 原有普通乘员顺序保持；绳索指定副驾始终跳过，空驾驶座仍按弃机规则处理。 */
+    private Entity pilot(){
+        for(Entity passenger:getPassengerList())if(!passenger.getUuid().equals(ropeCopilot))return passenger;
+        return null;
+    }
+    /** 仅绳顶 E 调用；副驾空闲才转移，不会抢占驾驶座或自动接管飞控。 */
+    public boolean boardRopeCopilot(PlayerEntity player){
+        if(flight.wreck||getPassengerList().size()>=2||ropeCopilot!=null)return false;
+        if(!player.startRiding(this,true))return false;
+        ropeCopilot=player.getUuid();player.fallDistance=0;return true;
+    }
     /** 任何离座途径都清除旧确认窗口；驾驶员离座时立即停止导航，副驾驶离座不干扰驾驶。 */
     @Override protected void removePassenger(Entity passenger){
         boolean pilot=isPilot(passenger);super.removePassenger(passenger);
         exitWarnings.remove(passenger.getUuid());if(pilot){stopAutopilot();flight.autoPhase=0;}
+        if(passenger.getUuid().equals(ropeCopilot))ropeCopilot=null;
     }
     @Override public LivingEntity getControllingPassenger(){return null;}
 
@@ -167,7 +181,7 @@ public class HelicopterEntity extends Entity {
         }
         if(entityImpactCooldown>0)entityImpactCooldown--;
         if(collisionCooldown>0)collisionCooldown--;if(repairCooldown>0)repairCooldown--;
-        if(getWorld().getTime()-lastInput>10||!(getFirstPassenger() instanceof PlayerEntity))flight.clearInputs();
+        if(getWorld().getTime()-lastInput>10||!(pilot() instanceof PlayerEntity))flight.clearInputs();
 
         if(!flight.wreck&&isOnGround()&&age%20==0){
             var fuel=cargo.getStack(0);double amount=fuel.isOf(No_24_heli.KEROSENE)?150:fuel.isOf(No_24_heli.CRUDE)?80:0;
@@ -177,7 +191,7 @@ public class HelicopterEntity extends Entity {
                 for(int i=1;i<cargo.size();i++)if(cargo.getStack(0).isEmpty()&&(cargo.getStack(i).isOf(No_24_heli.KEROSENE)||cargo.getStack(i).isOf(No_24_heli.CRUDE))){cargo.setStack(0,cargo.removeStack(i));break;}
             }
         }
-        if(getFirstPassenger() instanceof net.minecraft.server.network.ServerPlayerEntity pilot){
+        if(pilot() instanceof net.minecraft.server.network.ServerPlayerEntity pilot){
             var mode=PlayerFlightSettings.get(pilot.getServer()).mode(pilot.getUuid());
             if(flight.difficultyMode!=mode.ordinal())applyDifficulty(mode);
         }
@@ -187,18 +201,18 @@ public class HelicopterEntity extends Entity {
         entityContactsEnabled=airborneTicks>=3&&!flight.wreck;
         // 起降阶段每tick复核动力、驾驶员和模式；不会因为客户端断线而保留无人起飞任务。
         if(flight.autoPhase!=0){
-            if(!(getFirstPassenger() instanceof PlayerEntity)||flight.hardcoreMode||!flight.running||flight.engine<=0||flight.rotor<40||flight.fuel<=0||flight.wreck||isTouchingWater())flight.autoPhase=0;
+            if(!(pilot() instanceof PlayerEntity)||flight.hardcoreMode||!flight.running||flight.engine<=0||flight.rotor<40||flight.fuel<=0||flight.wreck||isTouchingWater())flight.autoPhase=0;
             // 支撑探测会提前约 0.08 格判定近地；必须等碰撞系统确认真正接地后才结束降落并关机。
             else if(flight.autoPhase==3&&isOnGround()){
                 flight.autoPhase=0;flight.running=false;flight.collective=0;flight.altitudeHold=false;flight.clearInputs();
-                if(getFirstPassenger() instanceof PlayerEntity p)message(p,"auto_landed");
+                if(pilot() instanceof PlayerEntity p)message(p,"auto_landed");
             }else AutoFlightController.step(flight,getX(),getY(),getZ(),grounded);
         }
         if(flight.autopilot){
-            if(!(getFirstPassenger() instanceof PlayerEntity)||grounded||!flight.running||flight.engine<=0||flight.fuel<=0||flight.wreck)stopAutopilot();
+            if(!(pilot() instanceof PlayerEntity)||grounded||!flight.running||flight.engine<=0||flight.fuel<=0||flight.wreck)stopAutopilot();
             else navigation.step(this);
         }
-        FlightPhysics.handleAbandonment(flight,physicsConfig,grounded,getFirstPassenger() instanceof PlayerEntity,getY());
+        FlightPhysics.handleAbandonment(flight,physicsConfig,grounded,pilot() instanceof PlayerEntity,getY());
         FlightPhysics.step(flight,physicsConfig,grounded,getWorld().hasRain(getBlockPos()),getY(),getWorld().getTime());
         if(!flight.wreck&&flight.hull<=0)destroy(false);
         setYaw((float)flight.yaw);
@@ -230,10 +244,8 @@ public class HelicopterEntity extends Entity {
                 flight.rpm=Math.max(0,flight.rpm-.025);
             }
             if(flight.rope){
-                var carrier=ropeCarrier();
-                if(carrier!=null&&carrier.hasPassengers()){ /* 救援乘员悬挂时允许携带飞行，不自动断绳。 */ }
-                else if(!safeHover()){flight.rope=false;ropeLength=0;}
-                else ensureRopeCarrier();
+                // 已部署绳保留初始长度，飞行时空绳也继续摆动；只有 B 主动收回或损毁才移除。
+                ensureRopeCarrier();
             }
         }
         if(horizontalCollision){if(Math.abs(velocity.x-moved.x)>.001)flight.vx=0;if(Math.abs(velocity.z-moved.z)>.001)flight.vz=0;}
@@ -258,9 +270,13 @@ public class HelicopterEntity extends Entity {
         if(age%20==0&&getWorld() instanceof net.minecraft.server.world.ServerWorld sw){
             AirspaceState airspace=AirspaceState.get(sw);
             flight.restricted=!flight.wreck&&airspace.zones().stream().anyMatch(z->z.contains(getX(),getZ()));
-            for(Entity occupant:getPassengerList())if(occupant instanceof net.minecraft.server.network.ServerPlayerEntity p){
-                net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(p,AirspacePayload.of(airspace));
-                if(flight.restricted)message(p,"restricted");
+            if(hasPassengers()){
+                var helipadMap=HelipadMapPayload.of(HelipadState.get(sw));
+                for(Entity occupant:getPassengerList())if(occupant instanceof net.minecraft.server.network.ServerPlayerEntity p){
+                    net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(p,AirspacePayload.of(airspace));
+                    net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(p,helipadMap);
+                    if(flight.restricted)message(p,"restricted");
+                }
             }
         }
         if(age%2==0)dataTracker.set(STATUS,saveFlight());
@@ -321,7 +337,7 @@ public class HelicopterEntity extends Entity {
         for(int i=0;i<No_24_heli.PAINTS.length;i++)if(stack.isOf(No_24_heli.PAINTS[i])){
             if(isOnGround()&&flight.rpm<.05){flight.paint=i;if(!player.isCreative())stack.decrement(1);}else message(player,"ground_only");return ActionResult.CONSUME;
         }
-        if(stack.isOf(Items.LEAD)&&getFirstPassenger() instanceof PlayerEntity&&getPassengerList().size()<2){
+        if(stack.isOf(Items.LEAD)&&pilot() instanceof PlayerEntity&&getPassengerList().size()<2){
             for(VillagerEntity villager:getWorld().getEntitiesByClass(VillagerEntity.class,getBoundingBox().expand(5),v->!v.hasVehicle()))if(villager.startRiding(this,true)){return ActionResult.CONSUME;}
         }
         if(player.isSneaking()){
@@ -349,7 +365,7 @@ public class HelicopterEntity extends Entity {
         },this),Text.translatable("container.no_24_heli.service")));
     }
     @Override protected void updatePassengerPosition(Entity passenger,PositionUpdater updater){
-        int index=getPassengerList().indexOf(passenger);double side=index==0?-.35:.35;
+        double side=isPilot(passenger)?-.35:.35;
         Vec3d offset=new Vec3d(side,.05,.25).rotateY((float)-Math.toRadians(getYaw()));
         updater.accept(passenger,getX()+offset.x,getY()+offset.y,getZ()+offset.z);passenger.fallDistance=0;
     }
@@ -370,7 +386,7 @@ public class HelicopterEntity extends Entity {
         n.putDouble("Rpm",flight.rpm);n.putDouble("Collective",flight.collective);n.putDouble("Pitch",flight.pitch);n.putDouble("Roll",flight.roll);n.putDouble("Yaw",flight.yaw);n.putDouble("YawRate",flight.yawRate);
         n.putDouble("Fuel",flight.fuel);n.putDouble("Rotor",flight.rotor);n.putDouble("Tail",flight.tail);n.putDouble("Engine",flight.engine);n.putDouble("Tank",flight.tank);n.putDouble("Hull",flight.hull);
         n.putDouble("Vx",flight.vx);n.putDouble("Vy",flight.vy);n.putDouble("Vz",flight.vz);n.putDouble("TargetAltitude",flight.targetAltitude);n.putDouble("TargetSpeed",flight.targetSpeed);
-        n.putBoolean("Running",flight.running);n.putBoolean("Armed",flight.armed);n.putBoolean("Altitude",flight.altitudeHold);n.putBoolean("Trim",flight.trim);n.putBoolean("Cruise",flight.cruise);n.putBoolean("Gear",flight.gear);n.putBoolean("Wreck",flight.wreck);n.putBoolean("Rope",flight.rope);n.putInt("Paint",flight.paint);n.putInt("RopeLength",ropeLength);return n;
+        if(ropeCopilot!=null)n.putUuid("RopeCopilot",ropeCopilot);n.putBoolean("Running",flight.running);n.putBoolean("Armed",flight.armed);n.putBoolean("Altitude",flight.altitudeHold);n.putBoolean("Trim",flight.trim);n.putBoolean("Cruise",flight.cruise);n.putBoolean("Gear",flight.gear);n.putBoolean("Wreck",flight.wreck);n.putBoolean("Rope",flight.rope);n.putInt("Paint",flight.paint);n.putInt("RopeLength",ropeLength);return n;
     }
     private static double number(NbtCompound n,String key,double fallback,double min,double max){double v=n.contains(key)?n.getDouble(key):fallback;return Double.isFinite(v)?FlightPhysics.clamp(v,min,max):fallback;}
     private void loadFlight(NbtCompound n){
@@ -385,7 +401,7 @@ public class HelicopterEntity extends Entity {
         flight.rpm=number(n,"Rpm",0,0,1);flight.collective=number(n,"Collective",0,0,1);flight.pitch=number(n,"Pitch",0,-60,60);flight.roll=number(n,"Roll",0,-60,60);flight.yaw=number(n,"Yaw",getYaw(),-360,360);flight.yawRate=number(n,"YawRate",0,-20,20);
         flight.fuel=number(n,"Fuel",0,0,100000);flight.rotor=number(n,"Rotor",100,0,100);flight.tail=number(n,"Tail",100,0,100);flight.engine=number(n,"Engine",100,0,100);flight.tank=number(n,"Tank",100,0,100);flight.hull=number(n,"Hull",100,0,100);
         flight.vx=number(n,"Vx",0,-3,3);flight.vy=number(n,"Vy",0,-3,3);flight.vz=number(n,"Vz",0,-3,3);flight.targetAltitude=number(n,"TargetAltitude",getY(),-2048,2048);flight.targetSpeed=number(n,"TargetSpeed",0,0,3);
-        flight.running=n.getBoolean("Running");flight.armed=n.getBoolean("Armed");flight.altitudeHold=n.getBoolean("Altitude");flight.trim=n.contains("Trim")?n.getBoolean("Trim"):!flight.hardcoreMode;flight.cruise=n.getBoolean("Cruise");flight.gear=!n.contains("Gear")||n.getBoolean("Gear");flight.wreck=n.getBoolean("Wreck");flight.rope=n.getBoolean("Rope");flight.paint=Math.clamp(n.getInt("Paint"),0,No_24_heli.PAINTS.length-1);ropeLength=Math.clamp(n.getInt("RopeLength"),0,24);
+        ropeCopilot=n.containsUuid("RopeCopilot")?n.getUuid("RopeCopilot"):null;flight.running=n.getBoolean("Running");flight.armed=n.getBoolean("Armed");flight.altitudeHold=n.getBoolean("Altitude");flight.trim=n.contains("Trim")?n.getBoolean("Trim"):!flight.hardcoreMode;flight.cruise=n.getBoolean("Cruise");flight.gear=!n.contains("Gear")||n.getBoolean("Gear");flight.wreck=n.getBoolean("Wreck");flight.rope=n.getBoolean("Rope");flight.paint=Math.clamp(n.getInt("Paint"),0,No_24_heli.PAINTS.length-1);ropeLength=Math.clamp(n.getInt("RopeLength"),0,24);
     }
     /**
      * K为可撤销的起降任务：地面开始十格起飞，空中尝试垂直降落，再按一次取消。

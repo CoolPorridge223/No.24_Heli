@@ -29,10 +29,12 @@ public final class HelipadBlockEntity extends BlockEntity {
     /** net.minecraft.block.entity.BlockEntity#markRemoved 在拆除或区块卸载时移除索引，避免幽灵标记。 */
     @Override public void markRemoved(){unregister();super.markRemoved();}
 
-    /** 只登记中心方块；承重碎片仍可独立渲染，但不产生重复雷达目标。 */
+    /** 中心同时进入已加载雷达索引和持久地图目录；承重碎片不产生重复标记。 */
     private void register(){
-        if(getWorld() instanceof ServerWorld world&&getCachedState().isOf(No_24_heli.HELIPAD))
+        if(getWorld() instanceof ServerWorld world&&getCachedState().isOf(No_24_heli.HELIPAD)){
             CENTERS.computeIfAbsent(world,key->new HashSet<>()).add(getPos().toImmutable());
+            HelipadState.get(world).add(getPos());
+        }
     }
 
     /** 清理旧世界的登记；不加载区块，也不改变方块或存档。 */

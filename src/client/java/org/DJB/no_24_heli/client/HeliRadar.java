@@ -9,6 +9,8 @@ import net.minecraft.entity.player.PlayerEntity;
 import org.DJB.no_24_heli.AirspacePayload;
 import org.DJB.no_24_heli.HelicopterEntity;
 import org.DJB.no_24_heli.HelipadBlock;
+import org.DJB.no_24_heli.HelipadMapPayload;
+import net.minecraft.util.math.BlockPos;
 import org.DJB.no_24_heli.RadarContactsPayload;
 import java.util.ArrayList;
 import java.util.List;
@@ -19,19 +21,29 @@ public final class HeliRadar {
     private static RadarContactsPayload contacts=new RadarContactsPayload(-1,List.of(),List.of());
     public static void receive(RadarContactsPayload packet){contacts=packet;}
     public static List<RadarContactsPayload.Contact> contacts(HelicopterEntity h){return contacts.helicopterId()==h.getId()?contacts.contacts():List.of();}
-    /** 雷达和地图读取同一份服务端停机坪快照，换乘飞机时不显示上一架的扫描结果。 */
+    /** 独立的固定地图目录，不随雷达扫描范围、区块卸载或换乘飞机清除。 */
+    private static List<HelipadMapPayload.Entry> mapHelipads=List.of();
+    /** 接收专用地图快照；完整替换可及时移除已拆除中心。 */
+    public static void receive(HelipadMapPayload packet){mapHelipads=packet.helipads();}
+    /** 地图读取固定目录，不使用当前飞机的雷达目标列表。 */
+    public static List<HelipadMapPayload.Entry> mapHelipads(){return mapHelipads;}
+    /** 雷达仅读取当前飞机的范围内扫描结果，地图通过独立目录读取固定标记。 */
     public static List<RadarContactsPayload.Helipad> helipads(HelicopterEntity heli){
         return contacts.helicopterId()==heli.getId()?contacts.helipads():List.of();
     }
     /** 服务端扫描状态结合最新禁区快照，完整圆盘接触禁区即禁用，不能仅检查中心点。 */
     public static boolean restricted(RadarContactsPayload.Helipad pad){
-        return pad.restricted()||zones.stream().anyMatch(zone->HelipadBlock.intersectsZone(pad.pos(),zone.pos(),zone.radius()));
+        return pad.restricted()||restricted(pad.pos());
+    }
+    /** 固定地图按真实禁区判定完整圆盘，禁止选择受限的远处旧停机坪。 */
+    public static boolean restricted(BlockPos pos){
+        return zones.stream().anyMatch(zone->HelipadBlock.intersectsZone(pos,zone.pos(),zone.radius()));
     }
     public static List<AirspacePayload.Entry> zones=List.of();
     private static List<Entity> targets=List.of();
     private static Object world;
     private static long scanTime=-1;
-    public static void reset(){zones=List.of();targets=List.of();contacts=new RadarContactsPayload(-1,List.of(),List.of());world=null;scanTime=-1;}
+    public static void reset(){zones=List.of();targets=List.of();mapHelipads=List.of();contacts=new RadarContactsPayload(-1,List.of(),List.of());world=null;scanTime=-1;}
     public static List<Entity> targets(){
         var mc=MinecraftClient.getInstance();if(mc.world==null||mc.player==null){reset();return targets;}
         if(world!=mc.world){reset();world=mc.world;}
