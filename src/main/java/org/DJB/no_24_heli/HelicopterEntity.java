@@ -30,6 +30,10 @@ public class HelicopterEntity extends Entity {
     private float smoothPitch,smoothRoll;
     private final java.util.Map<java.util.UUID,Long> exitWarnings=new java.util.HashMap<>();
     public int ropeLength;
+    /** 当前部署的唯一绳实体；运行时缓存跨越查询半径，卸载后按同一 UUID 等待恢复。 */
+    private RopeSeatEntity activeRope;
+    /** 客户端从 Flight 同步的权威绳实体 ID，仅用于查找与绘制，不跨存档恢复部署。 */
+    private int ropeCarrierId=-1;
     /** 从绳索进入的指定副驾，空驾驶座不能把该乘员自动提升为驾驶员。 */
     private java.util.UUID ropeCopilot;
     private long lastRadio=-100;
@@ -155,17 +159,31 @@ public class HelicopterEntity extends Entity {
         if(!safeHover())return;
         RopeSeatEntity seat=ensureRopeCarrier();if(seat!=null)seat.board(passenger,false);
     }
-    /** 本地实体查询用于渲染与服务端维护，绳端不需要占用直升机座位。 */
+    /**
+     * 服务端优先复用唯一绳实体，只有旧存档/首次部署才做附近搜索。
+     * net.minecraft.server.world.ServerWorld#getEntity 按 UUID 恢复暂时卸载的绳，不能因超出半径另造一根。
+     * 客户端只用 Flight 中的实体 ID，避免渲染器自行选择不同的绳。
+     */
     public RopeSeatEntity ropeCarrier(){
+        if(getWorld().isClient)return getWorld().getEntityById(ropeCarrierId) instanceof RopeSeatEntity rope?rope:null;
+        if(activeRope!=null){
+            if(!activeRope.isRemoved())return activeRope;
+            Entity restored=((net.minecraft.server.world.ServerWorld)getWorld()).getEntity(activeRope.getUuid());
+            if(restored instanceof RopeSeatEntity rope){activeRope=rope;return rope;}
+            if(!activeRope.getRemovalReason().shouldDestroy())return null;
+            activeRope=null;
+        }
         for(var e:getWorld().getOtherEntities(this,getBoundingBox().expand(32),e->e instanceof RopeSeatEntity))
-            if(((RopeSeatEntity)e).helicopter()==this)return (RopeSeatEntity)e;
+            if(((RopeSeatEntity)e).helicopter()==this){activeRope=(RopeSeatEntity)e;return activeRope;}
         return null;
     }
-    public boolean hasRopeCarrier(){return ropeCarrier()!=null;}
+    /** 服务端创建缺失的部署实体；已知绳只是卸载时等待原 UUID，不重复生成。 */
     private RopeSeatEntity ensureRopeCarrier(){
         RopeSeatEntity seat=ropeCarrier();if(seat!=null)return seat;
+        if(activeRope!=null)return null;
         seat=new RopeSeatEntity(No_24_heli.ROPE,getWorld());seat.attach(this);
-        return getWorld().spawnEntity(seat)?seat:null;
+        if(!getWorld().spawnEntity(seat))return null;
+        activeRope=seat;return seat;
     }
     @Override public void tick(){
         super.tick();previousRotorAngle=rotorAngle;rotorAngle+=(float)(flight.rpm*65);
@@ -381,6 +399,7 @@ public class HelicopterEntity extends Entity {
     /** 存档版本 3：显式字段，旧存档缺少部件字段时默认完整，损毁状态绝不重置。 */
     private NbtCompound saveFlight(){
         NbtCompound n=new NbtCompound();n.putInt("Version",4);
+        n.putInt("RopeCarrierId",activeRope!=null&&!activeRope.isRemoved()?activeRope.getId():-1);
         n.putInt("DifficultyMode",flight.difficultyMode);n.putInt("AutoPhase",flight.autoPhase);
         n.putInt("RadioTrack",flight.radioTrack);n.putInt("RadioRevision",flight.radioRevision);n.putLong("RadioStarted",flight.radioStartedTick);
         n.putBoolean("Waypoint",flight.waypoint);n.putDouble("WaypointX",flight.waypointX);n.putDouble("WaypointZ",flight.waypointZ);
@@ -392,6 +411,7 @@ public class HelicopterEntity extends Entity {
     }
     private static double number(NbtCompound n,String key,double fallback,double min,double max){double v=n.contains(key)?n.getDouble(key):fallback;return Double.isFinite(v)?FlightPhysics.clamp(v,min,max):fallback;}
     private void loadFlight(NbtCompound n){
+        ropeCarrierId=n.contains("RopeCarrierId")?n.getInt("RopeCarrierId"):-1;
         flight.difficultyMode=n.contains("DifficultyMode")?Math.clamp(n.getInt("DifficultyMode"),0,2):HeliConfig.INSTANCE.difficulty.ordinal();
         flight.autoPhase=Math.clamp(n.getInt("AutoPhase"),0,3);
         flight.radioTrack=n.contains("RadioTrack")?Math.clamp(n.getInt("RadioTrack"),-1,7):-1;

@@ -1,5 +1,6 @@
 {
-  "hud.no_24_heli.rope_board": "按下 E 进入飞机",
+  "hud.no_24_heli.rope_board_before": "按下",
+  "hud.no_24_heli.rope_board_after": "进入飞机",
   "itemGroup.no_24_heli": "24号直升机",
   "entity.no_24_heli.helicopter": "24号直升机",
   "entity.no_24_heli.rope_seat": "绳降安全座",

@@ -21,10 +21,10 @@ public class RopeRenderer extends EntityRenderer<RopeSeatEntity>{
         rope=TexturedModelData.of(data,256,256).createModel().getChild("rope");
     }
     @Override public boolean shouldRender(RopeSeatEntity e,Frustum f,double x,double y,double z){
-        var h=e.helicopter();return h!=null&&h.flight.rope&&f.isVisible(e.ropeBounds().union(h.getBoundingBox()));
+        var h=e.helicopter();return h!=null&&h.flight.rope&&h.ropeCarrier()==e&&f.isVisible(e.ropeBounds().union(h.getBoundingBox()));
     }
     @Override public void render(RopeSeatEntity e,float yaw,float delta,MatrixStack m,VertexConsumerProvider consumers,int light){
-        var h=e.helicopter();if(h==null||!h.flight.rope)return;
+        var h=e.helicopter();if(h==null||!h.flight.rope||h.ropeCarrier()!=e)return;
         Vec3d origin=e.getLerpedPos(delta);
         var buffer=consumers.getBuffer(RenderLayer.getEntityCutoutNoCull(getTexture(e)));
         for(int i=0;i<RopeSeatEntity.SEGMENTS;i++){

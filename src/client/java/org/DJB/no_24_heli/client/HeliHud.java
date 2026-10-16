@@ -54,6 +54,32 @@ public final class HeliHud {
     private static final float TAPE_TITLE_SCALE=1.05f;
     /** 高度末两位数字鼓的步长，单位：米；700→720 的整个区间连续滚动。 */
     private static final int ALTITUDE_ROLL_STEP=20;
+    /** 登机 E 键帽的边长与文字间隔，单位：GUI 逻辑像素。 */
+    private static final int BOARD_KEY_SIZE=18,BOARD_KEY_GAP=4;
+    /**
+     * net.minecraft.client.gui.DrawContext 绘制准星右侧的登机提示，E 居中放入圆角正方形。
+     * 仅客户端渲染；两段翻译文本分别布局，避免依赖某种语言中 E 的字符位置。
+     */
+    private static void drawBoardHint(DrawContext ctx){
+        var font=MinecraftClient.getInstance().textRenderer;
+        Text before=Text.translatable("hud.no_24_heli.rope_board_before"),after=Text.translatable("hud.no_24_heli.rope_board_after");
+        int width=font.getWidth(before)+BOARD_KEY_SIZE+font.getWidth(after)+2*BOARD_KEY_GAP;
+        int x=Math.max(4,Math.min(ctx.getScaledWindowWidth()/2+24,ctx.getScaledWindowWidth()-width-4));
+        int y=ctx.getScaledWindowHeight()/2-BOARD_KEY_SIZE/2,textY=y+(BOARD_KEY_SIZE-font.fontHeight)/2;
+        ctx.drawText(font,before,x,textY,0xffffd477,true);
+        int keyX=x+font.getWidth(before)+BOARD_KEY_GAP;
+        roundedKey(ctx,keyX,y,BOARD_KEY_SIZE,0xffffd477);
+        roundedKey(ctx,keyX+1,y+1,BOARD_KEY_SIZE-2,0xe61c2530);
+        ctx.drawText(font,"E",keyX+(BOARD_KEY_SIZE-font.getWidth("E"))/2,textY,0xffffffff,false);
+        ctx.drawText(font,after,keyX+BOARD_KEY_SIZE+BOARD_KEY_GAP,textY,0xffffd477,true);
+    }
+    /** 以三像素圆角的逐行轮廓填充键帽，无额外纹理；引用 net.minecraft.client.gui.DrawContext#fill。 */
+    private static void roundedKey(DrawContext ctx,int x,int y,int size,int color){
+        for(int row=0;row<size;row++){
+            int edge=Math.min(row,size-1-row),inset=edge==0?3:edge==1?1:0;
+            ctx.fill(x+inset,y+row,x+size-inset,y+row+1,color);
+        }
+    }
     private static String f(double value){return String.format(Locale.ROOT,"%.1f",value);}
     private static void text(DrawContext ctx,String key,int x,int y,int color,Object... args){
         ctx.drawText(MinecraftClient.getInstance().textRenderer,Text.translatable(key,args),x,y,color,true);
@@ -73,10 +99,7 @@ public final class HeliHud {
         var mc=MinecraftClient.getInstance();
         if(mc.player==null||mc.options.hudHidden||mc.currentScreen!=null)return;
         if(mc.player.getVehicle() instanceof RopeSeatEntity rope&&rope.canBoardHelicopter(mc.player)){
-            // 使用 GUI 逻辑像素，提示位于准星右侧；小窗口限制右边距，避免文字出屏。
-            Text hint=Text.translatable("hud.no_24_heli.rope_board");
-            int hintX=Math.min(ctx.getScaledWindowWidth()/2+24,ctx.getScaledWindowWidth()-mc.textRenderer.getWidth(hint)-4);
-            ctx.drawText(mc.textRenderer,hint,Math.max(4,hintX),ctx.getScaledWindowHeight()/2-mc.textRenderer.fontHeight/2,0xffffd477,true);
+            drawBoardHint(ctx);
         }
         if(!(mc.player.getVehicle() instanceof HelicopterEntity h))return;
         var s=h.flight;var m=ctx.getMatrices();m.push();m.scale(SCALE,SCALE,1);

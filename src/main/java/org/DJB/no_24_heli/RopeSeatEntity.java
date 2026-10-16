@@ -32,6 +32,11 @@ public class RopeSeatEntity extends Entity {
     public static final int SEGMENTS=16;
     /** 挂点到脚底偏移、头顶净空和安全攀爬上限下方的登机范围，单位：格。 */
     private static final double FEET_OFFSET=.15,HEAD_CLEARANCE=.1,BOARD_REACH=.5;
+    /** 登机许可保留六 tick，容忍提示同步和按键回程；主动下降或离开附近区域立即失效。 */
+    private static final int BOARD_GRACE_TICKS=6;
+    private static final double BOARD_GRACE_DISTANCE=.25;
+    /** 方块阻挡的位移误差阈值（格），撞击伤害为速度（格/tick）平方乘二十点生命值。 */
+    private static final double COLLISION_EPSILON=.001,IMPACT_DAMAGE_SCALE=20;
     /** 手动上升/下降速度，单位：格/tick。 */
     private static final double CLIMB_SPEED=.14,DESCEND_SPEED=.23;
     /** Verlet 阻尼和重力（格/tick²）；迭代次数限制绳段拉伸。 */
@@ -58,6 +63,11 @@ public class RopeSeatEntity extends Entity {
         private double distance;
         private float input;
         private long inputTick=-100,exitUntil=-1;
+        /** 许可由服务器写入 SHAPE；客户端禁止用平滑后的节点重新推断是否可登机。 */
+        private boolean boardReady;
+        private long boardUntil=-1;
+        /** 服务端上次安全脚底位置和跟绳速度，用于整个人物的连续方块碰撞检测。 */
+        private Vec3d position,velocity=Vec3d.ZERO;
         /** 新挂点只记录位置，必须手动输入才上下移动。 */
         private Rider(double distance){this.distance=distance;}
     }
@@ -98,7 +108,8 @@ public class RopeSeatEntity extends Entity {
         if(fromOutside&&pointAt(distance).squaredDistanceTo(passenger.getPos())>9)return false;
         distance=Math.max(distance,topDistance(passenger));
         if(!passenger.startRiding(this,true))return false;
-        riders.put(passenger.getUuid(),new Rider(distance));passenger.fallDistance=0;syncShape();return true;
+        Rider rider=new Rider(distance);rider.position=passenger.getPos();
+        riders.put(passenger.getUuid(),rider);passenger.fallDistance=0;syncShape();return true;
     }
     /** 沿真实折线投影，允许抓取绳中部而非仅抓取末端。 */
     private double nearestDistance(Vec3d position){
@@ -144,6 +155,9 @@ public class RopeSeatEntity extends Entity {
      */
     private double topDistance(Entity passenger){
         double limit=headCeiling()-passenger.getHeight()-FEET_OFFSET;
+        // 客户端节点仍存放快照坐标；净空判断同步减去整绳的锚点平移，和最终人物位置一致。
+        HelicopterEntity heli=helicopter();
+        if(getWorld().isClient&&heli!=null)limit-=heli.getY()-nodes[0].y;
         for(int i=0;i<SEGMENTS;i++){
             if(nodes[i].y<=limit)return length*i/SEGMENTS;
             if(nodes[i+1].y<=limit){
@@ -154,15 +168,20 @@ public class RopeSeatEntity extends Entity {
         return length;
     }
     /**
-     * HUD 与服务端 E 共用入口：距安全攀爬上限半格内且副驾空闲才允许入舱。
+     * HUD 直接读取服务端许可，服务端 E 再检查挂点和空座；不使用客户端平滑绳形推断资格。
      * net.minecraft.entity.Entity#hasPassenger 复核真实乘骑；同步挂点尚未到达客户端时不提示。
      */
     public boolean canBoardHelicopter(PlayerEntity player){
         HelicopterEntity heli=helicopter();Rider rider=riders.get(player.getUuid());
         if(heli==null||!heli.flight.rope||!hasPassenger(player)||nodes[0]==null||rider==null)return false;
-        double reach=nodes[0].y-headCeiling()+player.getHeight()+FEET_OFFSET+BOARD_REACH;
-        return rider.distance<=topDistance(player)+BOARD_REACH&&heli.canBoardRopeCopilot()
-                &&pointAt(rider.distance).squaredDistanceTo(nodes[0])<=reach*reach;
+        if(!heli.canBoardRopeCopilot())return false;
+        if(getWorld().isClient)return rider.boardReady;
+        double reach=BOARD_REACH;
+        if(getWorld().getTime()<=rider.boardUntil&&rider.input>=0)reach+=BOARD_GRACE_DISTANCE;
+        double top=topDistance(player);
+        // 弯绳到顶时的真实挂点可能横向偏移；不能用垂直净空代替到锚点的实际距离。
+        double anchorReach=pointAt(top).distanceTo(nodes[0])+reach;
+        return rider.distance<=top+reach&&pointAt(rider.distance).squaredDistanceTo(nodes[0])<=anchorReach*anchorReach;
     }
     /**
      * 校验真实乘骑关系后记录 W/S；E 只在顶部且副驾空闲时入舱。
@@ -223,13 +242,29 @@ public class RopeSeatEntity extends Entity {
             var hit=getWorld().raycast(new RaycastContext(before[i],nodes[i],RaycastContext.ShapeType.COLLIDER,RaycastContext.FluidHandling.NONE,this));
             if(hit.getType()!=HitResult.Type.MISS){nodes[i]=hit.getPos().add(before[i].subtract(nodes[i]).normalize().multiply(.03));previous[i]=nodes[i];}
         }
+        // 碰撞修正会把节点留在墙前，必须在其后再限制段长；否则飞机远离后绳索可无限拉伸。
+        // 同步平移 previous，避免长度修正被下一 tick 误当成额外的甩动速度。
+        for(int i=1;i<=SEGMENTS;i++){
+            Vec3d offset=nodes[i].subtract(nodes[i-1]);
+            if(offset.lengthSquared()>segmentLength*segmentLength){
+                Vec3d limited=nodes[i-1].add(offset.normalize().multiply(segmentLength));
+                previous[i]=previous[i].add(limited.subtract(nodes[i]));nodes[i]=limited;
+            }
+        }
         Vec3d old=getPos();setPosition(nodes[SEGMENTS]);setVelocity(getPos().subtract(old));
     }
     /** 绳形与各人挂点同 tick 同步，渲染和乘员使用同一折线。 */
     private void syncShape(){
         NbtCompound shape=new NbtCompound();NbtList points=new NbtList(),positions=new NbtList();shape.putDouble("Length",length);
         for(Vec3d node:nodes){NbtCompound point=new NbtCompound();point.putDouble("X",node.x);point.putDouble("Y",node.y);point.putDouble("Z",node.z);points.add(point);}
-        for(var entry:riders.entrySet()){NbtCompound rider=new NbtCompound();rider.putUuid("Id",entry.getKey());rider.putDouble("Distance",entry.getValue().distance);positions.add(rider);}
+        for(Entity passenger:getPassengerList()){
+            Rider state=riders.get(passenger.getUuid());if(state==null)continue;
+            state.boardReady=passenger instanceof PlayerEntity player&&canBoardHelicopter(player);
+            // 只在原始半格范围内续期，宽限区自身不能无限续期。
+            if(state.boardReady&&state.distance<=topDistance(passenger)+BOARD_REACH)state.boardUntil=getWorld().getTime()+BOARD_GRACE_TICKS;
+            NbtCompound rider=new NbtCompound();rider.putUuid("Id",passenger.getUuid());
+            rider.putDouble("Distance",state.distance);rider.putBoolean("BoardReady",state.boardReady);positions.add(rider);
+        }
         shape.put("Points",points);shape.put("Riders",positions);dataTracker.set(SHAPE,shape);
     }
     /** 客户端仅插值服务器节点，不积分、不预测攀爬输入。 */
@@ -244,6 +279,7 @@ public class RopeSeatEntity extends Entity {
         for(NbtElement element:shape.getList("Riders",NbtElement.COMPOUND_TYPE)){
             NbtCompound saved=(NbtCompound)element;UUID id=saved.getUuid("Id");double distance=saved.getDouble("Distance");
             Rider rider=riders.computeIfAbsent(id,key->new Rider(distance));rider.distance+=(distance-rider.distance)*.65;
+            rider.boardReady=saved.getBoolean("BoardReady");
         }
     }
     /** 更新完整绳形和独立挂点；松键保持距离，机体运动仍会带动整绳。 */
@@ -258,6 +294,13 @@ public class RopeSeatEntity extends Entity {
             if(nodes[0]!=null)for(int i=0;i<=SEGMENTS;i++)nodes[i]=nodes[i].add(getPos().subtract(before));
             if(isOnGround()||isTouchingWater()){removeAllPassengers();discard();}else if(nodes[0]!=null)syncShape();return;
         }
+        if(heli.ropeCarrier()!=this){
+            // 同一飞机只保留一个权威绳实体，旧存档中的重复绳不再参与模拟或拉走乘员。
+            for(Entity passenger:java.util.List.copyOf(getPassengerList())){
+                Vec3d position=passenger.getPos();passenger.stopRiding();passenger.requestTeleport(position.x,position.y,position.z);
+            }
+            discard();return;
+        }
         missingTicks=0;dataTracker.set(ANCHOR,heli.getId());simulate(heli);
         for(Entity passenger:java.util.List.copyOf(getPassengerList())){
             Rider rider=riders.computeIfAbsent(passenger.getUuid(),id->new Rider(topDistance(passenger)));
@@ -268,15 +311,21 @@ public class RopeSeatEntity extends Entity {
         }
         syncShape();
     }
-    /** 渲染线程读取帧插值节点，顶部始终跟随飞机插值坐标。 */
+    /** 所有节点统一补偿锚点插值差，不能只拉动第零节点而让第一段凭空折角或伸长。 */
     public Vec3d ropePoint(int index,float delta){
-        HelicopterEntity heli=helicopter();if(index==0&&heli!=null)return heli.getLerpedPos(delta);
         if(nodes[index]==null)return getLerpedPos(delta);
-        return frame[index]==null?nodes[index]:frame[index].lerp(nodes[index],delta);
+        Vec3d point=frame[index]==null?nodes[index]:frame[index].lerp(nodes[index],delta);
+        HelicopterEntity heli=helicopter();if(heli==null)return point;
+        Vec3d anchor=frame[0]==null?nodes[0]:frame[0].lerp(nodes[0],delta);
+        return point.add(heli.getLerpedPos(delta).subtract(anchor));
     }
     /** 按整根弯曲绳形做视锥裁剪，避免绳端出屏幕后整绳消失。 */
     public Box ropeBounds(){
-        Box bounds=getBoundingBox();for(Vec3d node:nodes)if(node!=null)bounds=bounds.union(new Box(node,node));return bounds.expand(1);
+        Box bounds=getBoundingBox();
+        for(int i=0;i<=SEGMENTS;i++)if(nodes[i]!=null){
+            Vec3d before=ropePoint(i,0),after=ropePoint(i,1);bounds=bounds.union(new Box(before,after));
+        }
+        return bounds.expand(1);
     }
     /** net.minecraft.entity.Entity 的标准服务端位置插值入口。 */
     @Override public void updateTrackedPositionAndAngles(double x,double y,double z,float yaw,float pitch,int steps){lerpX=x;lerpY=y;lerpZ=z;lerpTicks=Math.max(1,steps);}
@@ -286,8 +335,36 @@ public class RopeSeatEntity extends Entity {
     @Override protected void updatePassengerPosition(Entity passenger,PositionUpdater updater){
         if(nodes[0]==null)return;Rider rider=riders.get(passenger.getUuid());
         Vec3d point=pointAt(Math.max(topDistance(passenger),rider==null?0:rider.distance));
-        updater.accept(passenger,point.x,Math.min(point.y+FEET_OFFSET,headCeiling()-passenger.getHeight()),point.z);
+        HelicopterEntity heli=helicopter();
+        if(getWorld().isClient&&heli!=null)point=point.add(heli.getPos().subtract(nodes[0]));
+        Vec3d target=new Vec3d(point.x,Math.min(point.y+FEET_OFFSET,headCeiling()-passenger.getHeight()),point.z);
+        if(!getWorld().isClient&&passenger instanceof PlayerEntity player&&rider!=null&&detachOnCollision(player,rider,target))return;
+        updater.accept(passenger,target.x,target.y,target.z);
         passenger.fallDistance=0;
+    }
+    /**
+     * 服务端用 net.minecraft.entity.Entity#adjustMovementForCollisions 扫过整个人物碰撞箱，
+     * 仅加入方块/世界边界，不把飞机或同绳乘员当成墙。受阻立即脱绳，按撞击速度平方扣血。
+     * net.minecraft.entity.Entity#requestTeleport 覆盖原版离座寻位，保留墙前安全位置；
+     * flyIntoWall 使用原版撞墙伤害规则，正常防护/创造无敌仍有效，高速碰撞可以致命。
+     * 仅服务端乘员定位入口调用；记录上次权威位置，避免客户端移动包把碰撞起点推到墙后。
+     */
+    private boolean detachOnCollision(PlayerEntity player,Rider rider,Vec3d target){
+        Vec3d start=rider.position==null?player.getPos():rider.position,requested=target.subtract(start);
+        Box box=player.getBoundingBox().offset(start.subtract(player.getPos()));
+        Vec3d allowed=Entity.adjustMovementForCollisions(player,requested,box,getWorld(),java.util.List.of());
+        boolean blockedX=Math.abs(requested.x-allowed.x)>COLLISION_EPSILON;
+        boolean blockedY=Math.abs(requested.y-allowed.y)>COLLISION_EPSILON;
+        boolean blockedZ=Math.abs(requested.z-allowed.z)>COLLISION_EPSILON;
+        boolean embedded=getWorld().getBlockCollisions(player,box.contract(COLLISION_EPSILON)).iterator().hasNext();
+        if(!blockedX&&!blockedY&&!blockedZ&&!embedded){rider.position=target;rider.velocity=requested;return false;}
+        Vec3d safe=embedded?start:start.add(allowed);
+        double speedSquared=Math.max(requested.lengthSquared(),rider.velocity.lengthSquared());
+        player.stopRiding();player.requestTeleport(safe.x,safe.y,safe.z);
+        player.setVelocity(blockedX||embedded?0:requested.x,blockedY||embedded?0:requested.y,blockedZ||embedded?0:requested.z);
+        player.velocityModified=true;player.fallDistance=0;
+        player.damage(getDamageSources().flyIntoWall(),(float)(IMPACT_DAMAGE_SCALE*speedSquared));
+        return true;
     }
     /** 存档边界恢复有限挂点；旧 Direction 忽略，重载不恢复自动移动。 */
     @Override protected void readCustomDataFromNbt(NbtCompound nbt){
