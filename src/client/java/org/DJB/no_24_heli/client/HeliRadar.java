@@ -1,22 +1,37 @@
 package org.DJB.no_24_heli.client;
 
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
-import org.DJB.no_24_heli.*;
-import java.util.*;
+import org.DJB.no_24_heli.AirspacePayload;
+import org.DJB.no_24_heli.HelicopterEntity;
+import org.DJB.no_24_heli.HelipadBlock;
+import org.DJB.no_24_heli.RadarContactsPayload;
+import java.util.ArrayList;
+import java.util.List;
 
 /** 雷达与地图共享已跟踪实体；圆形雷达以机头为上方，地图仍保持北向。 */
+@Environment(EnvType.CLIENT)
 public final class HeliRadar {
-    private static RadarContactsPayload contacts=new RadarContactsPayload(-1,List.of());
+    private static RadarContactsPayload contacts=new RadarContactsPayload(-1,List.of(),List.of());
     public static void receive(RadarContactsPayload packet){contacts=packet;}
     public static List<RadarContactsPayload.Contact> contacts(HelicopterEntity h){return contacts.helicopterId()==h.getId()?contacts.contacts():List.of();}
+    /** 雷达和地图读取同一份服务端停机坪快照，换乘飞机时不显示上一架的扫描结果。 */
+    public static List<RadarContactsPayload.Helipad> helipads(HelicopterEntity heli){
+        return contacts.helicopterId()==heli.getId()?contacts.helipads():List.of();
+    }
+    /** 服务端扫描状态结合最新禁区快照，完整圆盘接触禁区即禁用，不能仅检查中心点。 */
+    public static boolean restricted(RadarContactsPayload.Helipad pad){
+        return pad.restricted()||zones.stream().anyMatch(zone->HelipadBlock.intersectsZone(pad.pos(),zone.pos(),zone.radius()));
+    }
     public static List<AirspacePayload.Entry> zones=List.of();
     private static List<Entity> targets=List.of();
     private static Object world;
     private static long scanTime=-1;
-    public static void reset(){zones=List.of();targets=List.of();contacts=new RadarContactsPayload(-1,List.of());world=null;scanTime=-1;}
+    public static void reset(){zones=List.of();targets=List.of();contacts=new RadarContactsPayload(-1,List.of(),List.of());world=null;scanTime=-1;}
     public static List<Entity> targets(){
         var mc=MinecraftClient.getInstance();if(mc.world==null||mc.player==null){reset();return targets;}
         if(world!=mc.world){reset();world=mc.world;}
@@ -66,6 +81,12 @@ public final class HeliRadar {
             double[] local=relative(dx,dz,heli.getYaw());
             int x=cx+(int)(local[0]/512*r),y=cy+(int)(local[1]/512*r);
             ctx.fill(x-1,y-1,x+2,y+2,e.helicopter()?0xffffba55:0xff70cfff);
+        }
+        for(var pad:helipads(heli)){
+            double[] local=relative(pad.pos().getX()+.5-heli.getX(),pad.pos().getZ()+.5-heli.getZ(),heli.getYaw());
+            if(Math.hypot(local[0],local[1])>RadarContactsPayload.RADIUS)continue;
+            int x=cx+(int)(local[0]/RadarContactsPayload.RADIUS*r),y=cy+(int)(local[1]/RadarContactsPayload.RADIUS*r);
+            ctx.drawCenteredTextWithShadow(mc.textRenderer,"H",x,y-4,restricted(pad)?0xffff6655:0xff7fffd4);
         }
         // 四个文字沿外圈旋转，文字自身保持正立；中心白色机头指针始终指向屏幕上方。
         double[][] directions={{0,-1},{1,0},{0,1},{-1,0}};String[] names={"north","east","south","west"};

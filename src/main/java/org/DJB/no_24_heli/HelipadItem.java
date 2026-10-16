@@ -11,7 +11,10 @@ public final class HelipadItem extends BlockItem {
     public HelipadItem(Block block,Settings settings){super(block,settings);}
     @Override protected BlockState getPlacementState(ItemPlacementContext context){
         if(!HelipadBlock.canBuild(context.getWorld(),context.getBlockPos())){
-            if(context.getPlayer()!=null)context.getPlayer().sendMessage(Text.translatable("message.no_24_heli.pad_space"),true);
+            boolean restricted=context.getWorld() instanceof net.minecraft.server.world.ServerWorld world
+                    &&HelipadBlock.isRestricted(world,context.getBlockPos());
+            if(context.getPlayer()!=null)context.getPlayer().sendMessage(Text.translatable(
+                    restricted?"message.no_24_heli.pad_restricted":"message.no_24_heli.pad_space"),true);
             return null;
         }
         return super.getPlacementState(context);

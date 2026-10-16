@@ -7,6 +7,7 @@ import net.minecraft.util.*;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.*;
 import net.minecraft.world.World;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import java.util.*;
 
@@ -40,8 +41,29 @@ public class HelipadBlock extends BlockWithEntity {
         }
         return SHAPES[dx+5][dz+5]=shape.simplify();
     }
-    /** 放置前检查整个圆盘区域；不覆盖其他方块、未加载区块或世界边界。 */
+    /**
+     * 检查停机坪圆盘与真实禁飞圆是否相交或相切；坐标均以方块中心为准，高度不影响禁飞限制。
+     * 客户端地图和服务端放置、导航共用同一几何规则，不使用规划时扩张的安全圈。
+     */
+    public static boolean intersectsZone(BlockPos pad,BlockPos zone,int radius){
+        return Math.hypot((double)pad.getX()-zone.getX(),(double)pad.getZ()-zone.getZ())<=radius+RADIUS;
+    }
+    /** 仅读取 net.minecraft.server.world.ServerWorld 的真实禁区记录，不加载远处区块。 */
+    public static boolean isRestricted(ServerWorld world,BlockPos pos){
+        return AirspaceState.get(world).zones().stream().anyMatch(zone->intersectsZone(pos,zone.pos(),zone.radius()));
+    }
+    /**
+     * 拦截落在受限旧停机坪上的普通地图标点，防止绕过停机坪按钮的禁用状态。
+     * 已放置后新覆盖禁区的圆盘也适用；仅服务端主线程查询已加载中心。
+     */
+    public static boolean isRestrictedTarget(ServerWorld world,double x,double z){
+        for(BlockPos pos:HelipadBlockEntity.centers(world))
+            if(Math.hypot(x-pos.getX()-.5,z-pos.getZ()-.5)<=RADIUS&&isRestricted(world,pos))return true;
+        return false;
+    }
+    /** 放置前检查整个圆盘区域；禁区中不放置，不覆盖其他方块、未加载区块或世界边界。 */
     public static boolean canBuild(World world,BlockPos pos){
+        if(world instanceof ServerWorld serverWorld&&isRestricted(serverWorld,pos))return false;
         for(int x=-5;x<=5;x++)for(int z=-5;z<=5;z++)if(covers(x,z)){
             BlockPos p=pos.add(x,0,z);
             if(!world.isChunkLoaded(p)||!world.getWorldBorder().contains(p))return false;

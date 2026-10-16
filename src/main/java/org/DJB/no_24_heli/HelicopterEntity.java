@@ -245,8 +245,15 @@ public class HelicopterEntity extends Entity {
                     &&Math.hypot(e.getX()-getX(),e.getZ()-getZ())<=RadarContactsPayload.RADIUS)
                 .stream().sorted(java.util.Comparator.comparingDouble(e->e.squaredDistanceTo(this))).limit(RadarContactsPayload.MAX_CONTACTS)
                 .map(e->new RadarContactsPayload.Contact(e.getX(),e.getZ(),e instanceof HelicopterEntity)).toList();
+            // 停机坪从已加载中心索引查询，不逐格扫描、不加载区块，范围和原机载雷达一致。
+            var helipads=HelipadBlockEntity.centers(radarWorld).stream()
+                .filter(pos->Math.hypot(pos.getX()+.5-getX(),pos.getZ()+.5-getZ())<=RadarContactsPayload.RADIUS
+                    &&radarWorld.isChunkLoaded(pos)&&radarWorld.getBlockState(pos).isOf(No_24_heli.HELIPAD))
+                .sorted(java.util.Comparator.comparingDouble(pos->Math.hypot(pos.getX()+.5-getX(),pos.getZ()+.5-getZ())))
+                .limit(RadarContactsPayload.MAX_CONTACTS)
+                .map(pos->new RadarContactsPayload.Helipad(pos,HelipadBlock.isRestricted(radarWorld,pos))).toList();
             for(Entity occupant:getPassengerList())if(occupant instanceof net.minecraft.server.network.ServerPlayerEntity player)
-                net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player,new RadarContactsPayload(getId(),contacts));
+                net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player,new RadarContactsPayload(getId(),contacts,helipads));
         }
         if(age%20==0&&getWorld() instanceof net.minecraft.server.world.ServerWorld sw){
             AirspaceState airspace=AirspaceState.get(sw);
@@ -455,7 +462,9 @@ public class HelicopterEntity extends Entity {
         if(!hasPassenger(player)||flight.wreck||!Double.isFinite(p.x())||!Double.isFinite(p.z())
                 ||Math.abs(p.x())>29999984||Math.abs(p.z())>29999984
                 ||!getWorld().getWorldBorder().contains(BlockPos.ofFloored(p.x(),getY(),p.z())))return;
-        if(!p.clear()&&getWorld() instanceof net.minecraft.server.world.ServerWorld sw&&AirspaceState.get(sw).zones().stream().anyMatch(z->z.contains(p.x(),p.z()))){message(player,"waypoint_restricted");return;}
+        if(!p.clear()&&getWorld() instanceof net.minecraft.server.world.ServerWorld sw
+                &&(AirspaceState.get(sw).zones().stream().anyMatch(z->z.contains(p.x(),p.z()))
+                    ||HelipadBlock.isRestrictedTarget(sw,p.x(),p.z()))){message(player,"waypoint_restricted");return;}
         stopAutopilot();navigation.reset();flight.autoPhase=0;flight.waypoint=!p.clear();flight.waypointX=p.x();flight.waypointZ=p.z();
         message(player,p.clear()?"waypoint_clear":"waypoint_set");dataTracker.set(STATUS,saveFlight());
     }

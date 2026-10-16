@@ -100,8 +100,11 @@
   "screen.no_24_heli.radar_readonly": "仅放置者或管理员可修改此雷达",
   "screen.no_24_heli.map": "导航地图 · 北向",
   "screen.no_24_heli.clear_waypoint": "清除导航点",
+  "screen.no_24_heli.set_waypoint": "设为导航点",
+  "screen.no_24_heli.pad_location": "停机坪 %s, %s",
+  "screen.no_24_heli.pad_restricted": "禁飞区内，无法设为导航点",
   "screen.no_24_heli.map_hint": "左键拖动 · 右键标点 · 滚轮缩放 · M关闭",
-  "screen.no_24_heli.map_legend": "白：自己  橙：飞机  黄：导航  红：禁飞  纸色：未探索",
+  "screen.no_24_heli.map_legend": "白箭头：自己  橙箭头：飞机  青H：停机坪  黄：导航  红：禁飞",
   "key.no_24_heli.auto_flight": "一键起飞 / 降落 / 取消",
   "screen.no_24_heli.mode": "我的飞行模式：%s",
   "mode.no_24_heli.0": "休闲",
@@ -164,5 +167,6 @@
   "hud.no_24_heli.ground_height": "离地 %s m",
   "warning.no_24_heli.sink_rate": "下降过快 · 离地 %s m",
   "message.no_24_heli.pad_space": "停机坪需要直径 10 格的空地，请清理圆盘范围。",
+  "message.no_24_heli.pad_restricted": "停机坪与禁飞区相交或接触，不能放置或设为导航点。",
   "message.no_24_heli.route_trajectory_unsafe": "无法生成满足转弯半径和禁区净空的安全轨迹，已制动悬停；请调整导航点或网格精度。"
 }

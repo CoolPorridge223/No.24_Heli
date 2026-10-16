@@ -100,8 +100,11 @@
   "screen.no_24_heli.radar_readonly": "Only the owner or an operator can edit",
   "screen.no_24_heli.map": "Navigation map · North up",
   "screen.no_24_heli.clear_waypoint": "Clear waypoint",
+  "screen.no_24_heli.set_waypoint": "Set as waypoint",
+  "screen.no_24_heli.pad_location": "Helipad %s, %s",
+  "screen.no_24_heli.pad_restricted": "No-fly area: waypoint unavailable",
   "screen.no_24_heli.map_hint": "Left drag: pan · Right click: waypoint · Scroll: zoom · M: close",
-  "screen.no_24_heli.map_legend": "White: you · Orange: heli · Yellow: waypoint · Red: zone · Paper: unexplored",
+  "screen.no_24_heli.map_legend": "White arrow: you · Orange arrow: heli · Cyan H: helipad · Yellow: waypoint · Red: zone",
   "key.no_24_heli.auto_flight": "Auto takeoff / land / cancel",
   "screen.no_24_heli.mode": "My flight mode: %s",
   "mode.no_24_heli.0": "Casual",
@@ -164,5 +167,6 @@
   "hud.no_24_heli.ground_height": "AGL %s m",
   "warning.no_24_heli.sink_rate": "SINK RATE · AGL %s m",
   "message.no_24_heli.pad_space": "Clear a 10-block diameter area for the helipad.",
+  "message.no_24_heli.pad_restricted": "The helipad overlaps or touches a no-fly zone; placement and waypoint selection are blocked.",
   "message.no_24_heli.route_trajectory_unsafe": "No safely flyable curve with sufficient clearance. Holding position; adjust the waypoint or grid resolution."
 }
