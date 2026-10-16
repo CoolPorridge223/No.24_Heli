@@ -13,6 +13,7 @@ import net.minecraft.text.Text;
 import net.minecraft.util.math.RotationAxis;
 import org.DJB.no_24_heli.HelicopterEntity;
 import org.DJB.no_24_heli.HeliConfig;
+import org.DJB.no_24_heli.RopeSeatEntity;
 import java.util.Locale;
 
 /**
@@ -70,7 +71,14 @@ public final class HeliHud {
      */
     public static void draw(DrawContext ctx,RenderTickCounter counter){
         var mc=MinecraftClient.getInstance();
-        if(mc.player==null||mc.options.hudHidden||!(mc.player.getVehicle() instanceof HelicopterEntity h)||mc.currentScreen!=null)return;
+        if(mc.player==null||mc.options.hudHidden||mc.currentScreen!=null)return;
+        if(mc.player.getVehicle() instanceof RopeSeatEntity rope&&rope.canBoardHelicopter(mc.player)){
+            // 使用 GUI 逻辑像素，提示位于准星右侧；小窗口限制右边距，避免文字出屏。
+            Text hint=Text.translatable("hud.no_24_heli.rope_board");
+            int hintX=Math.min(ctx.getScaledWindowWidth()/2+24,ctx.getScaledWindowWidth()-mc.textRenderer.getWidth(hint)-4);
+            ctx.drawText(mc.textRenderer,hint,Math.max(4,hintX),ctx.getScaledWindowHeight()/2-mc.textRenderer.fontHeight/2,0xffffd477,true);
+        }
+        if(!(mc.player.getVehicle() instanceof HelicopterEntity h))return;
         var s=h.flight;var m=ctx.getMatrices();m.push();m.scale(SCALE,SCALE,1);
         int w=(int)(ctx.getScaledWindowWidth()/SCALE),height=(int)(ctx.getScaledWindowHeight()/SCALE),x=10;
         // 底部统一缩放，窄窗口也为左侧仪表、中央血条和右侧飞行数据留出独立空间。

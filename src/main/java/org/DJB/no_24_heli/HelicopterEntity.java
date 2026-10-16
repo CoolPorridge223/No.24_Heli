@@ -74,9 +74,11 @@ public class HelicopterEntity extends Entity {
         for(Entity passenger:getPassengerList())if(!passenger.getUuid().equals(ropeCopilot))return passenger;
         return null;
     }
-    /** 仅绳顶 E 调用；副驾空闲才转移，不会抢占驾驶座或自动接管飞控。 */
+    /** 两端共用的副驾空闲判定，客户端 HUD 仅读取同步座位，服务端转移前再次复核。 */
+    public boolean canBoardRopeCopilot(){return !flight.wreck&&getPassengerList().size()<2&&ropeCopilot==null;}
+    /** 仅绳顶附近 E 调用；副驾空闲才转移，不会抢占驾驶座或自动接管飞控。 */
     public boolean boardRopeCopilot(PlayerEntity player){
-        if(flight.wreck||getPassengerList().size()>=2||ropeCopilot!=null)return false;
+        if(!canBoardRopeCopilot())return false;
         if(!player.startRiding(this,true))return false;
         ropeCopilot=player.getUuid();player.fallDistance=0;return true;
     }

@@ -30,10 +30,14 @@ import java.util.UUID;
 public class RopeSeatEntity extends Entity {
     /** 最长二十四格采用十六段；两端固定节点数，保证同步和插值一致。 */
     public static final int SEGMENTS=16;
-    /** 距机腹最近 0.8 格；手动上升/下降速度为格/tick。 */
-    private static final double TOP_DISTANCE=.8,CLIMB_SPEED=.14,DESCEND_SPEED=.23;
+    /** 挂点到脚底偏移、头顶净空和安全攀爬上限下方的登机范围，单位：格。 */
+    private static final double FEET_OFFSET=.15,HEAD_CLEARANCE=.1,BOARD_REACH=.5;
+    /** 手动上升/下降速度，单位：格/tick。 */
+    private static final double CLIMB_SPEED=.14,DESCEND_SPEED=.23;
     /** Verlet 阻尼和重力（格/tick²）；迭代次数限制绳段拉伸。 */
     private static final double DAMPING=.985,GRAVITY=.04;
+    /** 每名玩家增加的摆动衰减；阻尼趋近 0.90 而非零，始终保留节点惯性。 */
+    private static final double LOADED_DAMPING=.90,LOAD_RESPONSE=.55;
     private static final int CONSTRAINT_PASSES=12;
     /** 权威锚点与形状快照，不接受原版载具移动包回写。 */
     private static final TrackedData<Integer> ANCHOR=DataTracker.registerData(RopeSeatEntity.class,TrackedDataHandlerRegistry.INTEGER);
@@ -90,8 +94,9 @@ public class RopeSeatEntity extends Entity {
         HelicopterEntity heli=helicopter();
         if(getWorld().isClient||heli==null||!heli.flight.rope||passenger.isSpectator())return false;
         if(nodes[0]==null)initializeNodes(heli.getPos());
-        double distance=fromOutside?nearestDistance(passenger.getPos()):Math.min(TOP_DISTANCE,length);
+        double distance=fromOutside?nearestDistance(passenger.getPos()):topDistance(passenger);
         if(fromOutside&&pointAt(distance).squaredDistanceTo(passenger.getPos())>9)return false;
+        distance=Math.max(distance,topDistance(passenger));
         if(!passenger.startRiding(this,true))return false;
         riders.put(passenger.getUuid(),new Rider(distance));passenger.fallDistance=0;syncShape();return true;
     }
@@ -114,6 +119,52 @@ public class RopeSeatEntity extends Entity {
         int index=Math.min(SEGMENTS-1,(int)at);return nodes[index].lerp(nodes[index+1],at-index);
     }
     /**
+     * 以机模起落架的最低包络留出头顶净空，单位为世界 Y；只读，不改变飞控。
+     * 模型范围来自 client.HelicopterRenderer：横向 21/16、纵向 29/16 格，底面 1/16 格。
+     * 两端共用服务端姿态；客户端同时取可见平滑姿态的较低边界，避免转弯插值时穿模。
+     */
+    private double headCeiling(){
+        HelicopterEntity heli=helicopter();
+        if(heli==null)return nodes[0].y-HEAD_CLEARANCE;
+        double bottom=bellyBottom(heli.flight.pitch,heli.flight.roll);
+        if(getWorld().isClient)bottom=Math.min(bottom,Math.min(bellyBottom(heli.visualPitch,heli.visualRoll),
+                bellyBottom(heli.previousVisualPitch,heli.previousVisualRoll)));
+        return heli.getY()+bottom-HEAD_CLEARANCE;
+    }
+    /** 俯仰/横滚旋转后的保守机腹下界；起落架收起时仍保留同样的安全空间。 */
+    private static double bellyBottom(double pitch,double roll){
+        double p=Math.toRadians(pitch),r=Math.toRadians(roll);
+        return Math.min(0,Math.cos(p)*Math.cos(r)/16-21.0/16*Math.abs(Math.cos(p)*Math.sin(r))
+                -29.0/16*Math.abs(Math.sin(p)));
+    }
+    /**
+     * 沿 net.minecraft.util.math.Vec3d 绳段寻找头顶不超过机腹的首个挂点。
+     * 乘员高度使用 net.minecraft.entity.Entity#getHeight；折线倾斜时仍按垂直净空限制。
+     * 两端只读；短绳返回末端，最终位置另夹紧，防止收短或贴地时将人物抬进机模。
+     */
+    private double topDistance(Entity passenger){
+        double limit=headCeiling()-passenger.getHeight()-FEET_OFFSET;
+        for(int i=0;i<SEGMENTS;i++){
+            if(nodes[i].y<=limit)return length*i/SEGMENTS;
+            if(nodes[i+1].y<=limit){
+                double fraction=(nodes[i].y-limit)/(nodes[i].y-nodes[i+1].y);
+                return length*(i+fraction)/SEGMENTS;
+            }
+        }
+        return length;
+    }
+    /**
+     * HUD 与服务端 E 共用入口：距安全攀爬上限半格内且副驾空闲才允许入舱。
+     * net.minecraft.entity.Entity#hasPassenger 复核真实乘骑；同步挂点尚未到达客户端时不提示。
+     */
+    public boolean canBoardHelicopter(PlayerEntity player){
+        HelicopterEntity heli=helicopter();Rider rider=riders.get(player.getUuid());
+        if(heli==null||!heli.flight.rope||!hasPassenger(player)||nodes[0]==null||rider==null)return false;
+        double reach=nodes[0].y-headCeiling()+player.getHeight()+FEET_OFFSET+BOARD_REACH;
+        return rider.distance<=topDistance(player)+BOARD_REACH&&heli.canBoardRopeCopilot()
+                &&pointAt(rider.distance).squaredDistanceTo(nodes[0])<=reach*reach;
+    }
+    /**
      * 校验真实乘骑关系后记录 W/S；E 只在顶部且副驾空闲时入舱。
      * Shift 沿用离地三格与三秒二次确认；各人按实际脚下 net.minecraft.world.World#raycast 判断。
      */
@@ -121,9 +172,9 @@ public class RopeSeatEntity extends Entity {
         if(!packet.valid()||!hasPassenger(player))return;
         Rider rider=riders.computeIfAbsent(player.getUuid(),id->new Rider(nearestDistance(player.getPos())));
         rider.input=Math.clamp(packet.collective(),-1,1);rider.inputTick=getWorld().getTime();
-        if((packet.actions()&ControlPayload.ROPE_BOARD)!=0&&rider.distance<=TOP_DISTANCE+.2){
+        if((packet.actions()&ControlPayload.ROPE_BOARD)!=0&&canBoardHelicopter(player)){
             HelicopterEntity heli=helicopter();
-            if(heli!=null&&player.squaredDistanceTo(heli)<10&&heli.boardRopeCopilot(player))return;
+            if(heli.boardRopeCopilot(player))return;
         }
         if((packet.actions()&ControlPayload.DISMOUNT)!=0){
             long now=getWorld().getTime();
@@ -147,8 +198,11 @@ public class RopeSeatEntity extends Entity {
     private void simulate(HelicopterEntity heli){
         length=availableLength(heli);if(nodes[0]==null)initializeNodes(heli.getPos());
         Vec3d[] before=nodes.clone();double segmentLength=length/SEGMENTS;nodes[0]=heli.getPos();
+        // 负载仅取真实挂绳玩家，人数越多衰减越强；不重置 previous，挂入和离开时连续保留惯性。
+        long load=getPassengerList().stream().filter(passenger->passenger instanceof PlayerEntity).count();
+        double damping=LOADED_DAMPING+(DAMPING-LOADED_DAMPING)/(1+LOAD_RESPONSE*load);
         for(int i=1;i<=SEGMENTS;i++){
-            Vec3d current=nodes[i];nodes[i]=current.add(current.subtract(previous[i]).multiply(DAMPING)).add(0,-GRAVITY,0);previous[i]=current;
+            Vec3d current=nodes[i];nodes[i]=current.add(current.subtract(previous[i]).multiply(damping)).add(0,-GRAVITY,0);previous[i]=current;
         }
         for(int pass=0;pass<CONSTRAINT_PASSES;pass++){
             nodes[0]=heli.getPos();
@@ -206,10 +260,10 @@ public class RopeSeatEntity extends Entity {
         }
         missingTicks=0;dataTracker.set(ANCHOR,heli.getId());simulate(heli);
         for(Entity passenger:java.util.List.copyOf(getPassengerList())){
-            Rider rider=riders.computeIfAbsent(passenger.getUuid(),id->new Rider(Math.min(TOP_DISTANCE,length)));
+            Rider rider=riders.computeIfAbsent(passenger.getUuid(),id->new Rider(topDistance(passenger)));
             // 村民保留原有部署后自动送到地面的救援行为；玩家必须自己按 W/S。
             float input=passenger instanceof PlayerEntity?(getWorld().getTime()-rider.inputTick<10?rider.input:0):-1;
-            rider.distance=Math.clamp(rider.distance+(input>0?-CLIMB_SPEED*input:-DESCEND_SPEED*input),Math.min(TOP_DISTANCE,length),length);
+            rider.distance=Math.clamp(rider.distance+(input>0?-CLIMB_SPEED*input:-DESCEND_SPEED*input),topDistance(passenger),length);
             if(!(passenger instanceof PlayerEntity)&&rider.distance>=length&&groundDistance(passenger)<.4)passenger.stopRiding();
         }
         syncShape();
@@ -230,8 +284,10 @@ public class RopeSeatEntity extends Entity {
     @Override public boolean handleFallDamage(float distance,float multiplier,net.minecraft.entity.damage.DamageSource source){return false;}
     /** net.minecraft.entity.Entity.PositionUpdater 按各人的距离定位到当前曲线。 */
     @Override protected void updatePassengerPosition(Entity passenger,PositionUpdater updater){
-        if(nodes[0]==null)return;Rider rider=riders.get(passenger.getUuid());Vec3d point=pointAt(rider==null?TOP_DISTANCE:rider.distance);
-        updater.accept(passenger,point.x,point.y+.15,point.z);passenger.fallDistance=0;
+        if(nodes[0]==null)return;Rider rider=riders.get(passenger.getUuid());
+        Vec3d point=pointAt(Math.max(topDistance(passenger),rider==null?0:rider.distance));
+        updater.accept(passenger,point.x,Math.min(point.y+FEET_OFFSET,headCeiling()-passenger.getHeight()),point.z);
+        passenger.fallDistance=0;
     }
     /** 存档边界恢复有限挂点；旧 Direction 忽略，重载不恢复自动移动。 */
     @Override protected void readCustomDataFromNbt(NbtCompound nbt){

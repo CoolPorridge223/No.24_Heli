@@ -34,7 +34,8 @@ import java.util.Map;
 @Environment(EnvType.CLIENT)
 public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEntity> {
     private record Point(float x,float z){}
-    private record Face(List<Point> points,float y,int color){}
+    /** 顶面互不覆盖；圆周外壁单独缓存，不从内部颜色分区生成侧墙。 */
+    private record Face(List<Point> points,int color,boolean wall){}
     /** 每格只保存与本格相交的灯座和灯芯轮廓，跨格灯具随各自方块实体裁切。 */
     private record Lamp(List<Point> base,List<Point> lens){}
     private static final Map<Integer,List<Face>> MESHES=new HashMap<>();
@@ -50,7 +51,7 @@ public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEn
     private static final int LAMP_COLOR=0xff353a40,LENS_OFF_COLOR=0xff71613a,LENS_ON_COLOR=0xffffd477;
     /** 与圆盘一样按方格缓存几何，逐帧只切换灯芯的颜色、光照和图层。 */
     private static final Map<Integer,List<Lamp>> LAMP_MESHES=new HashMap<>();
-    /** 夜间灯芯使用原版纯白纹理承载暖黄色，自发光图层只绘制这部分。 */
+    /** 夜间灯芯使用原版信标光束的无光照贴图层，保持不透明深度和暖黄色。 */
     private static final Identifier TEXTURE=Identifier.of("minecraft","textures/misc/white.png");
     /** 现有方块纹理中央的 H 为纯白色，复用该像素使方块图集层保留网格原配色。 */
     private static final Identifier PAD_SPRITE=No_24_heli.id("block/helipad");
@@ -79,26 +80,54 @@ public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEn
         return output;
     }
     private static List<Point> cell(List<Point> input,int x,int z){
-        var p=clip(input,0,x-.5f,true);p=clip(p,0,x+.5f,false);p=clip(p,1,z-.5f,true);return clip(p,1,z+.5f,false);
+        var p=clip(input,0,x-.5f,true);p=clip(p,0,x+.5f,false);p=clip(p,1,z-.5f,true);p=clip(p,1,z+.5f,false);
+        // 精确落在方格角点时裁切可能重复顶点；去重后再交给四边形着色器计算切线。
+        List<Point> clean=new ArrayList<>();
+        for(Point point:p)if(clean.isEmpty()||!samePoint(clean.getLast(),point))clean.add(point);
+        if(clean.size()>1&&samePoint(clean.getFirst(),clean.getLast()))clean.removeLast();
+        return clean;
     }
+    /** 裁切点的平面距离比较；误差小于十万分之一格时视为同一点。 */
+    private static boolean samePoint(Point a,Point b){return Math.abs(a.x-b.x)<CLIP_EPSILON&&Math.abs(a.z-b.z)<CLIP_EPSILON;}
     private static Point polar(double angle,double radius){return new Point((float)(Math.cos(angle)*radius),(float)(Math.sin(angle)*radius));}
     private static List<Point> rectangle(float x0,float z0,float x1,float z1){return List.of(new Point(x0,z0),new Point(x0,z1),new Point(x1,z1),new Point(x1,z0));}
     /** 网格按固定轴向和碎片偏移缓存，最多两组各一百二十一格；相机移动不重算网格或改变 H。 */
     private static List<Face> mesh(int x,int z,Direction.Axis axis){
         int key=(axis==Direction.Axis.X?121:0)+(x+5)*11+z+5;return MESHES.computeIfAbsent(key,k->{
-            List<Face> result=new ArrayList<>();List<Point> disk=new ArrayList<>();
-            for(int i=0;i<64;i++)disk.add(polar(-i*Math.PI/32,5));
-            result.add(new Face(cell(disk,x,z),.25f,0xff454d56));
-            for(int i=0;i<64;i++){
-                double a=-i*Math.PI/32,b=-(i+1)*Math.PI/32;
-                result.add(new Face(cell(List.of(polar(a,RING_OUTER_RADIUS),polar(b,RING_OUTER_RADIUS),polar(b,RING_INNER_RADIUS),polar(a,RING_INNER_RADIUS)),x,z),.251f,0xffedc95d));
-            }
+            List<Face> result=new ArrayList<>();List<Point> disk=new ArrayList<>(),inner=new ArrayList<>();
+            for(int i=0;i<64;i++){disk.add(polar(-i*Math.PI/32,5));inner.add(polar(-i*Math.PI/32,RING_INNER_RADIUS));}
+            result.add(new Face(cell(disk,x,z),0xff454d56,true));
+            List<List<Point>> grey=new ArrayList<>();grey.add(cell(inner,x,z));
             for(var marking:MARKING){
                 var oriented=axis==Direction.Axis.X?marking.stream().map(point->new Point(-point.z,point.x)).toList():marking;
-                result.add(new Face(cell(oriented,x,z),.252f,0xfff5f4e9));
+                List<List<Point>> remainder=new ArrayList<>();
+                for(var polygon:grey)subtractMarking(polygon,oriented,remainder);
+                grey=remainder;result.add(new Face(cell(oriented,x,z),0xfff5f4e9,false));
+            }
+            for(var polygon:grey)result.add(new Face(polygon,0xff454d56,false));
+            for(int i=0;i<64;i++){
+                double a=-i*Math.PI/32,b=-(i+1)*Math.PI/32;
+                result.add(new Face(cell(List.of(polar(a,RING_OUTER_RADIUS),polar(b,RING_OUTER_RADIUS),polar(b,RING_INNER_RADIUS),polar(a,RING_INNER_RADIUS)),x,z),0xffedc95d,false));
+                result.add(new Face(cell(List.of(polar(a,5),polar(b,5),polar(b,RING_OUTER_RADIUS),polar(a,RING_OUTER_RADIUS)),x,z),0xff454d56,false));
             }
             return List.copyOf(result);
         });
+    }
+    /**
+     * 从灰色面减去轴对齐的 H 笔画，逐边取外侧并继续裁内侧，输出分区互不重叠。
+     * 纯几何缓存计算，不调用 MC API；消除原来相差 0.001 格的叠面与光影深度争夺。
+     */
+    private static void subtractMarking(List<Point> polygon,List<Point> marking,List<List<Point>> output){
+        float minX=Float.POSITIVE_INFINITY,maxX=Float.NEGATIVE_INFINITY,minZ=minX,maxZ=maxX;
+        for(Point point:marking){minX=Math.min(minX,point.x);maxX=Math.max(maxX,point.x);minZ=Math.min(minZ,point.z);maxZ=Math.max(maxZ,point.z);}
+        var remainder=polygon;
+        float[] bounds={minX,maxX,minZ,maxZ};
+        for(int edge=0;edge<4;edge++){
+            int axis=edge/2;boolean inside=edge%2==0;
+            var outside=clip(remainder,axis,bounds[edge],!inside);
+            if(outside.size()>=3)output.add(outside);
+            remainder=clip(remainder,axis,bounds[edge],inside);
+        }
     }
     /** 将灯具轮廓按现有方格裁切，确保中心不在本格时仍绘制跨格的可见部分。 */
     private static List<Lamp> lampMesh(int x,int z){
@@ -145,7 +174,7 @@ public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEn
      * 使用 net.minecraft.client.render.RenderLayer#getSolid 的原版方块实心层绘制彩色网格，
      * 配合 net.minecraft.client.render.WorldRenderer#getLightmapCoordinates 读取露出表面的光照，
      * 按 net.minecraft.world.BlockRenderView#getBrightness 处理面朝向，使地面与周围方块采用相同采光规则。
-     * 入口 light 来自方块内部，不能直接作为薄平台顶面的亮度；标记层保留原高度以避免共面闪烁。
+     * 入口 light 来自方块内部，不能直接作为薄平台顶面的亮度；颜色分区拼接为单一顶面。
      * 仅客户端渲染线程调用，不改变停机坪方块、碰撞或服务端状态。
      */
     @Override public void render(HelipadBlockEntity entity,float delta,MatrixStack matrices,VertexConsumerProvider consumers,int light,int overlay){
@@ -155,13 +184,10 @@ public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEn
         var sprite=MinecraftClient.getInstance().getSpriteAtlas(SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE).apply(PAD_SPRITE);
         var buffer=sprite.getTextureSpecificVertexConsumer(consumers.getBuffer(RenderLayer.getSolid()));var entry=matrices.peek();
         for(var face:mesh(x,z,state.get(HelipadBlock.MARKING_AXIS))){
-            var p=face.points;if(p.size()<3)continue;Point origin=p.getFirst();
+            var p=face.points;if(p.size()<3)continue;
             int color=shadeColor(world,face.color,0,1,0);
-            for(int i=1;i<p.size()-1;i++){
-                vertex(buffer,entry,origin,x,z,face.y,color,topLight,overlay,0,1,0);vertex(buffer,entry,p.get(i),x,z,face.y,color,topLight,overlay,0,1,0);
-                vertex(buffer,entry,p.get(i+1),x,z,face.y,color,topLight,overlay,0,1,0);vertex(buffer,entry,origin,x,z,face.y,color,topLight,overlay,0,1,0);
-            }
-            if(face.y==.25f)for(int i=0;i<p.size();i++){
+            if(!face.wall)renderTop(buffer,entry,p,x,z,.25f,color,topLight,overlay);
+            if(face.wall)for(int i=0;i<p.size();i++){
                 Point a=p.get(i),b=p.get((i+1)%p.size());
                 float dx=b.x-a.x,dz=b.z-a.z,length=(float)Math.hypot(dx,dz);
                 // 裁切可在方格角点生成重复顶点，零长度边没有侧面；顺时针边的外法线为 (-dz,0,dx)。
@@ -181,7 +207,7 @@ public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEn
         }
         if(lampsOn&&!lamps.isEmpty()){
             // 切换图层可能提交前一个缓冲；普通灯座全部画完后才获取自发光缓冲，避免混层。
-            var lensBuffer=consumers.getBuffer(RenderLayer.getEntityTranslucentEmissive(TEXTURE));
+            var lensBuffer=consumers.getBuffer(RenderLayer.getBeaconBeam(TEXTURE,false));
             for(Lamp lamp:lamps)renderLampPart(lensBuffer,entry,lamp.lens,x,z,LAMP_TOP,LENS_TOP,
                     LENS_ON_COLOR,LightmapTextureManager.MAX_LIGHT_COORDINATE,overlay,world,pos,true);
         }
@@ -195,14 +221,8 @@ public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEn
                                        int x,int z,float bottom,float top,int color,int light,int overlay,
                                        World world,BlockPos pos,boolean emissive){
         if(points.size()<3)return;
-        Point origin=points.getFirst();
         int topColor=emissive?color:shadeColor(world,color,0,1,0);
-        for(int i=1;i<points.size()-1;i++){
-            vertex(buffer,entry,origin,x,z,top,topColor,light,overlay,0,1,0);
-            vertex(buffer,entry,points.get(i),x,z,top,topColor,light,overlay,0,1,0);
-            vertex(buffer,entry,points.get(i+1),x,z,top,topColor,light,overlay,0,1,0);
-            vertex(buffer,entry,origin,x,z,top,topColor,light,overlay,0,1,0);
-        }
+        renderTop(buffer,entry,points,x,z,top,topColor,light,overlay);
         for(int i=0;i<points.size();i++){
             Point a=points.get(i),b=points.get((i+1)%points.size());
             float dx=b.x-a.x,dz=b.z-a.z,length=(float)Math.hypot(dx,dz);
@@ -214,6 +234,28 @@ public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEn
             vertex(buffer,entry,b,x,z,bottom,sideColor,sideLight,overlay,nx,0,nz);
             vertex(buffer,entry,b,x,z,top,sideColor,sideLight,overlay,nx,0,nz);
             vertex(buffer,entry,a,x,z,top,sideColor,sideLight,overlay,nx,0,nz);
+        }
+    }
+    /**
+     * 把凸多边形扇面拆为三个真正的四边形，供 net.minecraft.client.render.VertexConsumer 提交。
+     * 旧版重复一个顶点凑四边形会生成零面积三角形，第三方光影计算切线时可能产生非有限值。
+     * 仅客户端渲染线程；跳过裁切出的零面积碎片，不引入重复覆盖面。
+     */
+    private static void renderTop(VertexConsumer buffer,MatrixStack.Entry entry,List<Point> points,
+                                  int x,int z,float y,int color,int light,int overlay){
+        Point a=points.getFirst();
+        for(int i=1;i<points.size()-1;i++){
+            Point b=points.get(i),c=points.get(i+1);
+            if(Math.abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))<1e-8f)continue;
+            Point center=new Point((a.x+b.x+c.x)/3,(a.z+b.z+c.z)/3);
+            Point[] corners={a,b,c};
+            for(int corner=0;corner<3;corner++){
+                Point current=corners[corner],next=corners[(corner+1)%3],previous=corners[(corner+2)%3];
+                vertex(buffer,entry,current,x,z,y,color,light,overlay,0,1,0);
+                vertex(buffer,entry,new Point((current.x+next.x)/2,(current.z+next.z)/2),x,z,y,color,light,overlay,0,1,0);
+                vertex(buffer,entry,center,x,z,y,color,light,overlay,0,1,0);
+                vertex(buffer,entry,new Point((current.x+previous.x)/2,(current.z+previous.z)/2),x,z,y,color,light,overlay,0,1,0);
+            }
         }
     }
     /**
@@ -263,6 +305,10 @@ public final class HelipadRenderer implements BlockEntityRenderer<HelipadBlockEn
     private static void vertex(VertexConsumer buffer,MatrixStack.Entry entry,Point p,int x,int z,float y,int color,int light,int overlay,float nx,float ny,float nz){
         // net.minecraft.client.render.SpriteTexturedVertexConsumer 返回底层消费者，逐项调用才能保留图集 UV 变换。
         buffer.vertex(entry.getPositionMatrix(),p.x-x+.5f,y,p.z-z+.5f);
-        buffer.color(color);buffer.texture(.5f,.5f);buffer.overlay(overlay);buffer.light(light);buffer.normal(entry,nx,ny,nz);
+        // 在 H 中央白色像素内部展开非零 UV 面积，避免固定 UV 导致光影切线/视差计算除零。
+        float u=ny!=0?p.x-x:(p.x-x)*nz-(p.z-z)*nx;
+        float v=ny!=0?p.z-z:y;
+        buffer.color(color);buffer.texture(.5f+u*.01f,.5f+v*.01f);
+        buffer.overlay(overlay);buffer.light(light);buffer.normal(entry,nx,ny,nz);
     }
 }
