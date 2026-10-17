@@ -4,18 +4,28 @@
 in vec3 Position;
 in vec4 Color;
 in vec2 UV0;
+in ivec2 UV1;
+in ivec2 UV2;
 uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform int FogShape;
 out float vertexDistance;
-out vec4 vertexColor;
-out vec2 texCoord0;
+out vec3 localPosition;
+out vec3 viewPosition;
+out vec2 materialUv;
+out vec2 materialOverlayUv;
+out vec4 materialTint;
+out vec4 materialOverlayTint;
 
 void main() {
     // 顶点在缓存锚点附近，使用实际观察坐标计算雾距，不能把机腹局部距离当成相机距离。
-    vec4 viewPosition = ModelViewMat * vec4(Position, 1.0);
-    gl_Position = ProjMat * viewPosition;
-    vertexDistance = fog_distance(viewPosition.xyz, FogShape);
-    vertexColor = Color;
-    texCoord0 = UV0;
+    vec4 transformed = ModelViewMat * vec4(Position, 1.0);
+    gl_Position = ProjMat * transformed;
+    vertexDistance = fog_distance(transformed.xyz, FogShape);
+    localPosition = Position;
+    viewPosition = transformed.xyz;
+    materialUv = UV0;
+    materialOverlayUv = vec2(UV1) / 32767.0;
+    materialTint = Color;
+    materialOverlayTint = vec4(UV2.y & 255, (UV2.x >> 8) & 255, UV2.x & 255, (UV2.y >> 8) & 255) / 255.0;
 }

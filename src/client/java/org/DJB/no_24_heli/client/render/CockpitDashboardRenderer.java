@@ -27,7 +27,7 @@ import org.DJB.no_24_heli.entity.HelicopterEntity;
  * 引用：net.minecraft.client.render.VertexConsumer 绘制表盘网格；
  * net.minecraft.client.font.TextRenderer 在世界矩阵上写字，TextLayerType.NORMAL 保留遮挡。
  * 生命周期：HelicopterRenderer 每帧调用；雷达复用服务器快照，不新增同步协议。
- * 端侧/线程：客户端渲染线程，只读飞行状态；面板接受舱灯块光，通电屏幕另外自发光。
+ * 端侧/线程：客户端渲染线程，只读飞行状态；启动后的文字独立背光，停机文字接受舱灯块光。
  * 排查：文字镜像查面板 Y 轴 180° 和字体负 Y 缩放；指针反转查角度公式；雷达方向查 HeliRadar.relative。
  */
 @Environment(EnvType.CLIENT)
@@ -80,7 +80,7 @@ public final class CockpitDashboardRenderer {
         systems(heli, matrices, instrumentLight);
         indicators(heli, matrices, buffer, instrumentLight);
         matrices.pop();
-        flushText(consumers);
+        flushText(consumers,s.running&&!s.wreck);
     }
 
     /**
@@ -451,14 +451,18 @@ public final class CockpitDashboardRenderer {
     }
 
     /**
-     * 功能：在几何结束后提交文字批次；引用 MC API：net.minecraft.client.font.TextRenderer#draw 使用普通深度字体层。
+     * 功能：在几何结束后提交文字批次；启动文字复用灯光合成深度，避免光影再次压暗满亮度字体。
+     * 引用 MC API：net.minecraft.client.font.TextRenderer#draw 在停机时保留普通深度字体层。
      * 端侧/线程：渲染线程；参数：vertices 为消费者提供者；返回：无；副作用：提交并清空单帧字体缓存。
      * 排查：Not building 错误查是否在几何中途请求字体图层，不能复用已被刷新过的消费者。
      */
-    private void flushText(VertexConsumerProvider vertices) {
+    private void flushText(VertexConsumerProvider vertices,boolean powered) {
         var font = MinecraftClient.getInstance().textRenderer;
-        for (Label label : labels) font.draw(label.value, label.x, label.y, label.color, false, label.matrix,
-                vertices, TextRenderer.TextLayerType.NORMAL, 0, label.light);
+        for (Label label : labels) {
+            if(powered)SearchlightRenderer.queueText(label.value,label.x,label.y,label.color,label.matrix);
+            else font.draw(label.value, label.x, label.y, label.color, false, label.matrix,
+                    vertices, TextRenderer.TextLayerType.NORMAL, 0, label.light);
+        }
         labels.clear();
     }
 

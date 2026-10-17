@@ -48,6 +48,8 @@ public final class HelicopterMesh {
     private static ShaderProgram shader;
     /** 光影管线对象变化时失效，防止沿用上一个光影包的实体材质编号和顶点格式。 */
     private static Object pipeline;
+    /** Photon 的 TAAU 将场景深度存于纹理左下缩放区域；仅光影管线更换时读取实际选项。 */
+    private static float depthScale=1;
     /** 可选 Iris 边界只解析一次，不新增运行依赖；方法句柄不参与逐顶点循环。 */
     private static MethodHandle irisActive, irisPipeline, irisBegin, irisEnd, irisShadow;
     /** 跨模组接口不兼容时保留原实体提交路径，避免影响游戏启动。 */
@@ -121,7 +123,7 @@ public final class HelicopterMesh {
         try {
             Object current = irisActive != null && (boolean) irisActive.invokeExact()
                     ? (Object) irisPipeline.invokeExact() : null;
-            if (pipeline != current) { clear(); pipeline = current; }
+            if (pipeline != current) { clear(); pipeline = current; depthScale=readDepthScale(); }
             return true;
         } catch (Throwable exception) {
             throw new IllegalStateException("无法进入直升机光影实体绘制阶段", exception);
@@ -130,6 +132,37 @@ public final class HelicopterMesh {
 
     /** 功能：读取共享网格资源代数；客户端渲染线程调用，用于失效其他静态显存缓存。 */
     static int revision() { return revision; }
+
+    /** 功能：返回光影实际的深度分辨率比例；客户端渲染线程调用，原版为 1。 */
+    static float depthScale(){return depthScale;}
+
+    /**
+     * 功能：读取 Photon 的 TAAU/TAAU_RENDER_SCALE 选项，避免把放大后颜色坐标用于低分辨率深度。
+     * 引用 Iris 的可选 OptionValues 接口；仅管线重载调用，不读写用户配置或新增依赖。
+     * 排查：其他光影没有该选项时使用原尺寸；接口不兼容记录原因并保留原尺寸。
+     */
+    private static float readDepthScale(){
+        if(pipeline==null)return 1;
+        try{
+            var pack=(java.util.Optional<?>)Class.forName("net.irisshaders.iris.Iris").getMethod("getCurrentPack").invoke(null);
+            if(pack.isEmpty())return 1;
+            Object options=pack.get().getClass().getMethod("getShaderPackOptions").invoke(pack.get());
+            Object optionSet=options.getClass().getMethod("getOptionSet").invoke(options);
+            if(!(boolean)optionSet.getClass().getMethod("isBooleanOption",String.class).invoke(optionSet,"TAAU"))return 1;
+            var strings=(java.util.Map<?,?>)optionSet.getClass().getMethod("getStringOptions").invoke(optionSet);
+            if(!strings.containsKey("TAAU_RENDER_SCALE"))return 1;
+            Object values=options.getClass().getMethod("getOptionValues").invoke(options);
+            Class<?> valueType=Class.forName("net.irisshaders.iris.shaderpack.option.values.OptionValues");
+            if((boolean)optionSet.getClass().getMethod("isBooleanOption",String.class).invoke(optionSet,"TAA")
+                    &&!(boolean)valueType.getMethod("getBooleanValueOrDefault",String.class).invoke(values,"TAA"))return 1;
+            if(!(boolean)valueType.getMethod("getBooleanValueOrDefault",String.class).invoke(values,"TAAU"))return 1;
+            String scale=(String)valueType.getMethod("getStringValueOrDefault",String.class).invoke(values,"TAAU_RENDER_SCALE");
+            float parsed=Float.parseFloat(scale);
+            return Float.isFinite(parsed)?net.minecraft.util.math.MathHelper.clamp(parsed,.25f,1):1;
+        }catch(ReflectiveOperationException|NumberFormatException exception){
+            No_24_heli.LOGGER.warn("无法读取光影 TAAU 深度比例，使用原尺寸深度",exception);return 1;
+        }
+    }
 
     /** 功能：还原可选光影实体阶段；仅渲染线程，与 begin 成对；不改变后续玻璃和仪表的实体图层。 */
     static void end() {
@@ -157,7 +190,7 @@ public final class HelicopterMesh {
     }
 
     /** 功能：返回同外观部件的共享显存分组；仅渲染线程，第一次可见时上传。 */
-    private static List<Segment> mesh(HelicopterModel model,String part,int paint,boolean wreck,boolean distant){
+    static List<Segment> mesh(HelicopterModel model,String part,int paint,boolean wreck,boolean distant){
         Key key = new Key(part, paint, wreck, distant);
         List<Segment> segments = CACHE.get(key);
         if (segments == null) {
@@ -167,28 +200,15 @@ public final class HelicopterMesh {
         return segments;
     }
 
-    /** 功能：复用静态模型缓存绘制自发光灯具；仅客户端，原版用无定向光程序，Iris 保持图层程序。 */
-    static void drawGlow(HelicopterModel model,String part,int paint,boolean wreck,boolean distant,
-            MatrixStack matrices,RenderLayer layer,ShaderProgram unlit){
-        draw(mesh(model,part,paint,wreck,distant),matrices,layer,0,false,unlit);
-    }
-
     /**
      * 功能：绘制静态缓冲分组；供飞机和停机坪共用相同矩阵、动态光照与资源状态处理。
      * 端侧：客户端渲染线程；directional 为受光实体，false 沿用图层原程序（夜间信标）。
      * 引用 MC API：RenderLayer 成对启停，VertexBuffer 不重传顶点；不改变 Iris 当前绘制阶段。
      */
     static void draw(List<Segment> segments, MatrixStack matrices, RenderLayer layer, int light, boolean directional) {
-        draw(segments,matrices,layer,light,directional,null);
-    }
-
-    /** 功能：按需覆盖原版局部坐标程序；客户端渲染线程，供探照灯与标识灯保留正确雾距而不受定向光。 */
-    static void draw(List<Segment> segments, MatrixStack matrices, RenderLayer layer, int light,
-            boolean directional,ShaderProgram unlit) {
         layer.startDrawing();
         try {
-            ShaderProgram program = pipeline == null && unlit!=null ? unlit :
-                    pipeline == null && directional ? shader : RenderSystem.getShader();
+            ShaderProgram program = pipeline == null && directional ? shader : RenderSystem.getShader();
             Matrix4f modelView = new Matrix4f(RenderSystem.getModelViewMatrix()).mul(matrices.peek().getPositionMatrix());
             program.initializeUniforms(VertexFormat.DrawMode.QUADS, modelView, RenderSystem.getProjectionMatrix(),
                     net.minecraft.client.MinecraftClient.getInstance().getWindow());

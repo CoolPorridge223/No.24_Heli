@@ -125,7 +125,8 @@ public final class HelicopterModel {
         ellipsoid(shell, new Vec3d(0, .44, 1.24), new Vec3d(.17, .19, .19), WHITE);
         ellipsoid(searchlight,new Vec3d(0,0,.177),new Vec3d(.115,.115,.03),DARK);
         ellipsoid(searchlightLens,new Vec3d(0,0,.205),new Vec3d(.082,.082,.006),WHITE);
-        ellipsoid(navigationLights,new Vec3d(0,1.205,1.74),new Vec3d(.035,.025,.035),WHITE);
+        for(double side:new double[]{-1,1})
+            ellipsoid(navigationLights,new Vec3d(side*.47,2.42,-.35),new Vec3d(.04,.03,.045),WHITE);
         ellipsoid(navigationLights,new Vec3d(0,3.025,-5.55),new Vec3d(.03,.025,.04),WHITE);
         for (Face face : shell) if (paintedMaterial(face.material)) {
             camouflage.add(new Face(camouflageVertex(face.a), camouflageVertex(face.b),
@@ -179,10 +180,9 @@ public final class HelicopterModel {
         bodyCap(-1.78, true, true, LINER);
         // 尾梁的所有根部结构位于隔舱后方，机内后视只能看到封闭的后舱壁。
         bodyCap(-1.08, true, true, LINER);
-        // 门缝、把手与脚踏保持细线条，不能再形成凸出窗外的积木块。
+        // 门缝与把手保持细线条，不能再形成凸出窗外的积木块。
         for (double side : new double[]{-1, 1}) {
             tube(shell, new Vec3d(side * .965, 1.13, -.28), new Vec3d(side * .96, 1.13, .04), .018, .018, DARK);
-            tube(shell, new Vec3d(side * .72, .58, .12), new Vec3d(side * 1.02, .44, .12), .025, .025, METAL);
         }
     }
 
@@ -481,8 +481,25 @@ public final class HelicopterModel {
         // 仪表板正面由 CockpitDashboardRenderer 封闭，罩壳位于正面的机头一侧。
         ellipsoid(interior, new Vec3d(0, 1.04, 1.03), new Vec3d(.70, .31, .19), DARK);
         // 仪表细节按观察距离筛选；始终保留稍靠后的静态面板，避免舱外看到罩壳开口。
-        flat(interior, new Vec3d(.68, .764, .822), new Vec3d(-.68, .764, .822),
-                new Vec3d(-.68, 1.38, .822), new Vec3d(.68, 1.38, .822), DARK);
+        buildDashboardBacking();
+    }
+
+    /**
+     * 功能：让静态仪表背板与正面共用圆角轮廓，防止左上、右上露出矩形直角。
+     * 引用 net.minecraft.util.math.Vec3d 描述机体局部坐标；仅客户端构造期生成，不增加逐帧工作。
+     * 排查：尺寸与 CockpitDashboardRenderer 的 0.8 倍主面板一致，背板不能伸出正面边界。
+     */
+    private void buildDashboardBacking(){
+        double radius=.055*.8;
+        List<Vertex> outline=new ArrayList<>();
+        for(int corner=0;corner<4;corner++)for(int step=0;step<=8;step++){
+            double centerX=corner==0||corner==3?.68-radius:-.68+radius;
+            double centerY=corner<2?1.38-radius:.764+radius;
+            double angle=(corner*8+step)*Math.PI/16;
+            outline.add(new Vertex(new Vec3d(centerX+radius*Math.cos(angle),
+                    centerY+radius*Math.sin(angle),.822),new Vec3d(0,0,-1)));
+        }
+        polygon(interior,outline.reversed(),DARK);
     }
 
     /**
@@ -795,7 +812,7 @@ public final class HelicopterModel {
             if (decal) color = 0xffffffff;
             if (emitting) color = 0xffffefc4;
             if(part.equals("searchlight_lens"))color=wreck?0xff302c24:0xfffff0cd;
-            if(part.equals("navigation_lights"))color=wreck?0xff351010:0xffff2920;
+            if(part.equals("navigation_lights"))color=0xff351010;
             surfaceVertex(matrices, buffer, face.a, color, faceLight);
             surfaceVertex(matrices, buffer, face.b, color, faceLight);
             surfaceVertex(matrices, buffer, face.c, color, faceLight);
