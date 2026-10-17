@@ -39,7 +39,8 @@ public class HelipadBlock extends BlockWithEntity {
         return getDefaultState().with(MARKING_AXIS,context.getHorizontalPlayerFacing().getAxis());
     }
     @Override public net.minecraft.block.entity.BlockEntity createBlockEntity(BlockPos pos,BlockState state){return new HelipadBlockEntity(pos,state);}
-    @Override protected BlockRenderType getRenderType(BlockState state){return BlockRenderType.ENTITYBLOCK_ANIMATED;}
+    /** 静态表面由 net.minecraft.block.BlockRenderType.MODEL 进入区块缓存，方块实体仅保留灯芯与中心索引。 */
+    @Override protected BlockRenderType getRenderType(BlockState state){return BlockRenderType.MODEL;}
     /** 圆周与方格相交才占用该位置，不使用十乘十的方形碰撞面。 */
     public static boolean covers(int x,int z){return Math.hypot(Math.max(0,Math.abs(x)-.5),Math.max(0,Math.abs(z)-.5))<RADIUS;}
     public static BlockPos center(BlockPos pos,BlockState state){return pos.add(5-state.get(OFFSET_X),0,5-state.get(OFFSET_Z));}

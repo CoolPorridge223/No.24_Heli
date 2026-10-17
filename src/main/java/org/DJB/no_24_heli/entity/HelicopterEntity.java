@@ -416,8 +416,10 @@ public class HelicopterEntity extends Entity {
         },this),Text.translatable("container.no_24_heli.service")));
     }
     @Override protected void updatePassengerPosition(Entity passenger,PositionUpdater updater){
-        double side=isPilot(passenger)?-.35:.35;
-        Vec3d offset=new Vec3d(side,.05,.25).rotateY((float)-Math.toRadians(getYaw()));
+        // 面向本地 +Z 机头时，左驾驶席位于 +X；主副驾和客户端眼位统一为 0.38 格偏移。
+        double side=isPilot(passenger)?.38:-.38;
+        // 人物髋部比脚位高约 0.70 格，脚位 0.10 对齐座垫上表面；前后对齐座垫中心。
+        Vec3d offset=new Vec3d(side,.10,-.12).rotateY((float)-Math.toRadians(getYaw()));
         updater.accept(passenger,getX()+offset.x,getY()+offset.y,getZ()+offset.z);passenger.fallDistance=0;
     }
     @Override public Vec3d updatePassengerForDismount(LivingEntity passenger){
@@ -454,7 +456,7 @@ public class HelicopterEntity extends Entity {
         flight.rpm=number(n,"Rpm",0,0,1);flight.collective=number(n,"Collective",0,0,1);flight.pitch=number(n,"Pitch",0,-60,60);flight.roll=number(n,"Roll",0,-60,60);flight.yaw=number(n,"Yaw",getYaw(),-360,360);flight.yawRate=number(n,"YawRate",0,-20,20);
         flight.fuel=number(n,"Fuel",0,0,100000);flight.rotor=number(n,"Rotor",100,0,100);flight.tail=number(n,"Tail",100,0,100);flight.engine=number(n,"Engine",100,0,100);flight.tank=number(n,"Tank",100,0,100);flight.hull=number(n,"Hull",100,0,100);
         flight.vx=number(n,"Vx",0,-3,3);flight.vy=number(n,"Vy",0,-3,3);flight.vz=number(n,"Vz",0,-3,3);flight.targetAltitude=number(n,"TargetAltitude",getY(),-2048,2048);flight.targetSpeed=number(n,"TargetSpeed",0,0,3);
-        ropeCopilot=n.containsUuid("RopeCopilot")?n.getUuid("RopeCopilot"):null;flight.running=n.getBoolean("Running");flight.armed=n.getBoolean("Armed");flight.altitudeHold=n.getBoolean("Altitude");flight.trim=n.contains("Trim")?n.getBoolean("Trim"):!flight.hardcoreMode;flight.cruise=n.getBoolean("Cruise");flight.gear=!n.contains("Gear")||n.getBoolean("Gear");flight.wreck=n.getBoolean("Wreck");flight.rope=n.getBoolean("Rope");flight.paint=Math.clamp(n.getInt("Paint"),0,No_24_heli.PAINTS.length-1);ropeLength=Math.clamp(n.getInt("RopeLength"),0,24);
+        ropeCopilot=n.containsUuid("RopeCopilot")?n.getUuid("RopeCopilot"):null;flight.running=n.getBoolean("Running");flight.armed=n.getBoolean("Armed");flight.altitudeHold=n.getBoolean("Altitude");flight.trim=n.contains("Trim")?n.getBoolean("Trim"):!flight.hardcoreMode;flight.cruise=n.getBoolean("Cruise");flight.gear=!n.contains("Gear")||n.getBoolean("Gear");flight.wreck=n.getBoolean("Wreck");flight.rope=n.getBoolean("Rope");flight.paint=Math.clamp(n.contains("Paint")?n.getInt("Paint"):FlightState.POLICE_PAINT,0,FlightState.POLICE_PAINT);ropeLength=Math.clamp(n.getInt("RopeLength"),0,24);
     }
     /**
      * K为可撤销的起降任务：地面开始十格起飞，空中尝试垂直降落，再按一次取消。

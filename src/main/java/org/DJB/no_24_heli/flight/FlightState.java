@@ -1,3 +1,4 @@
+/** 文件：直升机同步和持久化状态；端侧：COMMON，服务端权威；实体：no_24_heli:helicopter。 */
 package org.DJB.no_24_heli.flight;
 
 /** 不依赖客户端的飞行状态；速度单位为格/tick，姿态单位为度。 */
@@ -14,7 +15,10 @@ public final class FlightState {
     public boolean priorTrim, priorAltitude, priorCruise;
     /** 已应用的服务器难度，供 HUD 与跨区块加载时比较。 */
     public boolean hardcoreMode;
-    public int paint;
+    /** 默认蓝白警用机的外观编号；0–5 继续对应既有六种涂装，避免旧存档丛林色被替换。 */
+    public static final int POLICE_PAINT = 6;
+    /** 同步并持久化的外观编号，0–6；新制造的飞机使用参考图蓝白配色。 */
+    public int paint = POLICE_PAINT;
     /** 0=休闲，1=曼巴，2=佐巴扬。随快照同步，客户端不得用本地配置推测服务器难度。 */
     public int difficultyMode;
     /** 一键起降阶段：0关闭、1预转、2爬升、3降落；重载不恢复自动动作，防止无人起飞。 */

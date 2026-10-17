@@ -11,6 +11,7 @@
     "ParachuteRiderRendererMixin",
     "HeliDismountMixin",
     "HeliHotbarMixin",
+    "HeliHandRendererMixin",
     "RadioSoundLoaderMixin",
     "HeliKeyBindingMixin",
     "HeliKeyboardMixin"

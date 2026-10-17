@@ -1,4 +1,13 @@
 {
+  "key.no_24_heli.view": "切换机内 / 第三人称驾驶视角",
+  "cockpit.no_24_heli.attitude": "姿态",
+  "cockpit.no_24_heli.manual": "手动驾驶",
+  "cockpit.no_24_heli.tail": "尾桨故障",
+  "cockpit.no_24_heli.rotor": "旋翼受损",
+  "cockpit.no_24_heli.fuel": "低燃油",
+  "cockpit.no_24_heli.autorotation": "无动力自转",
+  "cockpit.no_24_heli.spooling": "旋翼预转",
+  "cockpit.no_24_heli.restricted": "禁飞区域",
   "hud.no_24_heli.rope_board_before": "按下",
   "hud.no_24_heli.rope_board_after": "进入飞机",
   "itemGroup.no_24_heli": "24号直升机",

@@ -1,3 +1,4 @@
+/** 文件：客户端输入与渲染注册入口；端侧：CLIENT；按键分类：category.no_24_heli。 */
 package org.DJB.no_24_heli.client;
 
 import org.DJB.no_24_heli.No_24_heli;
@@ -34,10 +35,13 @@ import org.DJB.no_24_heli.network.SettingsPayload;
 
 
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.fabricmc.fabric.api.client.rendering.v1.*;
+import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.gui.screen.ingame.HandledScreens;
 import net.minecraft.client.gui.screen.option.OptionsScreen;
 
@@ -51,12 +55,16 @@ import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.util.math.MathHelper;
 import org.lwjgl.glfw.GLFW;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 /** 客户端仅采集输入并展示服务器状态；驾驶者身份由服务器再次验证。 */
+@Environment(EnvType.CLIENT)
 public class No_24_heliClient implements ClientModInitializer {
     private static KeyBinding bind(String name,int key){return KeyBindingHelper.registerKeyBinding(new KeyBinding("key.no_24_heli."+name,InputUtil.Type.KEYSYM,key,"category.no_24_heli"));}
-    private static final KeyBinding START=bind("engine",GLFW.GLFW_KEY_R), ALT=bind("altitude",GLFW.GLFW_KEY_H), TRIM=bind("trim",GLFW.GLFW_KEY_J), CRUISE=bind("cruise",GLFW.GLFW_KEY_I), GEAR=bind("gear",GLFW.GLFW_KEY_G), ROPE=bind("rope",GLFW.GLFW_KEY_B), EXIT=bind("rappel",GLFW.GLFW_KEY_Y), MENU=bind("service",GLFW.GLFW_KEY_O), MOUSE=bind("mouse",GLFW.GLFW_KEY_N), MAP=bind("map",GLFW.GLFW_KEY_M), AUTO=bind("autopilot",GLFW.GLFW_KEY_U), AUTO_FLIGHT=bind("auto_flight",GLFW.GLFW_KEY_K), LEFT=bind("pedal_left",GLFW.GLFW_KEY_Z), RIGHT=bind("pedal_right",GLFW.GLFW_KEY_V);
+    private static final KeyBinding START=bind("engine",GLFW.GLFW_KEY_R), ALT=bind("altitude",GLFW.GLFW_KEY_H), TRIM=bind("trim",GLFW.GLFW_KEY_J), CRUISE=bind("cruise",GLFW.GLFW_KEY_I), GEAR=bind("gear",GLFW.GLFW_KEY_G), ROPE=bind("rope",GLFW.GLFW_KEY_B), EXIT=bind("rappel",GLFW.GLFW_KEY_Y), MENU=bind("service",GLFW.GLFW_KEY_O), MOUSE=bind("mouse",GLFW.GLFW_KEY_N), MAP=bind("map",GLFW.GLFW_KEY_M), AUTO=bind("autopilot",GLFW.GLFW_KEY_U), AUTO_FLIGHT=bind("auto_flight",GLFW.GLFW_KEY_K), LEFT=bind("pedal_left",GLFW.GLFW_KEY_Z), RIGHT=bind("pedal_right",GLFW.GLFW_KEY_X);
+    /** net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper 注册可重绑的本地视角键，默认 V。 */
+    private static final KeyBinding VIEW=bind("view",GLFW.GLFW_KEY_V);
     /** 原版控制菜单支持把视角锁定绑定到任意键盘键或鼠标键。 */
     private static final KeyBinding FOLLOW=KeyBindingHelper.registerKeyBinding(new KeyBinding("key.no_24_heli.follow",InputUtil.Type.MOUSE,GLFW.GLFW_MOUSE_BUTTON_MIDDLE,"category.no_24_heli"));
     public static boolean followMouseMatches(int button){return FOLLOW.matchesMouse(button);}
@@ -68,6 +76,26 @@ public class No_24_heliClient implements ClientModInitializer {
     private boolean mouseControl=true;
     private boolean migrated;
     private boolean migratedMap;
+    /** 旧右脚蹬默认 V 只迁移一次，用户已经改为其他键时保持其设置。 */
+    private boolean migratedView;
+    /**
+     * 功能：将旧默认右脚蹬 V 迁到 X，避免切视角时产生偏航；引用 MC API：
+     * net.minecraft.client.option.KeyBinding#updateKeysByCode 刷新输入索引，GameOptions#write 保存新绑定。
+     * 端侧/线程：客户端首次 tick；参数：client 为客户端；返回：无；副作用：写入选项与 v4 标记。
+     * 排查：读写失败记录日志；自定义的非 V 脚蹬不迁移，Q/E 操作保持原样。
+     */
+    private void migrateViewKey(net.minecraft.client.MinecraftClient client){
+        if(migratedView)return;migratedView=true;
+        var marker=FabricLoader.getInstance().getConfigDir().resolve("no_24_heli_keys_v4.marker");
+        if(Files.exists(marker))return;
+        try{
+            if(RIGHT.matchesKey(GLFW.GLFW_KEY_V,0)){
+                RIGHT.setBoundKey(InputUtil.fromKeyCode(GLFW.GLFW_KEY_X,0));
+                KeyBinding.updateKeysByCode();client.options.write();
+            }
+            Files.writeString(marker,"view-default=V;right-pedal-default=X");
+        }catch(java.io.IOException e){No_24_heli.LOGGER.warn("无法保存驾驶视角按键迁移标记",e);}
+    }
     /** 1.2 的 M 让给地图；仅迁移仍为旧默认值的鼠标切换键。 */
     private void migrateMapKey(net.minecraft.client.MinecraftClient client){
         if(migratedMap)return;migratedMap=true;
@@ -112,6 +140,7 @@ public class No_24_heliClient implements ClientModInitializer {
         ExploredMap.register();RadioLibrary.initialize();ServerRadioCache.register();
         net.minecraft.client.render.block.entity.BlockEntityRendererFactories.register(No_24_heli.HELIPAD_ENTITY,HelipadRenderer::new);
         EntityRendererRegistry.register(No_24_heli.HELI,HelicopterRenderer::new);
+        org.DJB.no_24_heli.client.render.HelipadModel.register();
         EntityRendererRegistry.register(No_24_heli.ROPE,RopeRenderer::new);
         HandledScreens.register(No_24_heli.SCREEN,HeliScreen::new);
         HudRenderCallback.EVENT.register(HeliHud::draw);
@@ -141,7 +170,11 @@ public class No_24_heliClient implements ClientModInitializer {
             }
         });
         ClientTickEvents.END_CLIENT_TICK.register(client->{
-            migrateTrimKey(client);migrateMapKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);GroundProximityWarning.tick(client);
+            migrateTrimKey(client);migrateMapKey(client);migrateViewKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);GroundProximityWarning.tick(client);
+            while(VIEW.wasPressed()){
+                if(client.currentScreen==null&&client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity)
+                    HeliView.togglePerspective(client);
+            }
             if(client.world==null||client.player==null){sounds.clear();vehicleId=-1;HeliRadar.reset();return;}
             // 所有附近直升机都播放连续音源，转速决定音高和音量。
             sounds.entrySet().removeIf(e->e.getValue().isDone());

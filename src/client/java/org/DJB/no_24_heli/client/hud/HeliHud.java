@@ -125,6 +125,8 @@ public final class HeliHud {
             drawBoardHint(ctx);
         }
         if(!(mc.player.getVehicle() instanceof HelicopterEntity h))return;
+        // 机内的全部飞行读数、机组、导航、部件与警告由实体仪表板呈现，不叠加屏幕 HUD。
+        if(mc.options.getPerspective().isFirstPerson())return;
         var s=h.flight;var m=ctx.getMatrices();m.push();m.scale(SCALE,SCALE,1);
         int w=(int)(ctx.getScaledWindowWidth()/SCALE),height=(int)(ctx.getScaledWindowHeight()/SCALE),x=10;
         // 底部统一缩放，窄窗口也为左侧仪表、中央血条和右侧飞行数据留出独立空间。

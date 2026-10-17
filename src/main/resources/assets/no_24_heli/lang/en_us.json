@@ -1,4 +1,13 @@
 {
+  "key.no_24_heli.view": "Toggle cockpit / third-person view",
+  "cockpit.no_24_heli.attitude": "ATTITUDE",
+  "cockpit.no_24_heli.manual": "MANUAL FLIGHT",
+  "cockpit.no_24_heli.tail": "TAIL",
+  "cockpit.no_24_heli.rotor": "ROTOR",
+  "cockpit.no_24_heli.fuel": "FUEL",
+  "cockpit.no_24_heli.autorotation": "AUTOROT",
+  "cockpit.no_24_heli.spooling": "SPOOL",
+  "cockpit.no_24_heli.restricted": "AIRSPACE",
   "hud.no_24_heli.rope_board_before": "Press",
   "hud.no_24_heli.rope_board_after": "to enter the helicopter",
   "itemGroup.no_24_heli": "No.24 Helicopter",
