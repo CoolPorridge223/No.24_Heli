@@ -1,5 +1,38 @@
 package org.DJB.no_24_heli.client;
 
+import org.DJB.no_24_heli.No_24_heli;
+import org.DJB.no_24_heli.client.audio.RadioLibrary;
+import org.DJB.no_24_heli.client.audio.RadioManager;
+import org.DJB.no_24_heli.client.audio.RotorSound;
+import org.DJB.no_24_heli.client.camera.HeliView;
+import org.DJB.no_24_heli.client.hud.GroundProximityWarning;
+import org.DJB.no_24_heli.client.hud.HeliHud;
+import org.DJB.no_24_heli.client.hud.HeliRadar;
+import org.DJB.no_24_heli.client.input.ParachuteClient;
+import org.DJB.no_24_heli.client.map.ExploredMap;
+import org.DJB.no_24_heli.client.network.ServerRadioCache;
+import org.DJB.no_24_heli.client.render.HelicopterRenderer;
+import org.DJB.no_24_heli.client.render.HelipadRenderer;
+import org.DJB.no_24_heli.client.render.RopeRenderer;
+import org.DJB.no_24_heli.client.screen.HeliMapScreen;
+import org.DJB.no_24_heli.client.screen.HeliScreen;
+import org.DJB.no_24_heli.client.screen.HeliSettingsScreen;
+import org.DJB.no_24_heli.client.screen.RadarScreen;
+import org.DJB.no_24_heli.client.screen.RadioWheelScreen;
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.entity.RopeSeatEntity;
+import org.DJB.no_24_heli.network.AirspacePayload;
+import org.DJB.no_24_heli.network.ControlPayload;
+import org.DJB.no_24_heli.network.DifficultyPayload;
+import org.DJB.no_24_heli.network.HelipadMapPayload;
+import org.DJB.no_24_heli.network.RadarContactsPayload;
+import org.DJB.no_24_heli.network.RadarPayload;
+import org.DJB.no_24_heli.network.SettingsPayload;
+
+
+
+
+
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
@@ -17,7 +50,6 @@ import java.nio.file.Files;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.util.math.MathHelper;
-import org.DJB.no_24_heli.*;
 import org.lwjgl.glfw.GLFW;
 import java.util.*;
 
@@ -76,6 +108,7 @@ public class No_24_heliClient implements ClientModInitializer {
         return 32;
     }
     @Override public void onInitializeClient(){
+        ParachuteClient.initialize();
         ExploredMap.register();RadioLibrary.initialize();ServerRadioCache.register();
         net.minecraft.client.render.block.entity.BlockEntityRendererFactories.register(No_24_heli.HELIPAD_ENTITY,HelipadRenderer::new);
         EntityRendererRegistry.register(No_24_heli.HELI,HelicopterRenderer::new);

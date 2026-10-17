@@ -1,11 +1,13 @@
 package org.DJB.no_24_heli.mixin.client;
 
+import org.DJB.no_24_heli.client.camera.HeliView;
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+
+
 import net.minecraft.client.render.Camera;
 import net.minecraft.entity.Entity;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.BlockView;
-import org.DJB.no_24_heli.HelicopterEntity;
-import org.DJB.no_24_heli.client.HeliView;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -23,6 +25,10 @@ public abstract class HeliCameraMixin {
     @Shadow private float clipToSpace(float distance) { throw new AssertionError(); }
     @Inject(method = "update", at = @At("TAIL"))
     private void helicopterCamera(BlockView area, Entity focus, boolean thirdPerson, boolean inverse, float delta, CallbackInfo ci) {
+        // 新滑翔伞的第三人称包含头顶翼面，保留原版遮挡裁剪；不改变直升机视角设置。
+        if(thirdPerson&&focus.getVehicle() instanceof org.DJB.no_24_heli.entity.ParachuteEntity){
+            setPos(focus.getCameraPosVec(delta).add(0,1,0));moveBy(-clipToSpace(8),0,0);return;
+        }
         if (!thirdPerson || !(focus.getVehicle() instanceof HelicopterEntity heli)) return;
         float[] rotation = HeliView.rotation(heli, getYaw(), getPitch(), inverse);
         setRotation(rotation[0], rotation[1]);

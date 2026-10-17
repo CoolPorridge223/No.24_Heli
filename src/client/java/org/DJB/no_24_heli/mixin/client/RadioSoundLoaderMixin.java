@@ -1,9 +1,11 @@
 package org.DJB.no_24_heli.mixin.client;
 
+import org.DJB.no_24_heli.No_24_heli;
+import org.DJB.no_24_heli.client.audio.Mp3AudioStream;
+import org.DJB.no_24_heli.client.audio.RadioLibrary;
+
 import net.minecraft.client.sound.*;
 import net.minecraft.util.Identifier;
-import org.DJB.no_24_heli.client.*;
-import org.DJB.no_24_heli.No_24_heli;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.*;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;

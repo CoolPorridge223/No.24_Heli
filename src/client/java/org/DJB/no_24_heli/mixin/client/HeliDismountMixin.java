@@ -1,10 +1,14 @@
 package org.DJB.no_24_heli.mixin.client;
 
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.entity.RopeSeatEntity;
+import org.DJB.no_24_heli.network.ControlPayload;
+
+
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.input.KeyboardInput;
 import net.minecraft.client.input.Input;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import org.DJB.no_24_heli.*;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -18,6 +22,10 @@ public class HeliDismountMixin extends Input {
     @Inject(method="tick",at=@At("TAIL"))
     private void confirmExit(boolean slowDown,float factor,CallbackInfo ci){
         var client=MinecraftClient.getInstance();boolean pressed=sneaking;
+        // 滑翔伞自动着陆收起；空中蹲下不作为未经确认的切伞，避免误触直接坠落。
+        if(client.player!=null&&client.player.getVehicle() instanceof org.DJB.no_24_heli.entity.ParachuteEntity){
+            sneaking=false;jumping=false;client.player.getAbilities().flying=false;
+        }
         if(client.player!=null&&(client.player.getVehicle() instanceof HelicopterEntity||client.player.getVehicle() instanceof RopeSeatEntity)){
             if(pressed&&!no24$shiftHeld&&client.currentScreen==null)
                 ClientPlayNetworking.send(new ControlPayload(0,0,0,0,ControlPayload.DISMOUNT));

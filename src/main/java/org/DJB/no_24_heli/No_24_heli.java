@@ -1,5 +1,30 @@
 package org.DJB.no_24_heli;
 
+import org.DJB.no_24_heli.block.HelipadBlock;
+import org.DJB.no_24_heli.block.HelipadBlockEntity;
+import org.DJB.no_24_heli.block.HelipadSurfaceBlock;
+import org.DJB.no_24_heli.block.RadarBlock;
+import org.DJB.no_24_heli.data.AirspaceState;
+import org.DJB.no_24_heli.data.HeliConfig;
+import org.DJB.no_24_heli.data.PlayerFlightSettings;
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.entity.RopeSeatEntity;
+import org.DJB.no_24_heli.item.HelicopterItem;
+import org.DJB.no_24_heli.item.HelipadItem;
+import org.DJB.no_24_heli.network.AirspacePayload;
+import org.DJB.no_24_heli.network.ControlPayload;
+import org.DJB.no_24_heli.network.DifficultyPayload;
+import org.DJB.no_24_heli.network.HelipadMapPayload;
+import org.DJB.no_24_heli.network.NavigationPayload;
+import org.DJB.no_24_heli.network.RadarContactsPayload;
+import org.DJB.no_24_heli.network.RadarPayload;
+import org.DJB.no_24_heli.network.RadioPayload;
+import org.DJB.no_24_heli.network.SettingsPayload;
+import org.DJB.no_24_heli.screen.HeliScreenHandler;
+import org.DJB.no_24_heli.server.RadioTransferServer;
+
+
+
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.itemgroup.v1.FabricItemGroup;
 import net.fabricmc.fabric.api.networking.v1.*;
@@ -40,6 +65,8 @@ public class No_24_heli implements ModInitializer {
     public static final SoundEvent DAMAGE_SOUND=Registry.register(Registries.SOUND_EVENT,id("rotor_damage"),SoundEvent.of(id("rotor_damage")));
     @Override public void onInitialize() {
         HeliConfig.load();
+        org.DJB.no_24_heli.registry.ModParachutes.initialize();
+        org.DJB.no_24_heli.registry.ModAdvancements.initialize();
         RadioTransferServer.register();
         PayloadTypeRegistry.playC2S().register(RadioPayload.ID,RadioPayload.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(RadioPayload.ID,(packet,context)->context.server().execute(()->{
@@ -75,7 +102,7 @@ public class No_24_heli implements ModInitializer {
             return net.minecraft.util.TypedActionResult.pass(stack);
         });
         Registry.register(Registries.ITEM_GROUP,id("equipment"),FabricItemGroup.builder().displayName(Text.translatable("itemGroup.no_24_heli")).icon(()->new ItemStack(HELICOPTER)).entries((ctx,entries)->{
-            entries.add(HELICOPTER); entries.add(ROTOR); entries.add(TAIL); entries.add(ENGINE); entries.add(TANK); entries.add(FUSELAGE); entries.add(KEROSENE); entries.add(CRUDE); entries.add(REPAIR); entries.add(HELIPAD_ITEM); entries.add(RADAR_ITEM); for(Item paint:PAINTS) entries.add(paint);
+            entries.add(HELICOPTER); entries.add(org.DJB.no_24_heli.registry.ModParachutes.PARACHUTE); entries.add(ROTOR); entries.add(TAIL); entries.add(ENGINE); entries.add(TANK); entries.add(FUSELAGE); entries.add(KEROSENE); entries.add(CRUDE); entries.add(REPAIR); entries.add(HELIPAD_ITEM); entries.add(RADAR_ITEM); for(Item paint:PAINTS) entries.add(paint);
         }).build());
         PayloadTypeRegistry.playC2S().register(DifficultyPayload.ID,DifficultyPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(DifficultyPayload.ID,DifficultyPayload.CODEC);

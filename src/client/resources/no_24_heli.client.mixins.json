@@ -8,6 +8,7 @@
     "HeliCameraMixin",
     "HeliMouseMixin",
     "HeliCrewRendererMixin",
+    "ParachuteRiderRendererMixin",
     "HeliDismountMixin",
     "HeliHotbarMixin",
     "RadioSoundLoaderMixin",

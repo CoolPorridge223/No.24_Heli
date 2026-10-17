@@ -1,10 +1,12 @@
 package org.DJB.no_24_heli.flight;
 
-import org.DJB.no_24_heli.AirspaceState;
-import org.DJB.no_24_heli.HeliConfig;
-import org.DJB.no_24_heli.HelicopterEntity;
 import org.DJB.no_24_heli.No_24_heli;
-import org.DJB.no_24_heli.RopeSeatEntity;
+import org.DJB.no_24_heli.data.AirspaceState;
+import org.DJB.no_24_heli.data.HeliConfig;
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.entity.RopeSeatEntity;
+
+
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.Box;

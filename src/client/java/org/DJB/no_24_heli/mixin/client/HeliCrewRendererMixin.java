@@ -1,10 +1,11 @@
 package org.DJB.no_24_heli.mixin.client;
 
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.render.entity.LivingEntityRenderer;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.LivingEntity;
-import org.DJB.no_24_heli.HelicopterEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;

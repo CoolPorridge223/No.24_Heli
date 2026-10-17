@@ -1,9 +1,10 @@
 package org.DJB.no_24_heli.mixin.client;
 
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.entity.RopeSeatEntity;
+
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
-import org.DJB.no_24_heli.HelicopterEntity;
-import org.DJB.no_24_heli.RopeSeatEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;

@@ -1,10 +1,11 @@
 package org.DJB.no_24_heli.mixin.client;
 
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.hud.InGameHud;
 import net.minecraft.client.render.RenderTickCounter;
-import org.DJB.no_24_heli.HelicopterEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;

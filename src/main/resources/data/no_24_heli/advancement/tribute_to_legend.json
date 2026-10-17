@@ -1,0 +1,28 @@
+{
+  "display": {
+    "icon": {
+      "id": "no_24_heli:legend_badge"
+    },
+    "title": {
+      "translate": "advancement.no_24_heli.tribute_to_legend.title"
+    },
+    "description": {
+      "translate": "advancement.no_24_heli.tribute_to_legend.description"
+    },
+    "frame": "task",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "criteria": {
+    "first": {
+      "trigger": "minecraft:impossible"
+    }
+  },
+  "requirements": [
+    [
+      "first"
+    ]
+  ],
+  "parent": "no_24_heli:legend_never_falls"
+}

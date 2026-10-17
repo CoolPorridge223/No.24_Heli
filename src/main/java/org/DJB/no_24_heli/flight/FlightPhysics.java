@@ -1,6 +1,7 @@
 package org.DJB.no_24_heli.flight;
 
-import org.DJB.no_24_heli.HeliConfig;
+import org.DJB.no_24_heli.data.HeliConfig;
+
 
 /** 固定 20Hz 的服务端飞行积分器。旋翼储能与动力分离，使无动力自转真实可控。 */
 public final class FlightPhysics {
@@ -13,7 +14,13 @@ public final class FlightPhysics {
     public static void step(FlightState s, HeliConfig c, boolean grounded, boolean rain, double altitude, long tick) {
         // 约束在物理入口再次执行；即使旧存档或伪造数据包留下辅助标志，也不能绕过此模式。
         if(c.unassisted()){s.trim=false;s.altitudeHold=false;s.cruise=false;s.autopilot=false;s.autoPhase=0;}
-        if (s.wreck) { s.rpm = approach(s.rpm, 0, .012); s.vy -= GRAVITY; return; }
+        if (s.wreck) {
+            s.rpm = approach(s.rpm, 0, .012);
+            // 残骸保留空中坠落惯性，接地后静止；不进入完好飞机的飞控和辅助逻辑。
+            if (grounded) { s.vx = 0; s.vz = 0; s.vy = -GRAVITY; }
+            else s.vy -= GRAVITY;
+            return;
+        }
         // 正常飞行磨损按20Hz计时：引擎每分钟约2.4点，机身/旋翼/尾桨较慢。
         // 只在真正离地且旋翼工作时扣除，地面停放、残骸和菜单停机不会悄悄掉耐久。
         if(c.unassisted()&&!grounded&&s.armed&&s.rpm>.2){

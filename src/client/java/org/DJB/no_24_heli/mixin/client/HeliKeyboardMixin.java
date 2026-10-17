@@ -1,9 +1,13 @@
 package org.DJB.no_24_heli.mixin.client;
 
+import org.DJB.no_24_heli.client.No_24_heliClient;
+import org.DJB.no_24_heli.client.camera.HeliView;
+import org.DJB.no_24_heli.client.input.ParachuteClient;
+import org.DJB.no_24_heli.entity.HelicopterEntity;
+
+
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.Keyboard;
-import org.DJB.no_24_heli.HelicopterEntity;
-import org.DJB.no_24_heli.client.*;
 import org.lwjgl.glfw.GLFW;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.*;
@@ -15,6 +19,8 @@ public class HeliKeyboardMixin {
     @Inject(method="onKey",at=@At("HEAD"),cancellable=true)
     private void followCamera(long window,int key,int scan,int action,int modifiers,CallbackInfo ci){
         var client=MinecraftClient.getInstance();
+        // 新伞键只在自由落体/开伞状态接管，原版 F 交换副手在其他场景照常使用。
+        if(window==client.getWindow().getHandle()&&ParachuteClient.handleKey(key,scan,action)){ci.cancel();return;}
         if(window!=client.getWindow().getHandle()||client.currentScreen!=null||client.player==null
                 ||!(client.player.getVehicle() instanceof HelicopterEntity)||!No_24_heliClient.followKeyMatches(key,scan))return;
         if(action==GLFW.GLFW_PRESS)HeliView.toggleFollow();
