@@ -87,6 +87,7 @@ void main() {
     vec4 overlay = texture(BlockAtlas, materialOverlayUv) * materialOverlayTint;
     material.rgb = mix(material.rgb, overlay.rgb, overlay.a);
     if (material.a < 0.1) discard;
-    vec3 illuminated = material.rgb * vec3(0.95, 0.93, 0.86);
+    // 探照灯的暖色目标亮度提高到原来的两倍，柔边、距离衰减和遮挡仍共同控制补光。
+    vec3 illuminated = material.rgb * vec3(0.95, 0.93, 0.86) * 2.0;
     fragColor = vec4(max(illuminated - scene, vec3(0.0)) * strength, 0.0);
 }

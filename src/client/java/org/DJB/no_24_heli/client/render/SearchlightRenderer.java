@@ -67,12 +67,14 @@ public final class SearchlightRenderer {
     /** 最大射程 64 格，发光半角十二度，采样额外留两度缓冲；只处理相机 96 格内的灯。 */
     private static final double RANGE=64,VIEW_DISTANCE_SQUARED=96*96;
     private static final double SAMPLE_TANGENT=Math.tan(Math.toRadians(14));
+    /** 地形收集在光锥外预留两格；位移与转向造成的射程末端偏移合计不能超过此余量。 */
+    private static final double MESH_PADDING=2;
     /** 方块顶点八整数；照明几何只标记表面，不偏移深度或写入光影阴影图。 */
     private static final int BLOCK_STRIDE=8,BUILD_CAPACITY=256*1024;
     /** 每灯 1024² 透视深度；近裁剪 0.05 格，覆盖完整 64 格射程。 */
     private static final int SHADOW_SIZE=1024;
     private static final float SHADOW_NEAR=.05f;
-    /** 所有灯共享每帧 2 ms 地形收集预算；每个方块处理完检查，不能中断半个模型。 */
+    /** 后台地形收集共享每帧 2 ms；首次点亮或越出网格余量时当帧完成，不能因预算熄灯。 */
     private static final long BUILD_BUDGET_NS=2_000_000;
     /** 当前主视图的收集截止时间和轮转起点，只由渲染线程访问。 */
     private static long buildDeadline;
@@ -211,30 +213,30 @@ public final class SearchlightRenderer {
         ChunkSection section;
         int x,y,z;
 
-        /** 功能：用灯头位置和光锥末端圆盘构建带两格余量的包围盒，允许缓存期间的轻微运动。 */
+        /** 功能：用灯头位置和光锥末端圆盘构建带 MESH_PADDING 余量的包围盒，允许缓存期间的轻微运动。 */
         MeshBuild(Vec3d origin,Vec3d source,Vec3d direction){
             this.origin=origin;this.source=source;this.direction=direction;
             Vec3d end=source.add(direction.multiply(RANGE));double radius=RANGE*SAMPLE_TANGENT;
             double rx=radius*Math.sqrt(Math.max(0,1-direction.x*direction.x));
             double ry=radius*Math.sqrt(Math.max(0,1-direction.y*direction.y));
             double rz=radius*Math.sqrt(Math.max(0,1-direction.z*direction.z));
-            minX=MathHelper.floor(Math.min(source.x,end.x-rx)-2);maxX=MathHelper.floor(Math.max(source.x,end.x+rx)+2);
-            minY=MathHelper.floor(Math.min(source.y,end.y-ry)-2);maxY=MathHelper.floor(Math.max(source.y,end.y+ry)+2);
-            minZ=MathHelper.floor(Math.min(source.z,end.z-rz)-2);maxZ=MathHelper.floor(Math.max(source.z,end.z+rz)+2);
+            minX=MathHelper.floor(Math.min(source.x,end.x-rx)-MESH_PADDING);maxX=MathHelper.floor(Math.max(source.x,end.x+rx)+MESH_PADDING);
+            minY=MathHelper.floor(Math.min(source.y,end.y-ry)-MESH_PADDING);maxY=MathHelper.floor(Math.max(source.y,end.y+ry)+MESH_PADDING);
+            minZ=MathHelper.floor(Math.min(source.z,end.z-rz)-MESH_PADDING);maxZ=MathHelper.floor(Math.max(source.z,end.z+rz)+MESH_PADDING);
             x=minX;y=minY;z=minZ;
         }
 
-        /** 功能：按全局时间预算推进；仅查询已加载区块，光锥外不取模型，完全取消逐面射线。 */
-        boolean advance(HelicopterEntity heli){
-            while(z<=maxZ&&System.nanoTime()<buildDeadline){
+        /** 功能：按截止时间推进；只读已加载区块，紧急刷新不设时间上限以保证当前帧完整遮挡。 */
+        boolean advance(HelicopterEntity heli,long deadline){
+            while(z<=maxZ&&System.nanoTime()<deadline){
                 long key=BlockPos.asLong(x>>4,y>>4,z>>4);
                 if(key!=sectionKey){sectionKey=key;section=section(heli,key);}
                 if(section==null||section.isEmpty())x=Math.min(maxX,x|15);
                 else{
                     double dx=x+.5-source.x,dy=y+.5-source.y,dz=z+.5-source.z;
                     double along=dx*direction.x+dy*direction.y+dz*direction.z;
-                    double radius=Math.max(0,along)*SAMPLE_TANGENT+2;
-                    if(along>=-2&&along<=RANGE+2&&dx*dx+dy*dy+dz*dz-along*along<=radius*radius){
+                    double radius=Math.max(0,along)*SAMPLE_TANGENT+MESH_PADDING;
+                    if(along>=-MESH_PADDING&&along<=RANGE+MESH_PADDING&&dx*dx+dy*dy+dz*dz-along*along<=radius*radius){
                         BlockState state=section.getBlockState(x&15,y&15,z&15);
                         if(state.getRenderType()==BlockRenderType.MODEL)bakeBlock(heli,origin,new BlockPos(x,y,z),state,random,vertices);
                     }
@@ -429,11 +431,15 @@ public final class SearchlightRenderer {
         if(frustum!=null&&!frustum.isVisible(new Box(source,source.add(direction.multiply(RANGE))).expand(RANGE*SAMPLE_TANGENT)))return;
         long tick=heli.getWorld().getTime();LightCache cache=CACHE.computeIfAbsent(heli,key->new LightCache());
         Projection projection=cache.projection;
-        // 半格或约一度开始刷新；两格和约两度为后面的缓存安全上限，单位分别为格平方与方向余弦。
-        if(cache.pending==null&&(projection==null||tick-projection.tick>=10||tick-projection.tick>=2&&
+        boolean urgent=projection==null||!covers(source,direction,projection.source,projection.direction);
+        // 半格或约一度提前分帧刷新；越出覆盖范围则当帧补齐，不能直接跳过整束灯光。
+        if(cache.pending==null&&(urgent||tick-projection.tick>=10||tick-projection.tick>=2&&
                 (source.squaredDistanceTo(projection.source)>.25||direction.dotProduct(projection.direction)<.99985)))
             cache.pending=new MeshBuild(origin,source,direction);
-        if(cache.pending!=null&&cache.pending.advance(heli)){
+        // 持续运动时待完成网格也可能过期，必须重新对准当前姿态，避免提交过期网格后漏光。
+        if(cache.pending!=null&&!covers(source,direction,cache.pending.source,cache.pending.direction))
+            cache.pending=new MeshBuild(origin,source,direction);
+        if(cache.pending!=null&&cache.pending.advance(heli,urgent?Long.MAX_VALUE:buildDeadline)){
             MeshBuild built=cache.pending;
             projection=new Projection(built.origin,built.source,built.direction,tick,List.copyOf(built.vertices));
             if(cache.projection!=null){
@@ -446,8 +452,6 @@ public final class SearchlightRenderer {
         }
         if(projection==null||projection.vertices.isEmpty())return;
         if(projection.buffer==null)upload(projection);
-        // 快速移动超过缓存余量时短暂等待新网格，不能用缺失遮挡物的旧网格制造穿墙光。
-        if(source.squaredDistanceTo(projection.source)>4||direction.dotProduct(projection.direction)<.9994)return;
         updateShadow(projection,source,direction);
         Vec3d offset=projection.origin.subtract(cameraPosition),localSource=source.subtract(projection.origin);
         uniforms(new Matrix4f(worldView).translate((float)offset.x,(float)offset.y,(float)offset.z),0);
@@ -456,6 +460,16 @@ public final class SearchlightRenderer {
         shader.getUniform("LightOrigin").set((float)localSource.x,(float)localSource.y,(float)localSource.z);
         shader.getUniform("LightDirection").set((float)direction.x,(float)direction.y,(float)direction.z);
         shader.bind();projection.buffer.bind();projection.buffer.draw();
+    }
+
+    /**
+     * 功能：用灯头位移加射程末端旋转弦长保守判断网格覆盖，平移与旋转必须共同计入两格余量。
+     * 引用 net.minecraft.util.math.Vec3d 的单位方向点积计算弦长；仅客户端渲染线程，无世界修改。
+     * 排查：转向时熄灯先查是否跳过紧急构建；不能仅删除覆盖检查后复用缺少遮挡物的网格。
+     */
+    private static boolean covers(Vec3d source,Vec3d direction,Vec3d cachedSource,Vec3d cachedDirection){
+        double shift=source.distanceTo(cachedSource)+RANGE*Math.sqrt(Math.max(0,2-2*direction.dotProduct(cachedDirection)));
+        return shift<=MESH_PADDING;
     }
 
     /**
