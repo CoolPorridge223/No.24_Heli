@@ -40,7 +40,7 @@ public final class NavigationController {
         double vx = distance < .01 ? 0 : dx / distance * commandedSpeed;
         double vz = distance < .01 ? 0 : dz / distance * commandedSpeed;
         // 逆算原积分器的空气阻力，保证速度误差为零时仍能维持高速平飞。
-        double drag = s.hardcoreMode ? .994 : .981;
+        double drag = FlightPhysics.horizontalDrag(s.hardcoreMode, s.gear);
         double ax = (vx - s.vx) * VELOCITY_GAIN + s.vx * (1 / drag - 1);
         double az = (vz - s.vz) * VELOCITY_GAIN + s.vz * (1 / drag - 1);
         double yaw = Math.toRadians(s.yaw);

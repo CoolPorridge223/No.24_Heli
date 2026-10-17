@@ -113,7 +113,9 @@ public final class CockpitTapeRenderer {
         String[] rows = new String[4];
         for (int row = 0; row < rows.length; row++)
             rows[row] = String.format(Locale.ROOT, "%" + digits + "d", Math.abs(lower + (row - 1L) * step));
-        Clip high = new Clip(start + DIGIT_PITCH * scale, mid - 7, tailLeft, mid + 7);
+        // 台阶边框比低位字起点提前两像素，不能用它裁高位，否则百位 1 的右侧两笔会被全部切掉。
+        Clip high = new Clip(start + DIGIT_PITCH * scale, mid - 7,
+                start + (digits - tailWidth + 1) * DIGIT_PITCH * scale, mid + 7);
         for (int column = 0; column < digits - tailWidth; column++) {
             double x = start + (column + 1) * DIGIT_PITCH * scale;
             if (rows[1].charAt(column) == rows[2].charAt(column)) {

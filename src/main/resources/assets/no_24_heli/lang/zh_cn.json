@@ -46,6 +46,7 @@
   "key.no_24_heli.trim": "自动配平",
   "key.no_24_heli.cruise": "巡航保持",
   "key.no_24_heli.gear": "收放起落架",
+  "message.no_24_heli.gear_grounded": "飞机已接地，离地后才能收起起落架。",
   "key.no_24_heli.rope": "部署 / 收回绳索",
   "key.no_24_heli.rappel": "下绳 / 抓绳攀升",
   "key.no_24_heli.service": "打开燃油与货仓",

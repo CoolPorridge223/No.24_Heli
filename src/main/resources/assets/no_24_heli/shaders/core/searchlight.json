@@ -1,11 +1,12 @@
 {
   "vertex":"no_24_heli:searchlight",
   "fragment":"no_24_heli:searchlight",
-  "samplers":[{"name":"SceneDepth"},{"name":"SceneColor"},{"name":"BlockAtlas"},{"name":"FontAtlas"}],
+  "samplers":[{"name":"SceneDepth"},{"name":"SceneColor"},{"name":"BlockAtlas"},{"name":"FontAtlas"},{"name":"LightDepth"}],
   "uniforms":[
     {"name":"ModelViewMat","type":"matrix4x4","count":16,"values":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},
     {"name":"ProjMat","type":"matrix4x4","count":16,"values":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},
     {"name":"InverseProjection","type":"matrix4x4","count":16,"values":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},
+    {"name":"LightMatrix","type":"matrix4x4","count":16,"values":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},
     {"name":"ScreenSize","type":"float","count":2,"values":[1,1]},
     {"name":"DepthScale","type":"float","count":1,"values":[1]},
     {"name":"DepthJitter","type":"float","count":2,"values":[0,0]},

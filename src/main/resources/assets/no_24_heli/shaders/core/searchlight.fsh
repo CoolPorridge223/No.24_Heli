@@ -5,6 +5,8 @@ uniform sampler2D SceneDepth;
 uniform sampler2D SceneColor;
 uniform sampler2D BlockAtlas;
 uniform sampler2D FontAtlas;
+uniform sampler2D LightDepth;
+uniform mat4 LightMatrix;
 uniform mat4 InverseProjection;
 uniform vec2 ScreenSize;
 uniform float DepthScale;
@@ -22,9 +24,37 @@ in vec2 materialUv;
 in vec2 materialOverlayUv;
 in vec4 materialTint;
 in vec4 materialOverlayTint;
+in vec3 surfaceNormal;
 out vec4 fragColor;
 
+// 以接收面在阴影纹理中的深度梯度补偿采样位置；避免斜墙自阴影，也不靠大偏移漏过薄墙。
+float lightVisibility() {
+    vec4 clip = LightMatrix * vec4(localPosition, 1.0);
+    vec3 projected = clip.xyz / clip.w * 0.5 + 0.5;
+    if (clip.w <= 0.0 || any(lessThan(projected, vec3(0.0))) || any(greaterThan(projected, vec3(1.0)))) return 0.0;
+    vec3 dx = dFdx(projected), dy = dFdy(projected);
+    float det = dx.x * dy.y - dx.y * dy.x;
+    vec2 gradient = abs(det) > 1e-12 ? vec2(dy.y * dx.z - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z) / det : vec2(0.0);
+    vec2 size = vec2(textureSize(LightDepth, 0));
+    vec2 texel = projected.xy * size - 0.5;
+    vec2 base = floor(texel), weight = fract(texel);
+    float visibility = 0.0;
+    for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) {
+        vec2 uv = (base + vec2(x, y) + 0.5) / size;
+        float receiver = projected.z + dot(gradient, uv - projected.xy);
+        float visible = step(receiver - 0.000002, texture(LightDepth, uv).r);
+        visibility += visible * (x == 0 ? 1.0 - weight.x : weight.x) * (y == 0 ? 1.0 - weight.y : weight.y);
+    }
+    return visibility;
+}
+
 void main() {
+    // 独立灯头深度遍历只读取材质透明度，不能读取正在写入的深度或主相机快照。
+    if (LightMode == 4) {
+        if (texture(BlockAtlas, materialUv).a < 0.1) discard;
+        fragColor = vec4(0.0);
+        return;
+    }
     vec2 screen = gl_FragCoord.xy / ScreenSize;
     float depth = texture(SceneDepth, screen * DepthScale + DepthJitter).r;
     vec4 savedPosition = InverseProjection * vec4(screen * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -47,10 +77,13 @@ void main() {
     vec3 relative = localPosition - LightOrigin;
     float distanceToLight = length(relative);
     float cone = dot(relative / max(distanceToLight, 0.001), LightDirection);
+    float incidence = max(dot(normalize(surfaceNormal), -relative / max(distanceToLight, 0.001)), 0.0);
+    float visibility = lightVisibility();
     float strength = smoothstep(0.9781476, 0.9975641, cone)
-        * max(0.0, 1.0 - distanceToLight * distanceToLight / 4096.0) * fogVisibility;
+        * max(0.0, 1.0 - distanceToLight * distanceToLight / 4096.0) * fogVisibility * sqrt(incidence) * visibility;
     vec3 scene = texture(SceneColor, screen).rgb;
-    vec4 material = texture(BlockAtlas, materialUv) * materialTint;
+    // 材质颜色独立于太阳阴影；遮挡使用灯头透视深度，不能沿世界竖直方向投影。
+    vec4 material = texture(BlockAtlas, materialUv) * vec4(materialTint.rgb, 1.0);
     vec4 overlay = texture(BlockAtlas, materialOverlayUv) * materialOverlayTint;
     material.rgb = mix(material.rgb, overlay.rgb, overlay.a);
     if (material.a < 0.1) discard;

@@ -46,6 +46,7 @@
   "key.no_24_heli.trim": "Auto trim",
   "key.no_24_heli.cruise": "Cruise hold",
   "key.no_24_heli.gear": "Landing gear",
+  "message.no_24_heli.gear_grounded": "Cannot retract landing gear while grounded. Take off first.",
   "key.no_24_heli.rope": "Deploy / retract rope",
   "key.no_24_heli.rappel": "Rappel / grab rope and climb",
   "key.no_24_heli.service": "Fuel and cargo",

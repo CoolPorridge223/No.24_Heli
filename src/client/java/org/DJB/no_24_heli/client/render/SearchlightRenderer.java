@@ -1,13 +1,11 @@
-/** 文件：机腹探照灯遮挡采样、地形照明网格与自发光程序；端侧：CLIENT；实体：no_24_heli:helicopter。 */
+/** 文件：机腹探照灯透视阴影、地形照明网格与自发光程序；端侧：CLIENT；实体：no_24_heli:helicopter。 */
 package org.DJB.no_24_heli.client.render;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
@@ -16,6 +14,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.CoreShaderRegistrationCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.BlockRenderType;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gl.ShaderProgram;
@@ -36,15 +35,14 @@ import net.minecraft.client.texture.SpriteAtlasTexture;
 import net.minecraft.client.util.BufferAllocator;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.Text;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.math.random.Random;
-import net.minecraft.world.RaycastContext;
+import net.minecraft.world.chunk.ChunkSection;
+import net.minecraft.world.chunk.ChunkStatus;
 import org.DJB.no_24_heli.No_24_heli;
 import org.DJB.no_24_heli.client.camera.HeliView;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
@@ -57,8 +55,8 @@ import org.lwjgl.opengl.GL30C;
 
 /**
  * 职责：保存实体深度，在光影合成后补充地形照明、灯芯和启动仪表的文字背光。
- * 引用：net.minecraft.world.World#raycast 只读地形；BakedQuad 保留表面形状、原始纹理和生物群系色。
- * 生命周期：运动时最多每两 tick 重采样，静止时每十 tick 检查；世界合成后、手持物前复用显存绘制。
+ * 引用：net.minecraft.client.render.model.BakedQuad 保留地形材质；独立灯头透视深度决定逐片元遮挡。
+ * 生命周期：分帧收集光锥内几何，灯头移动时更新阴影；世界合成后、手持物前复用显存绘制。
  * 端侧/线程：仅客户端渲染线程；不放置光源方块、不重建区块或写服务端方块光照。
  * 排查：穿透机体查实体阶段深度快照；格子查重复面；灯芯消失查是否误入光影阴影遍历。
  */
@@ -71,8 +69,16 @@ public final class SearchlightRenderer {
     private static final double SAMPLE_TANGENT=Math.tan(Math.toRadians(14));
     /** 方块顶点八整数；照明几何只标记表面，不偏移深度或写入光影阴影图。 */
     private static final int BLOCK_STRIDE=8,BUILD_CAPACITY=256*1024;
+    /** 每灯 1024² 透视深度；近裁剪 0.05 格，覆盖完整 64 格射程。 */
+    private static final int SHADOW_SIZE=1024;
+    private static final float SHADOW_NEAR=.05f;
+    /** 所有灯共享每帧 2 ms 地形收集预算；每个方块处理完检查，不能中断半个模型。 */
+    private static final long BUILD_BUDGET_NS=2_000_000;
+    /** 当前主视图的收集截止时间和轮转起点，只由渲染线程访问。 */
+    private static long buildDeadline;
+    private static int firstLight;
     /** 位置缓存随世界离开、灯具关闭或实体移除而释放，不按每帧分配缓冲。 */
-    private static final Map<HelicopterEntity,Projection> CACHE=new HashMap<>();
+    private static final Map<HelicopterEntity,LightCache> CACHE=new HashMap<>();
     /** 固定合成程序绕过光影实体材质过滤，灯芯与受照面都显式检查深度快照。 */
     private static ShaderProgram shader;
     /** 深度来自实体绘制后，颜色来自光影最终画面；窗口变化时重建，退出时释放。 */
@@ -94,8 +100,6 @@ public final class SearchlightRenderer {
     /** 合成阶段的雾形状须沿用世界快照；0 为球形、1 为柱形，避免手持物阶段重置雾参数。 */
     private static int fogShape;
     private static boolean prepared;
-    /** 射线命中的唯一方块面，避免同一块地面重复叠加增亮。 */
-    private record Surface(BlockPos pos,Direction side){}
     /** 原始材质和可选草侧面覆盖层独立于太阳阴影；覆盖层 UV/色借用仅在本合成程序使用的 UV1/UV2。 */
     private record LitVertex(Vec3d pos,Vec3d normal,float u,float v,int color,float overlayU,float overlayV,int overlayColor){}
     /** 重合的底图和着色覆盖层合并为一个面，不能作为两次加法照明提交。 */
@@ -171,12 +175,85 @@ public final class SearchlightRenderer {
         final long tick;
         final List<LitVertex> vertices;
         VertexBuffer buffer;
-        /** 功能：保存一次只读采样结果；客户端渲染线程调用，显存惰性创建。 */
+        /** 阴影附件随本灯网格复用，矩阵与上次姿态用于判定是否需要重画；不占用世界阴影图。 */
+        SimpleFramebuffer shadow;
+        Matrix4f shadowMatrix;
+        Vec3d shadowSource,shadowDirection;
+        /** 功能：保存一次完整地形收集结果；客户端渲染线程调用，显存惰性创建。 */
         Projection(Vec3d origin,Vec3d source,Vec3d direction,long tick,List<LitVertex> vertices){
             this.origin=origin;this.source=source;this.direction=direction;this.tick=tick;this.vertices=vertices;
         }
         /** 功能：关闭本灯的 GPU 缓冲；客户端渲染线程调用。 */
-        void close(){if(buffer!=null)buffer.close();}
+        void close(){if(buffer!=null)buffer.close();if(shadow!=null)shadow.delete();}
+    }
+
+    /** 客户端单灯缓存；新网格完成前保留旧显存，避免分帧更新时光斑闪灭；关闭时一起释放。 */
+    private static final class LightCache {
+        Projection projection;
+        MeshBuild pending;
+        /** 功能：丢弃未完成的 CPU 收集并释放已上传网格；不持有或修改服务端世界。 */
+        void close(){if(projection!=null)projection.close();pending=null;}
+    }
+
+    /**
+     * 职责：分帧遍历光锥包围盒，收集所有外露模型面，顶面和侧面一视同仁。
+     * 引用 net.minecraft.client.world.ClientWorld 的已加载方块；只在渲染线程推进，不跨线程访问世界。
+     * 生命周期：缓存过期时创建，遍历完成后替换 Projection；黑面先查完整面收集，再查灯头深度。
+     */
+    private static final class MeshBuild {
+        final Vec3d origin,source,direction;
+        final int minX,minY,minZ,maxX,maxY,maxZ;
+        final List<LitVertex> vertices=new ArrayList<>();
+        final Random random=Random.create(0);
+        /** 区段只在这次构建内缓存；空区段整行跳过，避免每次扫描光锥内的大量空气格。 */
+        final Map<Long,ChunkSection> sections=new HashMap<>();
+        long sectionKey=Long.MIN_VALUE;
+        ChunkSection section;
+        int x,y,z;
+
+        /** 功能：用灯头位置和光锥末端圆盘构建带两格余量的包围盒，允许缓存期间的轻微运动。 */
+        MeshBuild(Vec3d origin,Vec3d source,Vec3d direction){
+            this.origin=origin;this.source=source;this.direction=direction;
+            Vec3d end=source.add(direction.multiply(RANGE));double radius=RANGE*SAMPLE_TANGENT;
+            double rx=radius*Math.sqrt(Math.max(0,1-direction.x*direction.x));
+            double ry=radius*Math.sqrt(Math.max(0,1-direction.y*direction.y));
+            double rz=radius*Math.sqrt(Math.max(0,1-direction.z*direction.z));
+            minX=MathHelper.floor(Math.min(source.x,end.x-rx)-2);maxX=MathHelper.floor(Math.max(source.x,end.x+rx)+2);
+            minY=MathHelper.floor(Math.min(source.y,end.y-ry)-2);maxY=MathHelper.floor(Math.max(source.y,end.y+ry)+2);
+            minZ=MathHelper.floor(Math.min(source.z,end.z-rz)-2);maxZ=MathHelper.floor(Math.max(source.z,end.z+rz)+2);
+            x=minX;y=minY;z=minZ;
+        }
+
+        /** 功能：按全局时间预算推进；仅查询已加载区块，光锥外不取模型，完全取消逐面射线。 */
+        boolean advance(HelicopterEntity heli){
+            while(z<=maxZ&&System.nanoTime()<buildDeadline){
+                long key=BlockPos.asLong(x>>4,y>>4,z>>4);
+                if(key!=sectionKey){sectionKey=key;section=section(heli,key);}
+                if(section==null||section.isEmpty())x=Math.min(maxX,x|15);
+                else{
+                    double dx=x+.5-source.x,dy=y+.5-source.y,dz=z+.5-source.z;
+                    double along=dx*direction.x+dy*direction.y+dz*direction.z;
+                    double radius=Math.max(0,along)*SAMPLE_TANGENT+2;
+                    if(along>=-2&&along<=RANGE+2&&dx*dx+dy*dy+dz*dz-along*along<=radius*radius){
+                        BlockState state=section.getBlockState(x&15,y&15,z&15);
+                        if(state.getRenderType()==BlockRenderType.MODEL)bakeBlock(heli,origin,new BlockPos(x,y,z),state,random,vertices);
+                    }
+                }
+                if(++x>maxX){x=minX;if(++y>maxY){y=minY;z++;}}
+            }
+            return z>maxZ;
+        }
+
+        /** 功能：只取已存在的 net.minecraft.world.chunk.ChunkSection；不请求加载区块，越界或未加载缓存为空。 */
+        private ChunkSection section(HelicopterEntity heli,long key){
+            if(sections.containsKey(key))return sections.get(key);
+            var world=heli.getWorld();ChunkSection result=null;
+            if(y>=world.getBottomY()&&y<world.getTopY()){
+                var chunk=world.getChunk(x>>4,z>>4,ChunkStatus.FULL,false);
+                if(chunk!=null)result=chunk.getSection(world.getSectionIndex(y));
+            }
+            sections.put(key,result);return result;
+        }
     }
 
     /** 私有构造：灯光缓存由客户端入口统一登记。 */
@@ -297,8 +374,13 @@ public final class SearchlightRenderer {
         RenderSystem.disableDepthTest();RenderSystem.depthMask(false);RenderSystem.disableCull();RenderSystem.enableBlend();
         RenderSystem.blendFunc(GL11C.GL_ONE,GL11C.GL_ONE);
         try{
+            List<HelicopterEntity> lights=new ArrayList<>();
             for(var entity:client.world.getEntities())if(entity instanceof HelicopterEntity heli&&heli.flight.searchlight&&!heli.flight.wreck)
-                render(heli,tickDelta,viewFrustum);
+                lights.add(heli);
+            buildDeadline=System.nanoTime()+BUILD_BUDGET_NS;
+            // 轮转起点使多灯共享预算，避免列表首灯运动时一直饿死其他灯。
+            for(int i=0;i<lights.size();i++)render(lights.get(Math.floorMod(firstLight+i,lights.size())),tickDelta,viewFrustum);
+            firstLight++;
             for(var glow:GLOWS){
                 uniforms(glow.modelView,1);
                 shader.getUniform("LampColor").set((glow.color>>16&255)/255f,(glow.color>>8&255)/255f,(glow.color&255)/255f,1);
@@ -320,11 +402,12 @@ public final class SearchlightRenderer {
         }
     }
 
-    /** 功能：设置主视图快照；模式 0 为地表、1 为灯芯、2 为彩色字形、3 为单通道字形。 */
+    /** 功能：设置主视图快照；模式 0 地表、1 灯芯、2/3 字形、4 灯头深度；后者单独覆盖投影矩阵。 */
     private static void uniforms(Matrix4f modelView,int mode){
         var client=MinecraftClient.getInstance();
         shader.initializeUniforms(VertexFormat.DrawMode.QUADS,modelView,worldProjection,client.getWindow());
         shader.addSampler("SceneDepth",sceneSnapshot.getDepthAttachment());shader.addSampler("SceneColor",sceneSnapshot.getColorAttachment());
+        shader.addSampler("LightDepth",sceneSnapshot.getDepthAttachment());
         shader.addSampler("BlockAtlas",client.getTextureManager().getTexture(SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE).getGlId());
         shader.getUniform("InverseProjection").set(inverseProjection);shader.getUniform("LightMode").set(mode);
         shader.getUniform("ScreenSize").set((float)client.getFramebuffer().textureWidth,(float)client.getFramebuffer().textureHeight);
@@ -344,80 +427,111 @@ public final class SearchlightRenderer {
         Vec3d direction=new Vec3d(forward.x,forward.y,forward.z).normalize();
         Vec3d source=origin.add(pivot.x,pivot.y,pivot.z).add(direction.multiply(.215));
         if(frustum!=null&&!frustum.isVisible(new Box(source,source.add(direction.multiply(RANGE))).expand(RANGE*SAMPLE_TANGENT)))return;
-        long tick=heli.getWorld().getTime();Projection projection=CACHE.get(heli);
-        if(projection==null||tick-projection.tick>=10||tick-projection.tick>=2&&
-                (source.squaredDistanceTo(projection.source)>.0025||direction.dotProduct(projection.direction)<.99999)){
-            if(projection!=null)projection.close();
-            projection=bake(heli,origin,source,direction,tick);CACHE.put(heli,projection);
+        long tick=heli.getWorld().getTime();LightCache cache=CACHE.computeIfAbsent(heli,key->new LightCache());
+        Projection projection=cache.projection;
+        // 半格或约一度开始刷新；两格和约两度为后面的缓存安全上限，单位分别为格平方与方向余弦。
+        if(cache.pending==null&&(projection==null||tick-projection.tick>=10||tick-projection.tick>=2&&
+                (source.squaredDistanceTo(projection.source)>.25||direction.dotProduct(projection.direction)<.99985)))
+            cache.pending=new MeshBuild(origin,source,direction);
+        if(cache.pending!=null&&cache.pending.advance(heli)){
+            MeshBuild built=cache.pending;
+            projection=new Projection(built.origin,built.source,built.direction,tick,List.copyOf(built.vertices));
+            if(cache.projection!=null){
+                // 阴影附件和顶点缓冲跨刷新复用；新几何必须重新上传并重画深度。
+                projection.shadow=cache.projection.shadow;projection.buffer=cache.projection.buffer;
+                cache.projection.shadow=null;cache.projection.buffer=null;cache.projection.close();
+                if(projection.buffer!=null&&!projection.vertices.isEmpty())upload(projection);
+            }
+            cache.projection=projection;cache.pending=null;
         }
-        if(projection.vertices.isEmpty())return;
+        if(projection==null||projection.vertices.isEmpty())return;
         if(projection.buffer==null)upload(projection);
+        // 快速移动超过缓存余量时短暂等待新网格，不能用缺失遮挡物的旧网格制造穿墙光。
+        if(source.squaredDistanceTo(projection.source)>4||direction.dotProduct(projection.direction)<.9994)return;
+        updateShadow(projection,source,direction);
         Vec3d offset=projection.origin.subtract(cameraPosition),localSource=source.subtract(projection.origin);
         uniforms(new Matrix4f(worldView).translate((float)offset.x,(float)offset.y,(float)offset.z),0);
+        shader.addSampler("LightDepth",projection.shadow.getDepthAttachment());
+        shader.getUniform("LightMatrix").set(projection.shadowMatrix);
         shader.getUniform("LightOrigin").set((float)localSource.x,(float)localSource.y,(float)localSource.z);
         shader.getUniform("LightDirection").set((float)direction.x,(float)direction.y,(float)direction.z);
         shader.bind();projection.buffer.bind();projection.buffer.draw();
     }
 
     /**
-     * 功能：沿锥形光束收集首个命中面；客户端只读射线，不读取或重建服务端地形。
-     * 引用 net.minecraft.block.BlockState#getRenderingSeed 选取原版几何变体，保留未经过太阳阴影的原始材质。
+     * 功能：从灯头实际位置沿云台方向绘制透视深度；不使用太阳方向或竖直投影。
+     * 引用 net.minecraft.client.gl.SimpleFramebuffer 保存独立阴影；重用地表网格并按材质透明度裁切。
+     * 端侧：渲染线程；结束时恢复世界帧缓冲、视口和合成状态，模式 4 不读取自身深度附件。
      */
-    private static Projection bake(HelicopterEntity heli,Vec3d origin,Vec3d source,Vec3d direction,long tick){
-        var center=ray(heli,source,source.add(direction.multiply(RANGE)));
-        double distance=center.getType()==HitResult.Type.MISS?RANGE:center.getPos().distanceTo(source);
-        // 根据实际照射距离自适应采样，一格以内取一个候选，最高 33×33；完整方块面填补采样间隙。
-        int steps=Math.clamp((int)Math.ceil(distance*SAMPLE_TANGENT),3,16);
-        Vec3d right=direction.crossProduct(new Vec3d(0,1,0)).normalize(),up=right.crossProduct(direction).normalize();
-        Set<Surface> surfaces=new HashSet<>();
-        for(int x=-steps;x<=steps;x++)for(int y=-steps;y<=steps;y++){
-            if(x*x+y*y>steps*steps)continue;
-            Vec3d cast=direction.add(right.multiply(x*SAMPLE_TANGENT/steps)).add(up.multiply(y*SAMPLE_TANGENT/steps)).normalize();
-            var hit=ray(heli,source,source.add(cast.multiply(RANGE)));
-            if(hit.getType()==HitResult.Type.BLOCK)surfaces.add(new Surface(hit.getBlockPos().toImmutable(),hit.getSide()));
+    private static void updateShadow(Projection projection,Vec3d source,Vec3d direction){
+        if(source.equals(projection.shadowSource)&&direction.equals(projection.shadowDirection))return;
+        int read=GL11C.glGetInteger(GL30C.GL_READ_FRAMEBUFFER_BINDING),draw=GL11C.glGetInteger(GL30C.GL_DRAW_FRAMEBUFFER_BINDING);
+        int depthFunction=GL11C.glGetInteger(GL11C.GL_DEPTH_FUNC);
+        int[] viewport=new int[4];GL11C.glGetIntegerv(GL11C.GL_VIEWPORT,viewport);
+        try{
+            if(projection.shadow==null)projection.shadow=new SimpleFramebuffer(SHADOW_SIZE,SHADOW_SIZE,true,MinecraftClient.IS_SYSTEM_MAC);
+            Vec3d local=source.subtract(projection.origin);
+            // 灯头接近竖直时切换参考上方向，避免 lookAt 的叉积退化。
+            Vec3d up=Math.abs(direction.y)>.98?new Vec3d(0,0,1):new Vec3d(0,1,0);
+            Matrix4f lightView=new Matrix4f().lookAt((float)local.x,(float)local.y,(float)local.z,
+                    (float)(local.x+direction.x),(float)(local.y+direction.y),(float)(local.z+direction.z),
+                    (float)up.x,(float)up.y,(float)up.z);
+            Matrix4f lightProjection=new Matrix4f().perspective((float)Math.toRadians(28),1,SHADOW_NEAR,(float)RANGE);
+            projection.shadowMatrix=new Matrix4f(lightProjection).mul(lightView);
+            projection.shadow.beginWrite(true);
+            RenderSystem.disableBlend();RenderSystem.enableDepthTest();RenderSystem.depthFunc(GL11C.GL_LEQUAL);
+            RenderSystem.depthMask(true);RenderSystem.colorMask(false,false,false,false);RenderSystem.disableCull();
+            RenderSystem.clearDepth(1);RenderSystem.clear(GL11C.GL_DEPTH_BUFFER_BIT,MinecraftClient.IS_SYSTEM_MAC);
+            uniforms(lightView,4);
+            shader.getUniform("ProjMat").set(lightProjection);
+            // 所有采样器都指向其他纹理，不能把当前写入的深度纹理绑定为输入。
+            shader.addSampler("LightDepth",sceneSnapshot.getDepthAttachment());
+            shader.bind();projection.buffer.bind();projection.buffer.draw();shader.unbind();
+            projection.shadowSource=source;projection.shadowDirection=direction;
+        }finally{
+            GL30C.glBindFramebuffer(GL30C.GL_READ_FRAMEBUFFER,read);GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER,draw);
+            RenderSystem.viewport(viewport[0],viewport[1],viewport[2],viewport[3]);
+            RenderSystem.colorMask(true,true,true,true);RenderSystem.depthMask(false);RenderSystem.disableDepthTest();
+            RenderSystem.depthFunc(depthFunction);
+            RenderSystem.enableBlend();RenderSystem.blendFunc(GL11C.GL_ONE,GL11C.GL_ONE);
         }
-        // 沿命中面的平面补邻格，再逐面复核遮挡，避免斜向采样恰好漏掉光斑中央的一格。
-        for(int border=0;border<2;border++)for(var surface:List.copyOf(surfaces))for(var adjacent:Direction.values())
-            if(adjacent.getAxis()!=surface.side.getAxis())surfaces.add(new Surface(surface.pos.offset(adjacent),surface.side));
-        List<LitVertex> vertices=new ArrayList<>();var client=MinecraftClient.getInstance();Random random=Random.create(0);
-        for(var surface:surfaces){
-            BlockState state=heli.getWorld().getBlockState(surface.pos);var model=client.getBlockRenderManager().getModel(state);
-            long seed=state.getRenderingSeed(surface.pos);
-            random.setSeed(seed);List<BakedQuad> quads=new ArrayList<>(model.getQuads(state,surface.side,random));
-            random.setSeed(seed);for(var quad:model.getQuads(state,null,random))if(quad.getFace()==surface.side)quads.add(quad);
-            Map<List<Vec3d>,LitFace> uniqueFaces=new HashMap<>();
-            for(var quad:quads)bakeQuad(heli,source,surface,state,quad,uniqueFaces);
-            for(var face:uniqueFaces.values()){
-                int color=tint(state,surface.pos,face.base),overlayColor=face.overlay==null?0:tint(state,surface.pos,face.overlay);
-                for(int index=0;index<4;index++){
-                    int base=index*BLOCK_STRIDE;int[] data=face.base.getVertexData();
-                    int[] overlay=face.overlay==null?data:face.overlay.getVertexData();
-                    vertices.add(new LitVertex(face.positions.get(index).subtract(origin),face.normal,
-                            Float.intBitsToFloat(data[base+4]),Float.intBitsToFloat(data[base+5]),color,
-                            Float.intBitsToFloat(overlay[base+4]),Float.intBitsToFloat(overlay[base+5]),overlayColor));
-                }
-            }
-        }
-        return new Projection(origin,source,direction,tick,List.copyOf(vertices));
-    }
-
-    /** 功能：用实际碰撞表面检查遮挡；引用 RaycastContext 的首个方块命中，流体不作为地面投影。 */
-    private static BlockHitResult ray(HelicopterEntity heli,Vec3d start,Vec3d end){
-        return heli.getWorld().raycast(new RaycastContext(start,end,RaycastContext.ShapeType.COLLIDER,RaycastContext.FluidHandling.NONE,heli));
     }
 
     /**
-     * 功能：只保存真实受光表面的几何，并合并草方块等材质的重合面，避免格子状重复增亮。
-     * 引用 BakedQuad 的 BLOCK 格式；面中心再次检查遮挡，避免台阶背面或墙后的面被一起照亮。
+     * 功能：收集每个方块的全部外露面；侧面不依赖顶面射线命中，台阶等无方向模型面也只收集一次。
+     * 引用 net.minecraft.block.Block#shouldDrawSide 沿用区块邻面剔除，BakedQuad 合并草侧面覆盖材质。
      */
-    private static void bakeQuad(HelicopterEntity heli,Vec3d source,Surface surface,
+    private static void bakeBlock(HelicopterEntity heli,Vec3d origin,BlockPos pos,BlockState state,
+            Random random,List<LitVertex> vertices){
+        var model=MinecraftClient.getInstance().getBlockRenderManager().getModel(state);
+        long seed=state.getRenderingSeed(pos);Map<List<Vec3d>,LitFace> uniqueFaces=new HashMap<>();
+        for(Direction side:Direction.values()){
+            if(!net.minecraft.block.Block.shouldDrawSide(state,heli.getWorld(),pos,side,pos.offset(side)))continue;
+            random.setSeed(seed);
+            for(var quad:model.getQuads(state,side,random))bakeQuad(heli,pos,state,quad,uniqueFaces);
+        }
+        random.setSeed(seed);
+        for(var quad:model.getQuads(state,null,random))bakeQuad(heli,pos,state,quad,uniqueFaces);
+        for(var face:uniqueFaces.values()){
+            int color=tint(state,pos,face.base),overlayColor=face.overlay==null?0:tint(state,pos,face.overlay);
+            int[] data=face.base.getVertexData(),overlay=face.overlay==null?data:face.overlay.getVertexData();
+            for(int i=0;i<4;i++){
+                int base=i*BLOCK_STRIDE;
+                vertices.add(new LitVertex(face.positions.get(i).subtract(origin),face.normal,
+                        Float.intBitsToFloat(data[base+4]),Float.intBitsToFloat(data[base+5]),color,
+                        Float.intBitsToFloat(overlay[base+4]),Float.intBitsToFloat(overlay[base+5]),overlayColor));
+            }
+        }
+    }
+
+    /** 功能：保留实际模型顶点并合并同面底图和覆盖层；光源遮挡交给透视深度，CPU 不再发射射线。 */
+    private static void bakeQuad(HelicopterEntity heli,BlockPos pos,
             BlockState state,BakedQuad quad,Map<List<Vec3d>,LitFace> uniqueFaces){
-        int[] data=quad.getVertexData();Vec3d modelOffset=state.getModelOffset(heli.getWorld(),surface.pos);
-        Vec3d[] positions=new Vec3d[4];Vec3d center=Vec3d.ZERO;
+        int[] data=quad.getVertexData();Vec3d modelOffset=state.getModelOffset(heli.getWorld(),pos);
+        Vec3d[] positions=new Vec3d[4];
         for(int i=0;i<4;i++){
-            int base=i*BLOCK_STRIDE;positions[i]=Vec3d.of(surface.pos).add(modelOffset).add(
+            int base=i*BLOCK_STRIDE;positions[i]=Vec3d.of(pos).add(modelOffset).add(
                     Float.intBitsToFloat(data[base]),Float.intBitsToFloat(data[base+1]),Float.intBitsToFloat(data[base+2]));
-            center=center.add(positions[i].multiply(.25));
         }
         Vec3d normal=Vec3d.of(quad.getFace().getVector());
         List<Vec3d> key=List.of(positions);LitFace previous=uniqueFaces.get(key);
@@ -426,8 +540,6 @@ public final class SearchlightRenderer {
             else if(previous.base.hasColor())uniqueFaces.put(key,new LitFace(key,normal,quad,previous.base));
             return;
         }
-        var check=ray(heli,source,center.subtract(normal.multiply(.02)));
-        if(check.getType()!=HitResult.Type.BLOCK||!check.getBlockPos().equals(surface.pos)||check.getPos().squaredDistanceTo(center)>.01)return;
         uniqueFaces.put(key,new LitFace(key,normal,quad,null));
     }
 
@@ -442,7 +554,9 @@ public final class SearchlightRenderer {
         try(BufferAllocator allocator=new BufferAllocator(BUILD_CAPACITY)){
             BufferBuilder builder=new BufferBuilder(allocator,VertexFormat.DrawMode.QUADS,VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL);
             MatrixStack matrices=new MatrixStack();for(var vertex:projection.vertices)emit(builder,matrices,vertex);
-            BuiltBuffer built=builder.end();projection.buffer=new VertexBuffer(VertexBuffer.Usage.STATIC);projection.buffer.bind();
+            BuiltBuffer built=builder.end();
+            if(projection.buffer==null)projection.buffer=new VertexBuffer(VertexBuffer.Usage.DYNAMIC);
+            projection.buffer.bind();
             try{projection.buffer.upload(built);}finally{VertexBuffer.unbind();}
         }
     }

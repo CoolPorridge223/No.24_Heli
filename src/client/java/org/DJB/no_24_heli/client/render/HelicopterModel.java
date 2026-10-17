@@ -114,13 +114,7 @@ public final class HelicopterModel {
         buildInterior();
         buildGear();
         buildRotors();
-        // 顶部发动机整流罩、后向排气管和旋翼轴均为旋转曲面。
-        // 整流罩最低处在舱顶附近，不能让外部发动机穿进驾驶员眼睛上方。
-        ellipsoid(shell, new Vec3d(0, 2.33, -.52), new Vec3d(.49, .24, .91), PAINT);
-        // 轴座底面抬高八厘米，避免舱灯后方仅数毫米净距在第一人称/光影下露出外部结构。
-        tube(shell, new Vec3d(0, 2.10, -.52), new Vec3d(0, 2.24, -.52), .28, .28, PAINT);
-        tube(shell, new Vec3d(-.30, 2.30, -1.05), new Vec3d(-.30, 2.33, -1.66), .12, .14, METAL);
-        tube(shell, new Vec3d(.30, 2.30, -1.05), new Vec3d(.30, 2.33, -1.66), .12, .14, METAL);
+        buildEngineFairing();
         tube(shell, new Vec3d(0, 2.18, -.17), new Vec3d(0, 2.71, -.17), .065, .065, METAL);
         ellipsoid(shell, new Vec3d(0, .44, 1.24), new Vec3d(.17, .19, .19), WHITE);
         ellipsoid(searchlight,new Vec3d(0,0,.177),new Vec3d(.115,.115,.03),DARK);
@@ -132,6 +126,32 @@ public final class HelicopterModel {
             camouflage.add(new Face(camouflageVertex(face.a), camouflageVertex(face.b),
                     camouflageVertex(face.c), camouflageVertex(face.d), WHITE));
         }
+    }
+
+    /**
+     * 功能：用整圈裙边将顶部椭球整流罩接到真实舱顶，后方不再生成两根排气管。
+     * 引用 MC API：net.minecraft.util.math.Vec3d 保存椭球环与舱顶交点；仅客户端构造期追加外壳。
+     * 排查：悬空查裙边是否沿完整周向生成；舱内穿模查底缘仅嵌入外蒙皮 0.012 格。
+     */
+    private void buildEngineFairing() {
+        Vec3d center = new Vec3d(0, 2.33, -.52), radius = new Vec3d(.49, .24, .91);
+        ellipsoid(shell, center, radius, PAINT);
+        // 与椭球已有的 -30° 纬线共用 24 个顶点，保持外观高度并封住罩底四周的空隙。
+        for (int segment = 0; segment < 24; segment++) {
+            Vertex a = ellipsoidVertex(center, radius, -Math.PI / 6, segment * Math.PI / 12);
+            Vertex b = ellipsoidVertex(center, radius, -Math.PI / 6, (segment + 1) * Math.PI / 12);
+            Vec3d na = new Vec3d(a.normal.x, 0, a.normal.z).normalize();
+            Vec3d nb = new Vec3d(b.normal.x, 0, b.normal.z).normalize();
+            shell.add(new Face(new Vertex(fairingFoot(a.position), na), new Vertex(a.position, na),
+                    new Vertex(b.position, nb), new Vertex(fairingFoot(b.position), nb), PAINT));
+        }
+    }
+
+    /** 功能：按机舱椭圆截面求裙边底缘；无世界访问，净距不越过 0.045 格厚的内衬。 */
+    private static Vec3d fairingFoot(Vec3d point) {
+        double ratio = point.x / profile(point.z, 1);
+        double roof = profile(point.z, 2) + profile(point.z, 3) * Math.sqrt(1 - ratio * ratio);
+        return new Vec3d(point.x, roof - .012, point.z);
     }
 
     /**

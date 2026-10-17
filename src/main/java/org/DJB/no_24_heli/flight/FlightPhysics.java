@@ -7,6 +7,13 @@ import org.DJB.no_24_heli.data.HeliConfig;
 public final class FlightPhysics {
     /** 每 tick 的重力加速度，单位为格/tick²。 */
     public static final double GRAVITY = 0.04;
+    /** 起落架放下时每 tick 额外保留 97% 的水平速度；只在空中施加，不改变垂直升力或地面摩擦。 */
+    private static final double GEAR_DRAG = .97;
+
+    /** 功能：取得水平速度保留比例；纯服务端计算，无 MC API，导航前馈与物理使用同一阻力。 */
+    public static double horizontalDrag(boolean hardcore, boolean gearDown) {
+        return (hardcore ? .994 : .981) * (gearDown ? GEAR_DRAG : 1);
+    }
     public static double clamp(double v, double lo, double hi) { return Math.max(lo, Math.min(hi, v)); }
     private static double approach(double a, double b, double step) { return a + clamp(b-a, -step, step); }
 
@@ -81,7 +88,7 @@ public final class FlightPhysics {
         // 无动力的前飞气流仍产生升力，支持有速度的下滑和接地前拉平。
         if (!powered && s.armed && !grounded)
             s.vy += Math.min(.028, Math.max(0,-s.vy)*.042*s.rpm*s.rotor/100);
-        double drag = c.hardcore() ? .994 : .981;
+        double drag = horizontalDrag(c.hardcore(), !grounded && s.gear);
         s.vx *= drag; s.vz *= drag; s.vy *= .985;
         if (c.wind && !grounded) {
             double gust = rain ? .0015 : .0005;

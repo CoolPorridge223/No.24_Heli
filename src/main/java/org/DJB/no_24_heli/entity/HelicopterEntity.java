@@ -175,7 +175,12 @@ public class HelicopterEntity extends Entity {
         if((action&ControlPayload.ALTITUDE)!=0){flight.altitudeHold=!flight.altitudeHold&&flight.running&&flight.armed;flight.targetAltitude=getY();lastActions=tick;}
         if((action&ControlPayload.TRIM)!=0){flight.trim=!flight.trim;lastActions=tick;}
         if((action&ControlPayload.CRUISE)!=0){flight.cruise=!flight.cruise&&flight.running&&flight.armed;flight.targetSpeed=Math.hypot(flight.vx,flight.vz);lastActions=tick;}
-        if((action&ControlPayload.GEAR)!=0){flight.gear=!flight.gear;lastActions=tick;}
+        if((action&ControlPayload.GEAR)!=0){
+            // 权威端拒绝接地时收起；仍允许放下，也允许真正离地后收起。
+            if(flight.gear&&(isOnGround()||hasBlockSupport()))message(player,"gear_grounded");
+            else flight.gear=!flight.gear;
+            lastActions=tick;
+        }
         if((action&ControlPayload.ROPE)!=0){
             if(flight.rope){if(ropeCarrier()!=null&&ropeCarrier().hasPassengers()){message(player,"rope_occupied");return;}flight.rope=false;ropeLength=0;}
             else if(safeHover()){flight.rope=true;ropeLength=(int)Math.ceil(heightAboveGround());ensureRopeCarrier();
