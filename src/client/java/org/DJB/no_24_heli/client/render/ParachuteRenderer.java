@@ -3,6 +3,7 @@ package org.DJB.no_24_heli.client.render;
 
 import org.DJB.no_24_heli.No_24_heli;
 import org.DJB.no_24_heli.entity.ParachuteEntity;
+import org.DJB.no_24_heli.flight.ParachuteCanopy;
 import org.DJB.no_24_heli.flight.ParachuteSuspension;
 
 
@@ -43,6 +44,10 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
     private final ModelPart cord;
     /** 织物资源为细格防撕裂布，无自发光，接受环境和光影光照。 */
     private static final Identifier FABRIC = No_24_heli.id("textures/entity/parachute_fabric.png");
+    /** 细分翻倍后织纹仍横向重复六次、弦向两次，保持原来的防撕裂布纹尺寸。 */
+    private static final float SPAN_UV = 6f / ParachuteCloth.SPAN, CHORD_UV = 2f / ParachuteCloth.CHORD;
+    /** 左右翼尖统一为紫色，橙色主翼和米白中心条保持原宽度。 */
+    private static final int TIP_COLOR = 0xff8547b8;
 
     /** net.minecraft.client.model.ModelPart 构建吊绳棱柱，展开翼面由动态节点构建。 */
     public ParachuteRenderer(EntityRendererFactory.Context context) {
@@ -69,7 +74,9 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
             matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(-entity.canopyYaw(delta)));
             ParachutePose.apply(matrices, entity, delta, false);
         }
-        VertexConsumer buffer = consumers.getBuffer(RenderLayer.getEntityCutoutNoCull(FABRIC));
+        // 失压翼已有完整顶层、底层和封边，剔除内侧背面，避免折层内壁反复覆盖造成暗块。
+        VertexConsumer buffer = consumers.getBuffer(loose
+                ? RenderLayer.getEntityCutout(FABRIC) : RenderLayer.getEntityCutoutNoCull(FABRIC));
         for (int x = 0; x < ParachuteCloth.SPAN; x++) for (int z = 0; z < ParachuteCloth.CHORD; z++) {
             if (!hasCell(entity, x, z)) continue;
             Vec3d a = mesh.point(x, z, delta), b = mesh.point(x + 1, z, delta);
@@ -82,29 +89,32 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
                 a = a.add(0, front, 0); b = b.add(0, front, 0);
                 c = c.add(0, back, 0); d = d.add(0, back, 0);
             }
-            // 深蓝翼尖、橙色主翼和米白中心条；顶底层之间保留气室厚度。
-            int color = x < 3 || x >= 21 ? 0xff28465d : x >= 10 && x < 14 ? 0xfff2ead3 : 0xffe99539;
+            int stripe = x * 24 / ParachuteCloth.SPAN;
+            int color = stripe < 3 || stripe >= 21 ? TIP_COLOR : stripe >= 10 && stripe < 14 ? 0xfff2ead3 : 0xffe99539;
             // 世界局部 +Y 朝上；顶底绕序相反，法线必须朝向布面外侧以接受正确光照。
-            surface(matrices, buffer, d, c, b, a, color, light, x, z);
-            surface(matrices, buffer, lowA, lowB, lowC, lowD, 0xffe4e2d6, light, x, z);
+            fabricSurface(matrices, buffer, mesh, a, b, c, d, false, delta, color, light, x, z);
+            fabricSurface(matrices, buffer, mesh, lowA, lowB, lowC, lowD, true, delta, 0xffe4e2d6, light, x, z);
             // 四周和破口都封边，斜视时仍有实体厚度，不是两张互相悬空的面。
             if (!hasCell(entity, x, z - 1)) surface(matrices, buffer, a, b, lowB, lowA, color, light, x, z);
             if (!hasCell(entity, x + 1, z)) surface(matrices, buffer, b, c, lowC, lowB, color, light, x, z);
             if (!hasCell(entity, x, z + 1)) surface(matrices, buffer, c, d, lowD, lowC, color, light, x, z);
             if (!hasCell(entity, x - 1, z)) surface(matrices, buffer, d, a, lowA, lowD, color, light, x, z);
         }
-        for (int x = 0; x <= ParachuteCloth.SPAN; x += 2) {
+        int chamber = ParachuteCloth.SPAN / 12;
+        for (int x = 0; x <= ParachuteCloth.SPAN; x += chamber) {
             Vec3d leading = mesh.point(x, ParachuteCloth.CHORD, delta);
             // 前缘暗色进气口和侧向肋片形成冲压翼气室，而非一张没有厚度的板。
             if (!loose && x < ParachuteCloth.SPAN) {
-                Vec3d next = mesh.point(x + 2, ParachuteCloth.CHORD, delta);
+                Vec3d next = mesh.point(x + chamber, ParachuteCloth.CHORD, delta);
                 surface(matrices, buffer, leading.add(0, -.13 * opening, -.04),
                         next.add(0, -.13 * opening, -.04), next, leading, 0xff5d5341, light, x, 0);
             }
-            if (!loose && x % 4 == 0) for (int z : new int[]{1, 6}) {
-                Vec3d harness = new Vec3d(
-                        x < ParachuteCloth.SPAN / 2 ? -.25 : .25, 1.25, z == 1 ? -.12 : .12);
-                drawCord(matrices, buffer, harness, mesh.point(x, z, delta), light);
+            if (!loose && x % (ParachuteCloth.SPAN / 6) == 0) {
+                for (int z : new int[]{ParachuteCloth.CHORD / 8, ParachuteCloth.CHORD * 3 / 4}) {
+                    Vec3d harness = new Vec3d(x < ParachuteCloth.SPAN / 2 ? -.25 : .25,
+                            1.25, z == ParachuteCloth.CHORD / 8 ? -.12 : .12);
+                    drawCord(matrices, buffer, harness, mesh.point(x, z, delta), light);
+                }
             }
         }
         if (entity.mode() == ParachuteEntity.TRAILING && entity.hasLines())
@@ -132,9 +142,9 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
             Vec3d previous = entity.linePoint(line, 0, delta);
             for (int node = 1; node <= ParachuteSuspension.SEGMENTS; node++) {
                 Vec3d next = node == ParachuteSuspension.SEGMENTS
-                        ? mesh.point(ParachuteSuspension.attachmentX(line) * 3,
-                                ParachuteSuspension.attachmentZ(line) * 2, delta)
-                        : org.DJB.no_24_heli.flight.ParachuteCanopy.surfacePoint(entity,
+                        ? mesh.point(ParachuteSuspension.attachmentX(line) * ParachuteCloth.SPAN / ParachuteCanopy.SPAN,
+                                ParachuteSuspension.attachmentZ(line) * ParachuteCloth.CHORD / ParachuteCanopy.CHORD, delta)
+                        : ParachuteCanopy.surfacePoint(entity,
                                 entity.linePoint(line, node, delta).add(origin), .025).subtract(origin);
                 drawCord(matrices, buffer, previous, next, light); previous = next;
             }
@@ -143,18 +153,38 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
 
     /** 两处不规则撕口同时裁掉上下两层，避免用深色贴片冒充破洞。 */
     private static boolean torn(int x, int z) {
+        x = x * 24 / ParachuteCloth.SPAN; z = z * 8 / ParachuteCloth.CHORD;
         return (x >= 5 && x <= 8 && z >= (x == 5 ? 3 : 2) && z <= (x == 8 ? 4 : 5))
                 || (x >= 16 && x <= 19 && z >= (x == 19 ? 2 : 1) && z <= (x == 16 ? 3 : 4));
+    }
+
+    /** 布面顶底层按相邻节点共享法线；纹理坐标沿实际翼展/弦长连续，平滑弧度和织纹同时保留。 */
+    private static void fabricSurface(MatrixStack matrices, VertexConsumer buffer, ParachuteCloth mesh,
+            Vec3d a, Vec3d b, Vec3d c, Vec3d d, boolean underside, float delta, int color, int light, int x, int z) {
+        double sign = underside ? -1 : 1;
+        Vec3d na = mesh.normal(x, z, delta).multiply(sign), nb = mesh.normal(x + 1, z, delta).multiply(sign);
+        Vec3d nc = mesh.normal(x + 1, z + 1, delta).multiply(sign), nd = mesh.normal(x, z + 1, delta).multiply(sign);
+        if (underside) {
+            vertex(matrices, buffer, a, na, color, light, x * SPAN_UV, z * CHORD_UV);
+            vertex(matrices, buffer, b, nb, color, light, (x + 1) * SPAN_UV, z * CHORD_UV);
+            vertex(matrices, buffer, c, nc, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
+            vertex(matrices, buffer, d, nd, color, light, x * SPAN_UV, (z + 1) * CHORD_UV);
+        } else {
+            vertex(matrices, buffer, d, nd, color, light, x * SPAN_UV, (z + 1) * CHORD_UV);
+            vertex(matrices, buffer, c, nc, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
+            vertex(matrices, buffer, b, nb, color, light, (x + 1) * SPAN_UV, z * CHORD_UV);
+            vertex(matrices, buffer, a, na, color, light, x * SPAN_UV, z * CHORD_UV);
+        }
     }
 
     /** 一片织物按实际形状计算法线，net.minecraft.client.render.VertexConsumer 保留环境光与纹理。 */
     private static void surface(MatrixStack matrices, VertexConsumer buffer, Vec3d a, Vec3d b,
             Vec3d c, Vec3d d, int color, int light, int x, int z) {
         Vec3d normal = b.subtract(a).crossProduct(d.subtract(a)).normalize();
-        vertex(matrices, buffer, a, normal, color, light, x / 4f, z / 4f);
-        vertex(matrices, buffer, b, normal, color, light, (x + 1) / 4f, z / 4f);
-        vertex(matrices, buffer, c, normal, color, light, (x + 1) / 4f, (z + 1) / 4f);
-        vertex(matrices, buffer, d, normal, color, light, x / 4f, (z + 1) / 4f);
+        vertex(matrices, buffer, a, normal, color, light, x * SPAN_UV, z * CHORD_UV);
+        vertex(matrices, buffer, b, normal, color, light, (x + 1) * SPAN_UV, z * CHORD_UV);
+        vertex(matrices, buffer, c, normal, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
+        vertex(matrices, buffer, d, normal, color, light, x * SPAN_UV, (z + 1) * CHORD_UV);
     }
 
     /** 提交带织纹、覆盖层、光照和变换后法线的顶点，不使用立即模式或自发光渲染层。 */

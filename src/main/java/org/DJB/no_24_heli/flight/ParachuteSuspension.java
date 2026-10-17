@@ -24,9 +24,9 @@ public final class ParachuteSuspension {
     private double peakPull;
 
     /** 八根绳与物理布面的吊点坐标一一对应，不使用整翼中心替代受力点。 */
-    public static int attachmentX(int line) { return 1 + line / 2 * 2; }
+    public static int attachmentX(int line) { return (1 + line / 2 * 2) * ParachuteCanopy.SPAN / 8; }
     /** 前后两排分别位于弦长的四分之一、四分之三。 */
-    public static int attachmentZ(int line) { return line % 2 == 0 ? 1 : 3; }
+    public static int attachmentZ(int line) { return (line % 2 == 0 ? 1 : 3) * ParachuteCanopy.CHORD / 4; }
     /** 胸口左右各十五厘米，保持绳端随人物而非滞后的实体中心。 */
     public static Vec3d anchor(Vec3d harness, int line) { return harness.add(line < LINES / 2 ? -.15 : .15, 0, 0); }
     /** 每根绳的节点连续编号。 */

@@ -10,7 +10,7 @@ import net.fabricmc.api.Environment;
 import net.minecraft.util.math.Vec3d;
 
 /**
- * 职责：25×9 节点 Verlet 布面，用结构/剪切约束保持冲压翼弧形，后缘允许气流起伏。
+ * 职责：49×17 节点布面，活翼用 Verlet 保持冲压翼弧形，失压翼采样连续弯曲曲面。
  * 引用：net.minecraft.util.math.Vec3d 保存局部位置；ParachuteEntity 的同步充气和速度驱动表现。
  * 生命周期：每具可见伞独立实例，渲染器每个客户端 tick 最多积分一次，帧间插值。
  * 端侧/线程：仅客户端渲染线程；不修改实体或服务端世界。
@@ -18,8 +18,8 @@ import net.minecraft.util.math.Vec3d;
  */
 @Environment(EnvType.CLIENT)
 final class ParachuteCloth {
-    /** 跨翼二十四段形成十二个冲压气室，弦向八段；不依赖帧率改变网格密度。 */
-    static final int SPAN = 24, CHORD = 8;
+    /** 跨翼四十八段、弦向十六段；气室仍为十二个，显示面数增为原来的四倍。 */
+    static final int SPAN = 48, CHORD = 16;
     /** 高阻尼保留小幅布面起伏；约束三遍控制结构和剪切拉伸，后缘响应更柔和。 */
     private static final double DAMPING = .78;
     private final Vec3d[] nodes = new Vec3d[(SPAN + 1) * (CHORD + 1)];
@@ -40,9 +40,9 @@ final class ParachuteCloth {
      */
     private static Vec3d restPoint(int x, int z, double opening, double ticks) {
         double u = x * 2.0 / SPAN - 1, v = z / (double) CHORD;
-        double cell = .045 * Math.sin(x * Math.PI / 2) * Math.sin(v * Math.PI) * opening;
+        double cell = .045 * Math.sin(x * Math.PI * 12 / SPAN) * Math.sin(v * Math.PI) * opening;
         return ParachuteCanopy.localPoint(u, v, opening, ticks)
-                .add(0, cell + (1 - opening) * .15 * Math.cos(x * 1.7 + z), 0);
+                .add(0, cell + (1 - opening) * .15 * Math.cos(x * 24.0 / SPAN * 1.7 + v * 8), 0);
     }
 
     /**
@@ -50,6 +50,7 @@ final class ParachuteCloth {
      * net.minecraft.entity.Entity#getVelocity 提供同步气流变化，跨越不可见时段重置以免数值爆炸。
      */
     void update(ParachuteEntity canopy) {
+        loose = false;
         if (lastAge == canopy.age) return;
         double opening = canopy.inflation(1), ticks = canopy.openingTicks(1);
         Vec3d velocity = canopy.getVelocity();
@@ -63,7 +64,7 @@ final class ParachuteCloth {
             Vec3d current = nodes[i]; frame[i] = current;
             // 领先边受压较强，后缘较柔软；风扰动仅厘米量级，主体仍由张力约束决定。
             double pressure = z == CHORD ? .48 : .20;
-            double flutter = Math.sin(canopy.age * .47 + x * .83 + z * .62)
+            double flutter = Math.sin(canopy.age * .47 + x * 24.0 / SPAN * .83 + z * 8.0 / CHORD * .62)
                     * (.004 + .006 * (1 - opening)) * (1 - z / (double) (CHORD + 1));
             nodes[i] = current.add(current.subtract(previous[i]).multiply(DAMPING))
                     .add(rest[i].subtract(current).multiply(pressure)).add(sway, flutter, 0);
@@ -87,7 +88,7 @@ final class ParachuteCloth {
     void prepareLoose(ParachuteEntity canopy, float delta) {
         loose = true; Vec3d origin = canopy.getLerpedPos(delta);
         for (int x = 0; x <= SPAN; x++) for (int z = 0; z <= CHORD; z++) {
-            Vec3d world = canopy.loosePoint(x, z, delta).add(origin);
+            Vec3d world = canopy.loosePoint(x / (double) SPAN, z / (double) CHORD, delta).add(origin);
             nodes[index(x, z)] = ParachuteCanopy.surfacePoint(canopy, world).subtract(origin);
         }
     }
@@ -103,5 +104,12 @@ final class ParachuteCloth {
     /** net.minecraft.util.math.Vec3d#lerp 在两个模拟帧之间插值，供三角面、气室和吊绳共用。 */
     Vec3d point(int x, int z, float delta) {
         int i = index(x, z); return loose ? nodes[i] : frame[i].lerp(nodes[i], delta);
+    }
+
+    /** 相邻细分点共享曲面切线法线，避免密网格仍被逐面光照画成一块块硬板。 */
+    Vec3d normal(int x, int z, float delta) {
+        Vec3d span = point(Math.min(SPAN, x + 1), z, delta).subtract(point(Math.max(0, x - 1), z, delta));
+        Vec3d chord = point(x, Math.min(CHORD, z + 1), delta).subtract(point(x, Math.max(0, z - 1), delta));
+        return chord.crossProduct(span).normalize();
     }
 }

@@ -252,7 +252,7 @@ public final class ParachuteEntity extends Entity {
         if (player != null) dataTracker.set(OWNER, player.getId());
         Vec3d harness = detached ? null : player.getPos().add(0, 1.25, 0);
         cloth.tick(this, harness, detached); setPosition(cloth.center());
-        // 粗布面和柔绳共用每两 tick 的快照，225 个细分显示节点不参与网络发送。
+        // 权威布面和柔绳共用每两 tick 的快照，客户端更密的显示节点不参与网络发送。
         if (age % 2 == 0) dataTracker.set(CLOTH, cloth.snapshot(false));
     }
 
@@ -290,10 +290,10 @@ public final class ParachuteEntity extends Entity {
     public int failure() { return dataTracker.get(FAILURE); }
     /** 卡伞时客户端允许 F 连点，实际处理仍校验真实乘员。 */
     public boolean needsPull() { return mode() == ACTIVE && failure() == JAMMED; }
-    /** 从快照采样世界节点后减去实体插值原点，供不旋转的失压网格使用。 */
+    /** 按归一化翼展/弦长采样世界曲面，减去实体插值原点，避免显示细分密度耦合到实体。 */
     public Vec3d loosePoint(double x, double z, float delta) {
         float blend = getWorld().isClient ? MathHelper.clamp((age - clothSnapshotAge + delta) / 2, 0, 1) : 1;
-        return cloth.point(x * ParachuteCanopy.SPAN / 24, z * ParachuteCanopy.CHORD / 8, blend)
+        return cloth.point(x * ParachuteCanopy.SPAN, z * ParachuteCanopy.CHORD, blend)
                 .subtract(getLerpedPos(delta));
     }
     /** 柔绳中间节点的同帧插值；第一节点用当前人物胸口，消除网络延迟造成的绳端脱开。 */

@@ -10,22 +10,30 @@ import net.minecraft.util.math.Vec3d;
 import java.util.List;
 
 /**
- * 职责：9×5 世界节点通过 Verlet、结构/剪切/弯曲约束和体积碰撞形成可摊开的失压布面。
+ * 职责：17×9 世界节点通过 Verlet、结构/剪切/弯曲约束和体积碰撞形成可连续弯曲的失压布面。
  * 引用：net.minecraft.entity.Entity#adjustMovementForCollisions 对节点体积做原版方块碰撞。
  * 生命周期：伞降结束时从翼面姿态初始化，实体 tick 积分并同步，取下伞包后随实体释放。
  * 线程：服务端主线程；客户端只接收节点快照并插值，不回写物理。
  * 排查：地面滑行查碰撞摩擦，拖行查吊绳长度，脱落飘走查独立气阻与寿命。
  */
 public final class ParachuteCanopy {
-    /** 四十五个物理节点；视觉布面在节点间插值为原有 25×9 网格。 */
-    public static final int SPAN = 8, CHORD = 4;
+    /** 一百五十三个权威节点；客户端另外细分显示，不把全部显示顶点放进网络。 */
+    public static final int SPAN = 16, CHORD = 8;
+    /** 旧版 9×5 节点的存档在读取时细分，保留布面位置、速度和吊绳。 */
+    private static final int LEGACY_SPAN = 8, LEGACY_CHORD = 4;
     /** 活翼中心距脚 5.2 格，翼尖下弯 1.6 格；失压后不再向整张布施加位置目标。 */
     public static final double HEIGHT = 5.2, ARCH = 1.6;
     private static final double HALF_SPAN = 3.7, LENGTH = 2.4;
     /** 节点碰撞半径 9cm，允许布料沿被牵引方向越过一格台阶和 1.5 格栅栏。 */
     private static final double NODE_RADIUS = .09, STEP_HEIGHT = 1.6, CONTACT_MARGIN = .002;
-    /** 六遍交替求解柔绳与布内张力；软弯曲允许吊点先移动，其余布面滞后并起褶。 */
+    /** 六遍交替求解柔绳与布内张力；弯曲韧性限制锐折，仍允许吊点先移动、其余布面滞后。 */
     private static final int CONSTRAINT_PASSES = 6;
+    /** 三维弯曲保留单边长 26% 的中点偏差；只约束锐折，允许整翼在地面内弯成弧线。 */
+    private static final double BEND_ALLOWANCE = .26, BEND_STIFFNESS = .18;
+    /** 经向抗压保留 22%，斜向仅保留 8%；剪切柔度使吊点领先时两翼能滞后弯曲。 */
+    private static final double STRUCTURAL_COMPRESSION = .22, SHEAR_COMPRESSION = .08;
+    /** 非相邻布点至少留 24cm 间距，覆盖落地气室最厚 20cm 的显示厚度。 */
+    private static final double SELF_SEPARATION = .24;
     /** 世界位置、Verlet 上一步及显示/碰撞的本 tick 起点，三个数组不能互相覆盖。 */
     private final Vec3d[] points = new Vec3d[(SPAN + 1) * (CHORD + 1)];
     private final Vec3d[] previous = new Vec3d[points.length], frame = new Vec3d[points.length];
@@ -102,22 +110,25 @@ public final class ParachuteCanopy {
         for (int pass = 0; pass < CONSTRAINT_PASSES; pass++) {
             if (harness != null) suspension.solve(entity, harness, this);
             for (int x = 0; x <= SPAN; x++) for (int z = 0; z <= CHORD; z++) {
-                if (x < SPAN) constrain(index(x, z), index(x + 1, z), 2 * HALF_SPAN / SPAN, .65);
-                if (z < CHORD) constrain(index(x, z), index(x, z + 1), LENGTH / CHORD, .65);
+                if (x < SPAN) constrain(index(x, z), index(x + 1, z), 2 * HALF_SPAN / SPAN, .78, STRUCTURAL_COMPRESSION);
+                if (z < CHORD) constrain(index(x, z), index(x, z + 1), LENGTH / CHORD, .78, STRUCTURAL_COMPRESSION);
                 if (x < SPAN && z < CHORD) {
                     double diagonal = Math.hypot(2 * HALF_SPAN / SPAN, LENGTH / CHORD);
-                    constrain(index(x, z), index(x + 1, z + 1), diagonal, .3);
-                    constrain(index(x + 1, z), index(x, z + 1), diagonal, .3);
+                    constrain(index(x, z), index(x + 1, z + 1), diagonal, .30, SHEAR_COMPRESSION);
+                    constrain(index(x + 1, z), index(x, z + 1), diagonal, .30, SHEAR_COMPRESSION);
                 }
                 if (x + 2 <= SPAN) {
-                    constrain(index(x, z), index(x + 2, z), 4 * HALF_SPAN / SPAN, .025);
+                    constrain(index(x, z), index(x + 2, z), 4 * HALF_SPAN / SPAN, .16, 0);
+                    bend(index(x, z), index(x + 1, z), index(x + 2, z), 2 * HALF_SPAN / SPAN);
                     buckle(index(x, z), index(x + 1, z), index(x + 2, z), 2 * HALF_SPAN / SPAN);
                 }
                 if (z + 2 <= CHORD) {
-                    constrain(index(x, z), index(x, z + 2), 2 * LENGTH / CHORD, .025);
+                    constrain(index(x, z), index(x, z + 2), 2 * LENGTH / CHORD, .16, 0);
+                    bend(index(x, z), index(x, z + 1), index(x, z + 2), LENGTH / CHORD);
                     buckle(index(x, z), index(x, z + 1), index(x, z + 2), LENGTH / CHORD);
                 }
             }
+            separateFolds();
             for (int i = 0; i < points.length; i++)
                 points[i] = moveNode(entity, frame[i], points[i], !detached);
         }
@@ -125,31 +136,63 @@ public final class ParachuteCanopy {
         if (harness != null) suspension.finishTick(entity, this);
     }
 
-    /** 布料抵抗拉伸和过量压缩，软弯曲约束容许折叠，不能再把所有节点压成同一点。 */
-    private void constrain(int a, int b, double rest, double stiffness) {
+    /** 拉伸保持张力，压缩按经向/剪切分别释放；隔点约束只限伸长，不把弧线重新撑直。 */
+    private void constrain(int a, int b, double rest, double stiffness, double compression) {
         Vec3d offset = points[b].subtract(points[a]); double length = offset.length();
         if (length < .00001) return;
-        double strength = length < rest ? stiffness * .12 : stiffness;
+        double strength = length < rest ? stiffness * compression : stiffness;
         Vec3d correction = offset.multiply(Math.clamp((length - rest) * .5 * strength, -.25, .25) / length);
         points[a] = points[a].add(correction); points[b] = points[b].subtract(correction);
     }
 
     /**
-     * 三节点薄布受压会向面外屈曲，不能只在水平面缩短成一张纸。端点距离压缩超过 4%
-     * 才按两段原长计算中点目标褶高，目标最高 0.55 格；不使用随时间播放的假扭曲动画。
+     * 用 net.minecraft.util.math.Vec3d 的中点偏差限制局部锐折；三点等质量分担修正，
+     * 不设整翼朝向或地面位置目标，因此不会将柔绳变成能推伞的刚性支架。
+     * 保留阈值以内的曲率，只有超出的弯折才受回复力；方块接触随后重新投影。
+     */
+    private void bend(int a, int b, int c, double rest) {
+        Vec3d deviation = points[b].subtract(points[a].lerp(points[c], .5));
+        double length = deviation.length(), allowance = rest * BEND_ALLOWANCE;
+        if (length <= allowance) return;
+        Vec3d correction = deviation.multiply((length - allowance) / length * BEND_STIFFNESS);
+        points[a] = points[a].add(correction.multiply(.5));
+        points[b] = points[b].subtract(correction);
+        points[c] = points[c].add(correction.multiply(.5));
+    }
+
+    /** 非邻接布点的近场排斥只处理真实接近，不干预自由摆动；防止折层挤入气室厚度。 */
+    private void separateFolds() {
+        for (int a = 0; a < points.length; a++) for (int b = a + 1; b < points.length; b++) {
+            if (Math.abs(a / (CHORD + 1) - b / (CHORD + 1)) <= 1
+                    && Math.abs(a % (CHORD + 1) - b % (CHORD + 1)) <= 1) continue;
+            // 密网格绝大多数点对相距很远，先用标量筛选，避免每 tick 为全部点对分配向量。
+            double dx = points[b].x - points[a].x, dy = points[b].y - points[a].y, dz = points[b].z - points[a].z;
+            double squared = dx * dx + dy * dy + dz * dz;
+            if (squared >= SELF_SEPARATION * SELF_SEPARATION) continue;
+            double distance = Math.sqrt(squared);
+            // 精确重合属于塌落/旧快照边界，用上方向分离，不能除以零或引入随机闪动。
+            Vec3d direction = distance > .00001 ? new Vec3d(dx / distance, dy / distance, dz / distance) : new Vec3d(0, 1, 0);
+            Vec3d correction = direction.multiply((SELF_SEPARATION - distance) * .5);
+            points[a] = points[a].subtract(correction); points[b] = points[b].add(correction);
+        }
+    }
+
+    /**
+     * 三节点薄布受压会向面外屈曲，不能只在水平面缩短成一张纸。端点距离压缩超过 8%
+     * 才按两段原长计算中点目标褶高，目标最高 0.10 格，避免多遍求解不断堆高褶皱。
      * 接触约束随后处理地面，竖直/斜面边则沿与端点连线垂直的向上方向起褶。
      */
     private void buckle(int a, int b, int c, double rest) {
         if (draggingTicks == 0 || !grounded[b] || !suspension.isPulling()
-                || points[b].y - frame[b].y > .14) return;
+                || points[b].y - frame[b].y > .04) return;
         Vec3d offset = points[c].subtract(points[a]); double half = offset.length() * .5;
-        if (half >= rest * .96 || half < .00001) return;
+        if (half >= rest * .92 || half < .00001) return;
         Vec3d axis = offset.normalize(), normal = new Vec3d(0, 1, 0).subtract(axis.multiply(axis.y));
         if (normal.lengthSquared() < .01) return;
         normal = normal.normalize();
-        double target = Math.min(.55, Math.sqrt(rest * rest - half * half));
+        double target = Math.min(.10, Math.sqrt(rest * rest - half * half));
         double height = points[b].subtract(points[a].lerp(points[c], .5)).dotProduct(normal);
-        if (height < target) points[b] = points[b].add(normal.multiply(Math.min(.02, (target - height) * .12)));
+        if (height < target) points[b] = points[b].add(normal.multiply(Math.min(.004, (target - height) * .08)));
     }
 
     /** 绳求解器取得单个布面吊点，不能直接操作整翼中心。 */
@@ -260,27 +303,60 @@ public final class ParachuteCanopy {
     /** 客户端快照以旧点作为插值起点；存档则恢复 Verlet 速度，拒绝非有限/错误长度数组。 */
     public void read(NbtCompound nbt) {
         long[] values = nbt.getLongArray("Points"), velocity = nbt.getLongArray("Previous");
-        if (values.length != points.length * 3) return;
+        boolean legacy = values.length == (LEGACY_SPAN + 1) * (LEGACY_CHORD + 1) * 3;
+        if (values.length != points.length * 3 && !legacy) return;
         for (long value : values) if (!Double.isFinite(Double.longBitsToDouble(value))) return;
+        int sourceSpan = legacy ? LEGACY_SPAN : SPAN, sourceChord = legacy ? LEGACY_CHORD : CHORD;
         for (int i = 0; i < points.length; i++) {
-            Vec3d next = decode(values, i);
+            double x = i / (CHORD + 1) * sourceSpan / (double) SPAN;
+            double z = i % (CHORD + 1) * sourceChord / (double) CHORD;
+            Vec3d next = sample(values, sourceSpan, sourceChord, x, z);
             frame[i] = ready ? point(i / (CHORD + 1), i % (CHORD + 1), 1) : next;
             points[i] = next;
-            previous[i] = velocity.length == values.length ? decode(velocity, i) : next;
+            previous[i] = velocity.length == values.length ? sample(velocity, sourceSpan, sourceChord, x, z) : next;
             if (!Double.isFinite(previous[i].lengthSquared())) previous[i] = next;
         }
         ready = true;
         suspension.read(nbt);
     }
 
-    /** 双线性采样任意视觉节点；输入使用物理网格单位，帧插值只影响显示。 */
+    /** 旧快照按原网格双线性细分；位置和 Verlet 上一步使用相同权重，避免恢复时凭空加速。 */
+    private static Vec3d sample(long[] values, int span, int chord, double x, double z) {
+        int ix = Math.min(span - 1, (int) x), iz = Math.min(chord - 1, (int) z);
+        double fx = x - ix, fz = z - iz;
+        int a = ix * (chord + 1) + iz, b = a + chord + 1;
+        return decode(values, a).lerp(decode(values, b), fx)
+                .lerp(decode(values, a + 1).lerp(decode(values, b + 1), fx), fz);
+    }
+
+    /** 三次曲面采样保留每个权威节点，又让其间的弧度连续；显示端随后投影地形接触。 */
     public Vec3d point(double x, double z, float delta) {
         if (!ready) return Vec3d.ZERO;
         int ix = Math.min(SPAN - 1, (int) x), iz = Math.min(CHORD - 1, (int) z);
         double fx = x - ix, fz = z - iz;
-        return interpolate(index(ix, iz), delta).lerp(interpolate(index(ix + 1, iz), delta), fx)
-                .lerp(interpolate(index(ix, iz + 1), delta)
-                        .lerp(interpolate(index(ix + 1, iz + 1), delta), fx), fz);
+        Vec3d[] rows = new Vec3d[4];
+        for (int row = 0; row < rows.length; row++) {
+            int rz = iz + row - 1;
+            rows[row] = curve(gridPoint(ix - 1, rz, delta), gridPoint(ix, rz, delta),
+                    gridPoint(ix + 1, rz, delta), gridPoint(ix + 2, rz, delta), fx);
+        }
+        return curve(rows[0], rows[1], rows[2], rows[3], fz);
+    }
+
+    /** 边界按邻边切线外推，保持平面和直边精确，避免钳制重复端点造成翼缘收缩。 */
+    private Vec3d gridPoint(int x, int z, float delta) {
+        int cx = Math.clamp(x, 0, SPAN), cz = Math.clamp(z, 0, CHORD);
+        Vec3d point = interpolate(index(cx, cz), delta), result = point;
+        if (x != cx) result = result.add(point.subtract(interpolate(index(cx == 0 ? 1 : SPAN - 1, cz), delta)));
+        if (z != cz) result = result.add(point.subtract(interpolate(index(cx, cz == 0 ? 1 : CHORD - 1), delta)));
+        return result;
+    }
+
+    /** Catmull–Rom 插值通过中间两点并共享切线，只细化曲面，不参与服务端受力。 */
+    private static Vec3d curve(Vec3d a, Vec3d b, Vec3d c, Vec3d d, double t) {
+        return b.add(c.subtract(a).multiply(.5 * t))
+                .add(a.multiply(2).subtract(b.multiply(5)).add(c.multiply(4)).subtract(d).multiply(.5 * t * t))
+                .add(b.multiply(3).subtract(a).subtract(c.multiply(3)).add(d).multiply(.5 * t * t * t));
     }
 
     /** 相邻同步快照之间的线性插值，服务端调用 delta=1 直接取得权威节点。 */
