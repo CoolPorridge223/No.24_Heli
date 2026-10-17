@@ -13,6 +13,7 @@ import net.minecraft.client.render.model.json.ModelOverrideList;
 import net.minecraft.client.render.model.json.ModelTransformation;
 import net.minecraft.client.texture.Sprite;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.random.Random;
 import org.DJB.no_24_heli.No_24_heli;
 import org.DJB.no_24_heli.block.HelipadBlock;
@@ -48,6 +49,8 @@ public final class HelipadModel implements BakedModel {
     private final List<List<BakedQuad>> surfaces;
     /** 当前图集对应的灯芯；资源重载一次性替换，避免跨帧使用旧图集坐标。 */
     private static volatile List<List<BakedQuad>> lenses;
+    /** 实际带灯的十六个碎片偏移，顺序同时作为共享灯芯网格的位掩码顺序；单位：格。 */
+    private static volatile List<BlockPos> lampCells;
     /** 黄环、灯具尺寸和颜色沿用既有圆盘；所有长度单位为格。 */
     private static final double RING_INNER_RADIUS=4.62,RING_OUTER_RADIUS=4.85;
     private static final int LAMP_COUNT=16,LAMP_SEGMENTS=8;
@@ -66,6 +69,7 @@ public final class HelipadModel implements BakedModel {
      * 端侧：客户端初始化；参数/返回：无；副作用：登记模型回调；排查：物品模型使用独立资源，不替换。
      */
     public static void register(){
+        HelipadMesh.register();
         ModelLoadingPlugin.register(plugin->plugin.modifyModelAfterBake().register((model,context)->
                 No_24_heli.id("block/helipad").equals(context.resourceId())?new HelipadModel(model):model));
     }
@@ -78,6 +82,7 @@ public final class HelipadModel implements BakedModel {
         this.original=original;
         Sprite sprite=original.getParticleSprite();
         List<List<BakedQuad>> body=new ArrayList<>(CELL_COUNT*2),lightMeshes=new ArrayList<>(CELL_COUNT);
+        List<BlockPos> cells=new ArrayList<>(LAMP_COUNT);
         for(Direction.Axis axis:List.of(Direction.Axis.Z,Direction.Axis.X)){
             for(int x=-5;x<=5;x++)for(int z=-5;z<=5;z++){
                 List<BakedQuad> quads=new ArrayList<>(),lightQuads=new ArrayList<>();
@@ -89,10 +94,13 @@ public final class HelipadModel implements BakedModel {
                     }
                 }
                 body.add(List.copyOf(quads));
-                if(axis==Direction.Axis.Z)lightMeshes.add(List.copyOf(lightQuads));
+                if(axis==Direction.Axis.Z){
+                    lightMeshes.add(List.copyOf(lightQuads));
+                    if(!lightQuads.isEmpty())cells.add(new BlockPos(x,0,z));
+                }
             }
         }
-        surfaces=List.copyOf(body);lenses=List.copyOf(lightMeshes);
+        surfaces=List.copyOf(body);lenses=List.copyOf(lightMeshes);lampCells=List.copyOf(cells);
     }
 
     /**
@@ -128,6 +136,12 @@ public final class HelipadModel implements BakedModel {
     public static List<BakedQuad> lenses(BlockState state){
         return lenses.get(state.get(HelipadBlock.OFFSET_X)*CELL_WIDTH+state.get(HelipadBlock.OFFSET_Z));
     }
+
+    /** 功能：返回当前资源中带灯碎片的只读偏移；客户端渲染线程用于按完整停机坪合并灯芯。 */
+    static List<BlockPos> lampCells(){return lampCells;}
+
+    /** 功能：按相对圆盘中心的碎片偏移取灯芯；客户端渲染线程调用，不查询或加载世界。 */
+    static List<BakedQuad> lenses(BlockPos offset){return lenses.get((offset.getX()+5)*CELL_WIDTH+offset.getZ()+5);}
 
     /** 将凸多边形裁切到一个方格内，各碎片共用精确圆周而非方形贴图。 */
     private static List<Point> clip(List<Point> input,int axis,float bound,boolean greater){

@@ -13,8 +13,6 @@ import net.minecraft.client.render.LightmapTextureManager;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.Vec3d;
-import org.joml.Quaternionf;
-import org.joml.Vector3f;
 
 /**
  * 职责：缓存圆滑机身、锥形尾梁、弧形滑橇与旋翼的顶点，不以立方体拼接机身。
@@ -26,15 +24,19 @@ import org.joml.Vector3f;
  */
 @Environment(EnvType.CLIENT)
 public final class HelicopterModel {
-    /** 曲面圆周细分为 48 段并使用连续法线；坐标单位为格，+Z 为机头，+Y 向上。 */
-    private static final int RADIAL_SEGMENTS = 48;
-    /** 部件金属、内饰、蒙皮、主涂装、饰带和玻璃使用独立材质槽。 */
+    /** 近景保持原 48×56 细分，远景减为 24×28；坐标单位为格，+Z 为机头。 */
+    private final int radialSegments, longitudinalSegments;
+    /** 远景不生成毫米级板缝和铆钉；只改变显示细节，不改变实体碰撞与飞行。 */
+    private final boolean distant;
+    /** 腰带与机腹单独分区；默认警用色仍使用原来的主色和白色，其他涂装按名称配色。 */
     private static final int WHITE = 0, PAINT = 1, STRIPE = 2, DARK = 3, METAL = 4, SEAT = 5,
-            GLASS = 6, LINER = 7, SEAL = 8, SEAM = 9;
+            GLASS = 6, LINER = 7, SEAL = 8, SEAM = 9, BELT = 10, BELLY = 11;
     /** 机身蒙皮厚 4.5 厘米，玻璃厚 6 毫米；端部按截面半径缩小厚度，避免内衬反穿。 */
     private static final double SHELL_THICKNESS = .045, GLASS_INSET = .012, GLASS_THICKNESS = .006;
-    /** 内外蒙皮、透明窗和与机身贴合的紫金材质编号分别缓存。 */
-    private final List<Face> number = new ArrayList<>();
+    /** 面向机头的左侧保留 24，右侧使用 Laker；字样与蒙皮曲率一致，分别绑定材质。 */
+    private final List<Face> number = new ArrayList<>(), wordmark = new ArrayList<>();
+    /** 迷彩只缓存外壳喷漆面，不覆盖金属、窗框、板缝和内饰；三种环境共用连续 UV。 */
+    private final List<Face> camouflage = new ArrayList<>();
     /** 旧编号 0–5 保留丛林、雪、沙、黑、救援及紫金色；新增默认 6 为参考图蓝白警用色。 */
     private static final int[] PAINT_COLORS = {0xff526b40, 0xffe5ebed, 0xffc3a06c, 0xff252b33, 0xffe97a28, 0xff64389b, 0xff234aa4};
     /** 顶点保持白色，透明中心由贴图 alpha 丢弃，窗缘反光不依赖顶点透明混合。 */
@@ -44,8 +46,14 @@ public final class HelicopterModel {
     /** 地板限定在后隔舱之前与仪表罩下方，沿机腹按 32 段采样，单位：格。 */
     private static final double FLOOR_BACK = -1.02, FLOOR_FRONT = 1.10;
     private static final int FLOOR_SEGMENTS = 32;
-    /** 蓝色腰带的上下边缘和上方浅色饰带，单位：局部高度格数；按几何平面裁切，避免颜色边缘阶梯化。 */
-    private static final double BELT_BOTTOM = .79, BELT_TOP = 1.10, TRIM_TOP = 1.15;
+    /** 色带按高度平面裁切，机腹分界低于字样下缘，防止金色字样落在金色底漆上。 */
+    private static final double BELLY_TOP = .56, BELT_BOTTOM = .79, BELT_TOP = 1.10, TRIM_TOP = 1.15;
+    /** 六种涂装的外漆/起落架颜色；迷彩外壳由独立贴图提供，不再保留白色底壳。 */
+    private static final int[] LIVERY_COLORS = {0xff4b623d, 0xffe8edf0, 0xffcbb485, 0xff111214, 0xfff07721, 0xff552583};
+    private static final int[] GEAR_COLORS = {0xff293628, 0xff697780, 0xff8a704d, 0xff111214, 0xff30363b, 0xfffdb927};
+    /** 紫金采用饱和金色饰带，救援白腰带保留高可见度，三款迷彩每格约重复 0.36 次。 */
+    private static final int GOLD = 0xfffdb927, RESCUE_WHITE = 0xfff2f4ee, RESCUE_DARK = 0xff30363b;
+    private static final double CAMOUFLAGE_SCALE = .36;
     /** 各纵截面依次为 Z、半宽、中心高度、半高；形状按参考图的圆鼻、宽舱和收腰机尾采样。 */
     private static final double[][] BODY_PROFILE = {
             {-5.06, .075, 1.87, .075}, {-3.40, .14, 1.68, .14}, {-2.10, .20, 1.49, .20},
@@ -62,8 +70,6 @@ public final class HelicopterModel {
     private final List<Face> strut = new ArrayList<>();
     /** 舱灯位置只用于内饰光照衰减，单位：机体局部格数。 */
     private static final Vec3d CABIN_LAMP_POSITION = new Vec3d(0, 1.94, -.12);
-    /** 收起时滑橇向后移 0.45 格、上升 0.32 格，前翘段始终低于窗沿。 */
-    private static final double GEAR_STOW_BACK = .45, GEAR_STOW_UP = .32;
 
     /** 曲面顶点保留连续法线；面色只描述材质，不在顶点中固定某种涂装。 */
     private record Vertex(Vec3d position, Vec3d normal, float u, float v) {
@@ -88,8 +94,19 @@ public final class HelicopterModel {
      * 排查：机鼻形状查 BODY_PROFILE；部件错位查是否误用了旧模型的反向 Y 坐标。
      */
     public HelicopterModel() {
+        this(false);
+    }
+
+    /**
+     * 功能：按距离细节构造可复用网格；引用 MC API：无。
+     * 端侧：客户端构造期；参数：distant 为远景标志；副作用：填充模型缓存；近景仍采用原始细分。
+     */
+    public HelicopterModel(boolean distant) {
+        this.distant = distant;
+        radialSegments = distant ? 24 : 48;
+        longitudinalSegments = distant ? 28 : 56;
         buildCabin();
-        buildPanelSeams();
+        if (!distant) buildPanelSeams();
         buildTail();
         buildNumber();
         buildInterior();
@@ -104,6 +121,10 @@ public final class HelicopterModel {
         tube(shell, new Vec3d(0, 2.18, -.17), new Vec3d(0, 2.71, -.17), .065, .065, METAL);
         ellipsoid(shell, new Vec3d(0, .44, 1.24), new Vec3d(.17, .19, .19), WHITE);
         ellipsoid(shell, new Vec3d(0, .42, 1.39), new Vec3d(.075, .075, .03), DARK);
+        for (Face face : shell) if (paintedMaterial(face.material)) {
+            camouflage.add(new Face(camouflageVertex(face.a), camouflageVertex(face.b),
+                    camouflageVertex(face.c), camouflageVertex(face.d), WHITE));
+        }
     }
 
     /**
@@ -114,7 +135,8 @@ public final class HelicopterModel {
     private void buildCabin() {
         // 窗和门柱边界明确参与采样，避免玻璃搭在一层完整实心机身之外。
         List<Double> stations = new ArrayList<>();
-        for (int i = 0; i <= 56; i++) stations.add(-1.78 + 3.75 * i / 56);
+        for (int i = 0; i <= longitudinalSegments; i++)
+            stations.add(-1.78 + 3.75 * i / longitudinalSegments);
         stations.addAll(List.of(-1.03, -.92, -.38, -.31, .46, .53, 1.47, 1.55));
         stations.sort(Double::compare);
         // 窗边可能恰好落在均匀截面上，先合并重合采样，避免零宽面导致漏光和光影暗斑。
@@ -122,9 +144,9 @@ public final class HelicopterModel {
             if (stations.get(i) - stations.get(i - 1) < .000001) stations.remove(i);
         for (int z = 0; z < stations.size() - 1; z++) {
             double front = stations.get(z + 1), back = stations.get(z);
-            for (int a = 0; a < RADIAL_SEGMENTS; a++) {
-                double angle = a * Math.PI * 2 / RADIAL_SEGMENTS;
-                double next = (a + 1) * Math.PI * 2 / RADIAL_SEGMENTS;
+            for (int a = 0; a < radialSegments; a++) {
+                double angle = a * Math.PI * 2 / radialSegments;
+                double next = (a + 1) * Math.PI * 2 / radialSegments;
                 double midAngle = Math.abs(Math.atan2(Math.sin((angle + next) / 2), Math.cos((angle + next) / 2)));
                 double midZ = (front + back) / 2;
                 boolean window = isWindow(midZ, midAngle);
@@ -136,8 +158,8 @@ public final class HelicopterModel {
                     glass.add(insetFace(face, GLASS_INSET + GLASS_THICKNESS, true, GLASS));
                     if (z == 0 || !isWindow((stations.get(z - 1) + back) / 2, midAngle)) windowFrame(face.a, face.d);
                     if (z == stations.size() - 2 || !isWindow((front + stations.get(z + 2)) / 2, midAngle)) windowFrame(face.b, face.c);
-                    if (!isWindow(midZ, angle - Math.PI / RADIAL_SEGMENTS)) windowFrame(face.a, face.b);
-                    if (!isWindow(midZ, next + Math.PI / RADIAL_SEGMENTS)) windowFrame(face.d, face.c);
+                    if (!isWindow(midZ, angle - Math.PI / radialSegments)) windowFrame(face.a, face.b);
+                    if (!isWindow(midZ, next + Math.PI / radialSegments)) windowFrame(face.d, face.c);
                 } else {
                     paintedSurface(face);
                     interior.add(insetFace(face, SHELL_THICKNESS, true, LINER));
@@ -173,10 +195,10 @@ public final class HelicopterModel {
      * 端侧：客户端模型构造期；参数：face 为窗面，z 为纵向中点；返回：带整窗 UV 的面；无世界访问。
      * 排查：窗缘不能在每个细分面重复一圈，角度边界须与圆周网格实际覆盖范围一致。
      */
-    private static Face windowUv(Face face, double z) {
+    private Face windowUv(Face face, double z) {
         double back = z < -.38 ? -1.03 : z < .46 ? -.31 : .53;
         double front = z < -.38 ? -.38 : z < .46 ? .46 : 1.47;
-        double step = Math.PI * 2 / RADIAL_SEGMENTS;
+        double step = Math.PI * 2 / radialSegments;
         double bottom = Math.ceil((z < .46 ? .89 : .10) / step - .5) * step;
         double top = (Math.floor((z < .46 ? 1.87 : 1.57) / step - .5) + 1) * step;
         return new Face(windowUv(face.a, back, front, bottom, top), windowUv(face.b, back, front, bottom, top),
@@ -235,8 +257,8 @@ public final class HelicopterModel {
     private void bodyCap(double z, boolean forward, boolean inside, int material) {
         List<Vertex> ring = new ArrayList<>();
         Vec3d normal = new Vec3d(0, 0, forward ? 1 : -1);
-        for (int i = 0; i < RADIAL_SEGMENTS; i++) {
-            Vertex outer = bodyVertex(z, (forward ? -i : i) * Math.PI * 2 / RADIAL_SEGMENTS);
+        for (int i = 0; i < radialSegments; i++) {
+            Vertex outer = bodyVertex(z, (forward ? -i : i) * Math.PI * 2 / radialSegments);
             Vec3d point = inside ? inset(outer, SHELL_THICKNESS, false).position : outer.position;
             ring.add(new Vertex(point, normal));
         }
@@ -248,8 +270,8 @@ public final class HelicopterModel {
      * 端侧：构造期；参数/返回：无；副作用：追加局部细节；排查：板缝不得跨过玻璃，也不能拉成悬空直线。
      */
     private void buildPanelSeams() {
-        for (double z : new double[]{-1.28, -.35, .50}) for (int a = 0; a < RADIAL_SEGMENTS; a++) {
-            double angle = a * Math.PI * 2 / RADIAL_SEGMENTS, next = (a + 1) * Math.PI * 2 / RADIAL_SEGMENTS;
+        for (double z : new double[]{-1.28, -.35, .50}) for (int a = 0; a < radialSegments; a++) {
+            double angle = a * Math.PI * 2 / radialSegments, next = (a + 1) * Math.PI * 2 / radialSegments;
             if (isWindow(z, (angle + next) / 2)) continue;
             Face seam = new Face(bodyVertex(z - .0015, angle), bodyVertex(z + .0015, angle),
                     bodyVertex(z + .0015, next), bodyVertex(z - .0015, next), SEAM);
@@ -270,8 +292,9 @@ public final class HelicopterModel {
      */
     private void paintedSurface(Face face) {
         List<Vertex> points = List.of(face.a, face.b, face.c, face.d);
-        polygon(shell, clipHeight(points, BELT_BOTTOM, false), WHITE);
-        polygon(shell, clipHeight(clipHeight(points, BELT_BOTTOM, true), BELT_TOP, false), PAINT);
+        polygon(shell, clipHeight(points, BELLY_TOP, false), BELLY);
+        polygon(shell, clipHeight(clipHeight(points, BELLY_TOP, true), BELT_BOTTOM, false), WHITE);
+        polygon(shell, clipHeight(clipHeight(points, BELT_BOTTOM, true), BELT_TOP, false), BELT);
         polygon(shell, clipHeight(clipHeight(points, BELT_TOP, true), TRIM_TOP, false), STRIPE);
         polygon(shell, clipHeight(points, TRIM_TOP, true), WHITE);
     }
@@ -382,9 +405,10 @@ public final class HelicopterModel {
      * 排查：尾梁根部必须在后隔舱之后；薄尾翼需封闭上下端面，不能作为单片无厚度平面绘制。
      */
     private void buildTail() {
-        for (int z = 0; z < 16; z++) for (int a = 0; a < RADIAL_SEGMENTS; a++) {
-            double back = -5.06 + 3.28 * z / 16, front = -5.06 + 3.28 * (z + 1) / 16;
-            double angle = a * Math.PI * 2 / RADIAL_SEGMENTS, next = (a + 1) * Math.PI * 2 / RADIAL_SEGMENTS;
+        int stations = distant ? 8 : 16;
+        for (int z = 0; z < stations; z++) for (int a = 0; a < radialSegments; a++) {
+            double back = -5.06 + 3.28 * z / stations, front = -5.06 + 3.28 * (z + 1) / stations;
+            double angle = a * Math.PI * 2 / radialSegments, next = (a + 1) * Math.PI * 2 / radialSegments;
             shell.add(new Face(bodyVertex(back, angle), bodyVertex(front, angle),
                     bodyVertex(front, next), bodyVertex(back, next), PAINT));
         }
@@ -449,6 +473,9 @@ public final class HelicopterModel {
         ellipsoid(lamp, new Vec3d(0, 1.943, -.12), new Vec3d(.105, .012, .063), WHITE);
         // 仪表板正面由 CockpitDashboardRenderer 封闭，罩壳位于正面的机头一侧。
         ellipsoid(interior, new Vec3d(0, 1.04, 1.03), new Vec3d(.70, .31, .19), DARK);
+        // 仪表细节按观察距离筛选；始终保留稍靠后的静态面板，避免舱外看到罩壳开口。
+        flat(interior, new Vec3d(.68, .764, .822), new Vec3d(-.68, .764, .822),
+                new Vec3d(-.68, 1.38, .822), new Vec3d(.68, 1.38, .822), DARK);
     }
 
     /**
@@ -486,45 +513,68 @@ public final class HelicopterModel {
     }
 
     /**
-     * 功能：缓存贴合两侧曲面的紫金编号材质区域；引用 MC API：net.minecraft.util.math.Vec3d 表示蒙皮上的采样点。
-     * 端侧：构造期；参数/返回：无；副作用：追加编号曲面；排查：字形不得靠字体悬浮绘制，也不能盖住透明窗。
+     * 功能：缓存左 24、右 Laker 的贴合曲面；引用 MC API：net.minecraft.util.math.Vec3d 表示蒙皮采样点。
+     * 端侧：构造期；参数/返回：无；副作用：追加两个材质区域；排查：+X 为左侧，文字上缘低于窗孔。
      */
     private void buildNumber() {
-        for (int side : new int[]{-1, 1}) for (int z = 0; z < 24; z++) for (int y = 0; y < 6; y++) {
-            double back = -.95 + 1.15 * z / 24, front = -.95 + 1.15 * (z + 1) / 24;
-            double bottom = .62 + .365 * y / 6, top = .62 + .365 * (y + 1) / 6;
-            Vertex a = numberVertex(side, back, bottom), b = numberVertex(side, front, bottom);
-            Vertex c = numberVertex(side, front, top), d = numberVertex(side, back, top);
-            number.add(side > 0 ? new Face(a, d, c, b, WHITE) : new Face(a, b, c, d, WHITE));
+        for (int side : new int[]{1, -1}) {
+            double start = side > 0 ? -.95 : -.92, length = side > 0 ? 1.15 : 1.90;
+            int columns = side > 0 ? 24 : 48;
+            List<Face> target = side > 0 ? number : wordmark;
+            for (int z = 0; z < columns; z++) for (int y = 0; y < 6; y++) {
+                double back = start + length * z / columns, front = start + length * (z + 1) / columns;
+                double bottom = .62 + .365 * y / 6, top = .62 + .365 * (y + 1) / 6;
+                Vertex a = numberVertex(side, back, bottom, start, length), b = numberVertex(side, front, bottom, start, length);
+                Vertex c = numberVertex(side, front, top, start, length), d = numberVertex(side, back, top, start, length);
+                target.add(side > 0 ? new Face(a, d, c, b, WHITE) : new Face(a, b, c, d, WHITE));
+            }
         }
     }
 
     /**
      * 功能：投影编号到真实机身曲面；引用 MC API：net.minecraft.util.math.Vec3d 沿外法线留 2 毫米贴花间距。
-     * 端侧：构造期；参数：side/z/y 为两侧符号和格数位置；返回：曲面顶点；副作用：无。
+     * 端侧：构造期；参数：side/z/y/start/length 为两侧符号、位置及文字宽度；返回：含整字 UV 的顶点；无副作用。
      * 排查：编号穿壳或浮起查是否误用了固定 X 平面。
      */
-    private static Vertex numberVertex(int side, double z, double y) {
+    private static Vertex numberVertex(int side, double z, double y, double start, double length) {
         double angle = side * Math.acos(Math.clamp((y - profile(z, 2)) / profile(z, 3), -1, 1));
         Vertex point = bodyVertex(z, angle);
-        return new Vertex(point.position.add(point.normal.multiply(.002)), point.normal);
+        double u = (z - start) / length;
+        return new Vertex(point.position.add(point.normal.multiply(.002)), point.normal,
+                (float) (side > 0 ? 1 - u : u), (float) (1 - (y - .62) / .365));
     }
 
     /**
-     * 功能：为连续蒙皮展开材质坐标；引用 MC API：net.minecraft.client.render.VertexConsumer 提交含纹理的顶点。
-     * 端侧：渲染线程；参数：m/b/v/color/light/decal 为绘制环境和编号标志；返回：无；副作用：提交顶点。
-     * 排查：漆面颗粒不能每个面重复一整张图；编号左右侧须分别处理 U 方向。
+     * 功能：缓存连续迷彩投影；引用 MC API：net.minecraft.util.math.Vec3d 提供局部位置。
+     * 端侧：构造期；参数：v 为外壳顶点；返回：保持位置与法线的纹理顶点；无副作用。
+     * 排查：UV 不能按每个面的主法线切换，否则斑块会在机腹和尾梁断开；使用可平铺材质。
      */
-    private static void surfaceVertex(MatrixStack m, VertexConsumer b, Vertex v, int color, int light, boolean decal) {
-        float u, textureV;
-        if (decal) {
-            u = (float) ((v.position.z + .95) / 1.15);
-            if (v.position.x > 0) u = 1 - u;
-            textureV = (float) (1 - (v.position.y - .62) / .365);
-        } else {
-            u = v.u; textureV = v.v;
-        }
-        vertex(m, b, v.position, v.normal, color, light, u, textureV);
+    private static Vertex camouflageVertex(Vertex v) {
+        return new Vertex(v.position, v.normal, (float) (v.position.z * CAMOUFLAGE_SCALE),
+                (float) ((v.position.y + Math.abs(v.position.x) * 1.6) * CAMOUFLAGE_SCALE));
+    }
+
+    /** 功能：判定外漆材质槽；端侧：客户端；参数为材质编号；返回：是否喷漆面；无 MC API 与副作用。 */
+    private static boolean paintedMaterial(int material) {
+        return material == WHITE || material == PAINT || material == BELT || material == BELLY || material == STRIPE;
+    }
+
+    /**
+     * 功能：按涂装名称为外漆和起落架选色；端侧：渲染线程；参数：paint/material/gear 为编号、材质与起落架标记。
+     * 返回：ARGB；无 MC API 与副作用；排查：默认警用色不调用此方法，紫金字样下方保持紫色。
+     */
+    private static int liveryColor(int paint, int material, boolean gear) {
+        if (gear) return GEAR_COLORS[paint];
+        if (paint == 4) return switch (material) {
+            case BELT -> RESCUE_WHITE; case BELLY, STRIPE -> RESCUE_DARK; default -> LIVERY_COLORS[paint];
+        };
+        if (paint == 5 && (material == BELLY || material == STRIPE)) return GOLD;
+        return LIVERY_COLORS[paint];
+    }
+
+    /** 功能：提交已缓存 UV 的蒙皮顶点；引用 net.minecraft.client.render.VertexConsumer 写入材质；仅渲染线程，无几何修改。 */
+    private static void surfaceVertex(MatrixStack m, VertexConsumer b, Vertex v, int color, int light) {
+        vertex(m, b, v.position, v.normal, color, light, v.u, v.v);
     }
 
     /**
@@ -563,26 +613,6 @@ public final class HelicopterModel {
         Vec3d n = new Vec3d(Math.sin(angle), Math.cos(angle), -Math.cos(angle) * .62 * rise / .66).normalize();
         return new Vertex(new Vec3d(side * 1.05 + .045 * Math.sin(angle),
                 .12 + .31 * rise * rise + .045 * Math.cos(angle), z), n);
-    }
-
-    /**
-     * 功能：沿舱外路径折收滑橇，并让支柱从固定机身铰点跟随；引用 MC API：net.minecraft.client.util.math.MatrixStack 隔离变换。
-     * 端侧：渲染线程；参数：extension 为 0~1 展开量，其余为绘制环境；返回：无；副作用：提交起落架顶点。
-     * 排查：前段进入风挡查后移量；支柱脱离机身查铰点是否被整体平移。
-     */
-    public void renderGear(MatrixStack matrices, VertexConsumer buffer, int light, int paint, boolean wreck, float extension) {
-        double stow = 1 - extension;
-        matrices.push(); matrices.translate(0, GEAR_STOW_UP * stow, -GEAR_STOW_BACK * stow);
-        render("gear", matrices, buffer, light, paint, wreck); matrices.pop();
-        for (double side : new double[]{-1, 1}) for (double z : new double[]{-.87, .79}) {
-            Vector3f direction = new Vector3f((float) (side * .39),
-                    (float) (-.52 + GEAR_STOW_UP * stow), (float) (-GEAR_STOW_BACK * stow));
-            float length = direction.length();
-            matrices.push(); matrices.translate(side * .66, .68, z);
-            matrices.multiply(new Quaternionf().rotationTo(new Vector3f(0, 1, 0), direction.div(length)));
-            matrices.scale(1, length, 1);
-            render("strut", matrices, buffer, light, paint, wreck); matrices.pop();
-        }
     }
 
     /**
@@ -711,30 +741,54 @@ public final class HelicopterModel {
      * 返回：无；副作用：提交顶点；排查：透明度查玻璃颜色，残骸只压暗 RGB 而保留 alpha。
      */
     public void render(String part, MatrixStack matrices, VertexConsumer buffer, int light, int paint, boolean wreck) {
+        renderFaces(part, matrices, buffer, light, paint, wreck, -1);
+    }
+
+    /**
+     * 功能：首次上传 GPU 时写入局部坐标；引用 net.minecraft.client.render.VertexConsumer 填充静态顶点。
+     * 端侧：渲染线程；参数：blockLight 为内饰灯光分组，-1 表示全部；返回：无；不在常规逐帧路径调用。
+     * 排查：分组保留原 8–14 级舱灯距离衰减，不能将所有内饰固定为满亮。
+     */
+    void bake(String part, VertexConsumer buffer, int paint, boolean wreck, int blockLight) {
+        renderFaces(part, new MatrixStack(), buffer, 0, paint, wreck, blockLight);
+    }
+
+    /** 功能：共用缓存上传与描边兼容路径的面色规则；仅客户端；blockLightFilter 按原舱灯分组筛选，无世界修改。 */
+    private void renderFaces(String part, MatrixStack matrices, VertexConsumer buffer, int light,
+            int paint, boolean wreck, int blockLightFilter) {
         List<Face> faces = switch (part) {
             case "glass" -> glass; case "gear" -> gear; case "rotor" -> rotor; case "tail" -> tailRotor;
-            case "number" -> number; case "interior" -> interior; case "lamp" -> lamp; case "strut" -> strut; default -> shell;
+            case "number" -> number; case "wordmark" -> wordmark; case "camouflage" -> camouflage;
+            case "interior" -> interior; case "lamp" -> lamp; case "strut" -> strut; default -> shell;
         };
-        boolean decal = part.equals("number"), cabin = part.equals("interior"), emitting = part.equals("lamp") && !wreck;
+        boolean decal = part.equals("number") || part.equals("wordmark"), camo = part.equals("camouflage");
+        boolean body = part.equals("shell"), undercarriage = part.equals("gear") || part.equals("strut");
+        boolean cabin = part.equals("interior"), emitting = part.equals("lamp") && !wreck;
         for (Face face : faces) {
+            if (blockLightFilter >= 0 && face.blockLight != blockLightFilter << 4) continue;
+            // 迷彩喷漆面只由独立材质提交一次；玻璃、金属与内饰继续走既有图层。
+            if (body && paint < 3 && paintedMaterial(face.material)) continue;
             int faceLight = light;
             if (cabin && !wreck) {
                 // 只增强舱内局部块光，保留天空光；不照亮机外地形或制造全局动态灯。
                 faceLight = light & 0xffff0000 | Math.max(light & 0xffff, face.blockLight);
             }
             int color = switch (face.material) {
-                case PAINT -> PAINT_COLORS[paint]; case STRIPE -> paint == 5 ? 0xffffcc57 : 0xffedf1e9;
+                case PAINT, BELT -> PAINT_COLORS[paint]; case STRIPE -> paint == 5 ? 0xffffcc57 : 0xffedf1e9;
                 case DARK -> 0xff18212c; case METAL -> 0xffbdc9d4; case SEAT -> 0xff26313c;
                 case LINER -> 0xff4b5662; case SEAL -> 0xff0d151c; case SEAM -> 0xff687681;
                 case GLASS -> GLASS_COLOR; default -> paint == 5 ? PAINT_COLORS[paint] : 0xfff4f7fc;
             };
+            if (camo) color = 0xffffffff;
+            else if (paint < 6 && (body || undercarriage) && paintedMaterial(face.material))
+                color = liveryColor(paint, face.material, undercarriage);
             if (wreck) color = color & 0xff000000 | (color >> 2 & 0x003f3f3f);
             if (decal) color = 0xffffffff;
             if (emitting) color = 0xffffefc4;
-            surfaceVertex(matrices, buffer, face.a, color, faceLight, decal);
-            surfaceVertex(matrices, buffer, face.b, color, faceLight, decal);
-            surfaceVertex(matrices, buffer, face.c, color, faceLight, decal);
-            surfaceVertex(matrices, buffer, face.d, color, faceLight, decal);
+            surfaceVertex(matrices, buffer, face.a, color, faceLight);
+            surfaceVertex(matrices, buffer, face.b, color, faceLight);
+            surfaceVertex(matrices, buffer, face.c, color, faceLight);
+            surfaceVertex(matrices, buffer, face.d, color, faceLight);
         }
     }
 
