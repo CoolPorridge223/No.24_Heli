@@ -49,7 +49,6 @@
   "key.no_24_heli.rope": "部署 / 收回绳索",
   "key.no_24_heli.rappel": "下绳 / 抓绳攀升",
   "key.no_24_heli.service": "打开燃油与货仓",
-  "key.no_24_heli.mouse": "切换鼠标操纵",
   "key.no_24_heli.pedal_left": "左脚蹬 / 抗扭",
   "key.no_24_heli.pedal_right": "右脚蹬 / 抗扭",
   "message.no_24_heli.parts_missing": "组装需要：机身、旋翼总成、尾桨、引擎模块、燃油罐各 1 个。",
@@ -195,5 +194,12 @@
   "advancement.no_24_heli.different_ending.title": "结局或许不一样？",
   "advancement.no_24_heli.different_ending.description": "第一次成功展开降落伞。",
   "item.no_24_heli.legend_badge": "紫金 24 徽记",
-  "item.no_24_heli.sunrise_badge": "旭日徽记"
+  "item.no_24_heli.sunrise_badge": "旭日徽记",
+  "key.no_24_heli.searchlight": "开关机腹探照灯",
+  "key.no_24_heli.light_left": "探照灯向左",
+  "key.no_24_heli.light_right": "探照灯向右",
+  "key.no_24_heli.light_up": "抬高探照灯",
+  "key.no_24_heli.light_down": "压低探照灯",
+  "item.no_24_heli.parachute_open": "未折叠的滑翔伞包",
+  "item.no_24_heli.parachute_broken": "损坏的滑翔伞包"
 }

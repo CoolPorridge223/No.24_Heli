@@ -6,6 +6,8 @@
   "client": [
     "DrivingInputMixin",
     "HeliCameraMixin",
+    "HeliFovMixin",
+    "SearchlightCompositeMixin",
     "HeliMouseMixin",
     "HeliCrewRendererMixin",
     "ParachuteRiderRendererMixin",

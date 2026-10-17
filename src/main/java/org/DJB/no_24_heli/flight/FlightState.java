@@ -8,6 +8,9 @@ public final class FlightState {
     public double targetAltitude, targetSpeed;
     public boolean running, armed, altitudeHold, trim, cruise, gear = true;
     public boolean wreck, rope;
+    /** 探照灯开关和相对机头的云台角，单位：度；左右 ±120°，俯仰 -85°～-15°，默认朝前下方。 */
+    public boolean searchlight;
+    public float searchlightYaw,searchlightPitch=-65;
     /** 导航点随飞机保存；自动驾驶属于临时接管状态，重载后须驾驶员重新开启。 */
     public boolean waypoint, autopilot, restricted;
     public double waypointX, waypointZ;

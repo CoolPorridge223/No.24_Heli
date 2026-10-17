@@ -37,13 +37,20 @@ public final class HeliView {
     private static final float DEFAULT_LOOK_PITCH=8,MAX_LOOK_YAW=105,MAX_LOOK_PITCH=70;
     /** 每次滚动改变一格，4–24 格范围内仍交给原版碰撞裁剪。 */
     private static float distance=10;
+    /** 座舱局部视场角，单位：度；滚轮每格五度，25°～110°，不改原版全局设置。 */
+    private static double cockpitFov=70;
     public static float distance(){return distance;}
     public static void zoom(double scroll){distance=MathHelper.clamp(distance-(float)scroll,4,24);}
+    /** 功能：缩放座舱视野；客户端鼠标回调调用，不改变瞄准、相机位置或飞行输入。 */
+    public static void zoomCockpit(double scroll){cockpitFov=MathHelper.clamp(cockpitFov-scroll*5,25,110);}
+    /** 功能：返回座舱独立视场角，供 GameRenderer 的投影计算使用；客户端调用。 */
+    public static double cockpitFov(){return cockpitFov;}
     private HeliView() {}
 
     /** 登机切换后视第三人称，下机或断线恢复原视角。 */
     public static void tick(MinecraftClient client) {
         if(!client.options.getPerspective().isFirstPerson())cockpitInitialized=false;
+        else{following=false;initialized=false;}
         HelicopterEntity current = client.player != null && client.player.getVehicle() instanceof HelicopterEntity h ? h : null;
         if (current == mounted) return;
         if (mounted != null && previous != null) client.options.setPerspective(previous);
@@ -52,13 +59,17 @@ public final class HeliView {
         initialized = false;
         cockpitInitialized = false;
         if (current != null) {
+            cockpitFov=client.options.getFov().getValue();
             previous = client.options.getPerspective();
             client.options.setPerspective(Perspective.THIRD_PERSON_BACK);
         } else previous = null;
     }
 
     /** 中键只切换相机跟随，不改玩家朝向，以免生成虚假的操纵输入。 */
-    public static void toggleFollow() { following = !following; initialized = false; }
+    public static void toggleFollow() {
+        if(MinecraftClient.getInstance().options.getPerspective().isFirstPerson()){following=false;return;}
+        following = !following; initialized = false;
+    }
     public static boolean isFollowing() { return following; }
     /**
      * 功能：在机内第一人称与机外后视之间切换；引用 MC API：net.minecraft.client.option.Perspective 指定透视。
@@ -67,6 +78,7 @@ public final class HeliView {
      */
     public static void togglePerspective(MinecraftClient client){
         client.options.setPerspective(client.options.getPerspective().isFirstPerson()?Perspective.THIRD_PERSON_BACK:Perspective.FIRST_PERSON);
+        if(client.options.getPerspective().isFirstPerson())following=false;
         cockpitInitialized=false;initialized=false;
     }
     /**
@@ -106,7 +118,6 @@ public final class HeliView {
         lookYaw=MathHelper.clamp(lookYaw+MathHelper.wrapDegrees(currentYaw-oldLookYaw),-MAX_LOOK_YAW,MAX_LOOK_YAW);
         lookPitch=MathHelper.clamp(lookPitch+currentPitch-oldLookPitch,-MAX_LOOK_PITCH,MAX_LOOK_PITCH);
         oldLookYaw=currentYaw;oldLookPitch=currentPitch;
-        if(following){lookYaw=0;lookPitch=DEFAULT_LOOK_PITCH;}
         return bodyRotation(heli,delta).mul(new Quaternionf().rotationYXZ(
                 (float)Math.PI-(float)Math.toRadians(lookYaw),(float)Math.toRadians(-lookPitch),0));
     }

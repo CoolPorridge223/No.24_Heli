@@ -22,7 +22,8 @@ public class HeliKeyboardMixin {
         // 新伞键只在自由落体/开伞状态接管，原版 F 交换副手在其他场景照常使用。
         if(window==client.getWindow().getHandle()&&ParachuteClient.handleKey(key,scan,action)){ci.cancel();return;}
         if(window!=client.getWindow().getHandle()||client.currentScreen!=null||client.player==null
-                ||!(client.player.getVehicle() instanceof HelicopterEntity)||!No_24_heliClient.followKeyMatches(key,scan))return;
+                ||!(client.player.getVehicle() instanceof HelicopterEntity)||client.options.getPerspective().isFirstPerson()
+                ||!No_24_heliClient.followKeyMatches(key,scan))return;
         if(action==GLFW.GLFW_PRESS)HeliView.toggleFollow();
         // 放行释放事件，清除登机前同键原版操作的按住状态。
         if(action!=GLFW.GLFW_RELEASE)ci.cancel();

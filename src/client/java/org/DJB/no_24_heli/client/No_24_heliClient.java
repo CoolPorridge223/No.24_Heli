@@ -53,7 +53,6 @@ import net.fabricmc.loader.api.FabricLoader;
 import java.nio.file.Files;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.util.math.MathHelper;
 import org.lwjgl.glfw.GLFW;
 import java.util.HashMap;
 import java.util.Map;
@@ -62,7 +61,10 @@ import java.util.Map;
 @Environment(EnvType.CLIENT)
 public class No_24_heliClient implements ClientModInitializer {
     private static KeyBinding bind(String name,int key){return KeyBindingHelper.registerKeyBinding(new KeyBinding("key.no_24_heli."+name,InputUtil.Type.KEYSYM,key,"category.no_24_heli"));}
-    private static final KeyBinding START=bind("engine",GLFW.GLFW_KEY_R), ALT=bind("altitude",GLFW.GLFW_KEY_H), TRIM=bind("trim",GLFW.GLFW_KEY_J), CRUISE=bind("cruise",GLFW.GLFW_KEY_I), GEAR=bind("gear",GLFW.GLFW_KEY_G), ROPE=bind("rope",GLFW.GLFW_KEY_B), EXIT=bind("rappel",GLFW.GLFW_KEY_Y), MENU=bind("service",GLFW.GLFW_KEY_O), MOUSE=bind("mouse",GLFW.GLFW_KEY_N), MAP=bind("map",GLFW.GLFW_KEY_M), AUTO=bind("autopilot",GLFW.GLFW_KEY_U), AUTO_FLIGHT=bind("auto_flight",GLFW.GLFW_KEY_K), LEFT=bind("pedal_left",GLFW.GLFW_KEY_Z), RIGHT=bind("pedal_right",GLFW.GLFW_KEY_X);
+    private static final KeyBinding START=bind("engine",GLFW.GLFW_KEY_R), ALT=bind("altitude",GLFW.GLFW_KEY_H), TRIM=bind("trim",GLFW.GLFW_KEY_J), CRUISE=bind("cruise",GLFW.GLFW_KEY_I), GEAR=bind("gear",GLFW.GLFW_KEY_G), ROPE=bind("rope",GLFW.GLFW_KEY_B), EXIT=bind("rappel",GLFW.GLFW_KEY_Y), MENU=bind("service",GLFW.GLFW_KEY_O), SEARCHLIGHT=bind("searchlight",GLFW.GLFW_KEY_N), MAP=bind("map",GLFW.GLFW_KEY_M), AUTO=bind("autopilot",GLFW.GLFW_KEY_U), AUTO_FLIGHT=bind("auto_flight",GLFW.GLFW_KEY_K), LEFT=bind("pedal_left",GLFW.GLFW_KEY_Z), RIGHT=bind("pedal_right",GLFW.GLFW_KEY_X);
+    /** 可重绑的灯具云台方向键，只有灯开启且没有界面时发送；不写入飞行四轴。 */
+    private static final KeyBinding LIGHT_LEFT=bind("light_left",GLFW.GLFW_KEY_LEFT),LIGHT_RIGHT=bind("light_right",GLFW.GLFW_KEY_RIGHT),
+            LIGHT_UP=bind("light_up",GLFW.GLFW_KEY_UP),LIGHT_DOWN=bind("light_down",GLFW.GLFW_KEY_DOWN);
     /** net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper 注册可重绑的本地视角键，默认 V。 */
     private static final KeyBinding VIEW=bind("view",GLFW.GLFW_KEY_V);
     /** 原版控制菜单支持把视角锁定绑定到任意键盘键或鼠标键。 */
@@ -73,9 +75,7 @@ public class No_24_heliClient implements ClientModInitializer {
     private boolean tabHeld;
     /** 绳上 E 只发送按下边沿，长按不能在到顶时自动入舱。 */
     private boolean ropeBoardHeld;
-    private boolean mouseControl=true;
     private boolean migrated;
-    private boolean migratedMap;
     /** 旧右脚蹬默认 V 只迁移一次，用户已经改为其他键时保持其设置。 */
     private boolean migratedView;
     /**
@@ -96,16 +96,6 @@ public class No_24_heliClient implements ClientModInitializer {
             Files.writeString(marker,"view-default=V;right-pedal-default=X");
         }catch(java.io.IOException e){No_24_heli.LOGGER.warn("无法保存驾驶视角按键迁移标记",e);}
     }
-    /** 1.2 的 M 让给地图；仅迁移仍为旧默认值的鼠标切换键。 */
-    private void migrateMapKey(net.minecraft.client.MinecraftClient client){
-        if(migratedMap)return;migratedMap=true;
-        var marker=FabricLoader.getInstance().getConfigDir().resolve("no_24_heli_keys_v3.marker");
-        if(Files.exists(marker))return;
-        try{
-            if(MOUSE.matchesKey(GLFW.GLFW_KEY_M,0)){MOUSE.setBoundKey(InputUtil.fromKeyCode(GLFW.GLFW_KEY_N,0));KeyBinding.updateKeysByCode();client.options.write();}
-            Files.writeString(marker,"mouse-default=N;map-default=M");
-        }catch(java.io.IOException e){No_24_heli.LOGGER.warn("无法保存地图按键迁移标记",e);}
-    }
     /** 旧版默认 K 仅迁移一次；其他自定义按键保持原值。 */
     private void migrateTrimKey(net.minecraft.client.MinecraftClient client) {
         if (migrated) return;
@@ -120,8 +110,6 @@ public class No_24_heliClient implements ClientModInitializer {
             Files.writeString(marker, "trim-default=J");
         } catch (java.io.IOException e) { No_24_heli.LOGGER.warn("无法保存按键迁移标记", e); }
     }
-    private float oldYaw,oldPitch;
-    private int vehicleId=-1;
     private final Map<Integer,RotorSound> sounds=new HashMap<>();
     private static int pressed(KeyBinding key,int bit){int result=0;while(key.wasPressed())result=bit;return result;}
     /** 将入口置于水平中央的空行，避开原版标题和已有按钮。 */
@@ -137,6 +125,7 @@ public class No_24_heliClient implements ClientModInitializer {
     }
     @Override public void onInitializeClient(){
         org.DJB.no_24_heli.client.render.HelicopterMesh.register();
+        org.DJB.no_24_heli.client.render.SearchlightRenderer.register();
         ParachuteClient.initialize();
         ExploredMap.register();RadioLibrary.initialize();ServerRadioCache.register();
         net.minecraft.client.render.block.entity.BlockEntityRendererFactories.register(No_24_heli.HELIPAD_ENTITY,HelipadRenderer::new);
@@ -171,19 +160,18 @@ public class No_24_heliClient implements ClientModInitializer {
             }
         });
         ClientTickEvents.END_CLIENT_TICK.register(client->{
-            migrateTrimKey(client);migrateMapKey(client);migrateViewKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);GroundProximityWarning.tick(client);
+            migrateTrimKey(client);migrateViewKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);GroundProximityWarning.tick(client);
             while(VIEW.wasPressed()){
                 if(client.currentScreen==null&&client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity)
                     HeliView.togglePerspective(client);
             }
-            if(client.world==null||client.player==null){sounds.clear();vehicleId=-1;HeliRadar.reset();return;}
+            if(client.world==null||client.player==null){sounds.clear();HeliRadar.reset();return;}
             // 所有附近直升机都播放连续音源，转速决定音高和音量。
             sounds.entrySet().removeIf(e->e.getValue().isDone());
             for(var entity:client.world.getEntities())if(entity instanceof HelicopterEntity h&&h.flight.rpm>.015&&!sounds.containsKey(h.getId())){
                 var sound=new RotorSound(h);sounds.put(h.getId(),sound);client.getSoundManager().play(sound);
             }
-            int action=pressed(START,1)|pressed(ALT,2)|pressed(TRIM,4)|pressed(CRUISE,8)|pressed(GEAR,16)|pressed(ROPE,32)|pressed(EXIT,64)|pressed(MENU,128)|pressed(AUTO,ControlPayload.AUTOPILOT)|pressed(AUTO_FLIGHT,ControlPayload.AUTO_FLIGHT);
-            if(MOUSE.wasPressed()&&client.currentScreen==null)mouseControl=!mouseControl;
+            int action=pressed(START,1)|pressed(ALT,2)|pressed(TRIM,4)|pressed(CRUISE,8)|pressed(GEAR,16)|pressed(ROPE,32)|pressed(EXIT,64)|pressed(MENU,128)|pressed(AUTO,ControlPayload.AUTOPILOT)|pressed(AUTO_FLIGHT,ControlPayload.AUTO_FLIGHT)|pressed(SEARCHLIGHT,ControlPayload.SEARCHLIGHT);
             if(MAP.wasPressed()){
                 if(client.currentScreen instanceof HeliMapScreen)client.setScreen(null);
                 else if(client.currentScreen==null&&client.player.getVehicle() instanceof HelicopterEntity)client.setScreen(new HeliMapScreen());
@@ -201,22 +189,20 @@ public class No_24_heliClient implements ClientModInitializer {
                     &&(action&ControlPayload.EXIT_ROPE)!=0)
                 ClientPlayNetworking.send(new ControlPayload(0,0,0,0,ControlPayload.EXIT_ROPE));
             ropeBoardHeld=ropeBoard;
-            if(!(client.player.getVehicle() instanceof HelicopterEntity heli)){vehicleId=-1;return;}
+            if(!(client.player.getVehicle() instanceof HelicopterEntity heli))return;
 
             if(heli.age%40==0&&(heli.flight.restricted||((heli.flight.engine<20||heli.flight.fuel<40)&&heli.flight.running)))
                 client.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(No_24_heli.ALARM,1,.6f));
 
             if(heli.age%25==0&&heli.flight.rotor<50&&heli.flight.rpm>.3)client.player.playSound(No_24_heli.DAMAGE_SOUND,.3f,1);
-            float yaw=client.player.getYaw(),pitch=client.player.getPitch();
-            if(vehicleId!=heli.getId()){oldYaw=yaw;oldPitch=pitch;vehicleId=heli.getId();}
-            boolean airborneMouse=mouseControl&&!heli.isOnGround()&&heli.flight.armed;
-            float mouseRoll=airborneMouse?MathHelper.clamp(MathHelper.wrapDegrees(yaw-oldYaw)*.13f,-1,1):0;
-            float mousePitch=airborneMouse?MathHelper.clamp((pitch-oldPitch)*-.13f,-1,1):0;
-            oldYaw=yaw;oldPitch=pitch;
             float cyclicPitch=0,cyclicRoll=0,pedal=0,collective=0;
             if(client.currentScreen==null){
-                cyclicPitch=(client.options.backKey.isPressed()?1:0)-(client.options.forwardKey.isPressed()?1:0)+mousePitch;
-                cyclicRoll=(client.options.rightKey.isPressed()?1:0)-(client.options.leftKey.isPressed()?1:0)+mouseRoll;
+                cyclicPitch=(client.options.backKey.isPressed()?1:0)-(client.options.forwardKey.isPressed()?1:0);
+                cyclicRoll=(client.options.rightKey.isPressed()?1:0)-(client.options.leftKey.isPressed()?1:0);
+                if(heli.flight.searchlight){
+                    action|=(LIGHT_LEFT.isPressed()?ControlPayload.LIGHT_LEFT:0)|(LIGHT_RIGHT.isPressed()?ControlPayload.LIGHT_RIGHT:0)
+                            |(LIGHT_UP.isPressed()?ControlPayload.LIGHT_UP:0)|(LIGHT_DOWN.isPressed()?ControlPayload.LIGHT_DOWN:0);
+                }
                 pedal=(RIGHT.isPressed()||InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_E)?1:0)-(LEFT.isPressed()||InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_Q)?1:0);
                 collective=(client.options.jumpKey.isPressed()?1:0)-(InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_LEFT_CONTROL)?1:0);
             }else action=0;

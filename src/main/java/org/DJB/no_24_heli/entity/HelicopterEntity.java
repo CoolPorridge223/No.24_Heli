@@ -46,6 +46,8 @@ public class HelicopterEntity extends Entity {
     public float visualPitch,visualRoll,gearExtension=1;
     /** 保存上一 tick 的第二级平滑结果，渲染帧再次插值，避免 20 Hz 阶梯跳变。 */
     public float previousVisualPitch,previousVisualRoll,previousGearExtension=1;
+    /** 云台视觉角仅客户端平滑；单位：度，与机体同样做 tick/帧双级插值。 */
+    public float visualLightYaw,previousLightYaw,visualLightPitch=-65,previousLightPitch=-65;
     private float smoothPitch,smoothRoll;
     private final java.util.Map<java.util.UUID,Long> exitWarnings=new java.util.HashMap<>();
     public int ropeLength;
@@ -57,6 +59,8 @@ public class HelicopterEntity extends Entity {
     private java.util.UUID ropeCopilot;
     private long lastRadio=-100;
     private long lastInput=-100,lastActions=-100,lastEngine=-100;
+    /** 灯具开关独立限流五 tick，瞄准每 tick 最多一次；不阻塞引擎或飞行辅助。 */
+    private long lastLightToggle=-100,lastLightAim=-100;
     private int collisionCooldown,repairCooldown,entityImpactCooldown;
     /** 低于 10 m/s 的实体碰撞不损伤机体；高速撞击仍按飞控事故阈值处理。 */
     public static final double ENTITY_DAMAGE_SPEED=.5;
@@ -121,6 +125,18 @@ public class HelicopterEntity extends Entity {
         if((p.actions()&ControlPayload.MENU)!=0&&tick-lastActions>=5){openMenu(player);lastActions=tick;}
         if((p.actions()&ControlPayload.EXIT_ROPE)!=0&&flight.rope&&tick-lastActions>=5){rappel(player);lastActions=tick;return;}
         if(!isPilot(player))return;
+        // 灯具意图不计入手动飞行接管；自动驾驶时仍可单独搜索地面。
+        if((p.actions()&ControlPayload.SEARCHLIGHT)!=0&&tick-lastLightToggle>=5){
+            flight.searchlight=!flight.searchlight;lastLightToggle=tick;
+        }
+        if(flight.searchlight&&lastLightAim!=tick){
+            lastLightAim=tick;
+            int horizontal=((p.actions()&ControlPayload.LIGHT_RIGHT)!=0?1:0)-((p.actions()&ControlPayload.LIGHT_LEFT)!=0?1:0);
+            int vertical=((p.actions()&ControlPayload.LIGHT_UP)!=0?1:0)-((p.actions()&ControlPayload.LIGHT_DOWN)!=0?1:0);
+            // 每 tick 两度，即每秒四十度；上键抬高光束，下键朝机腹收回。
+            flight.searchlightYaw=MathHelper.clamp(flight.searchlightYaw+horizontal*2,-120,120);
+            flight.searchlightPitch=MathHelper.clamp(flight.searchlightPitch+vertical*2,-85,-15);
+        }
         // 原始输入在写入自动驾驶指令之前判断；任何有效手动轴或辅助切换均交还控制权。
         boolean manual=Math.abs(p.pitch())>.02||Math.abs(p.roll())>.02||Math.abs(p.pedal())>.02||Math.abs(p.collective())>.02;
         if((flight.autopilot||flight.autoPhase!=0)&&(manual||(p.actions()&(ControlPayload.ENGINE|ControlPayload.ALTITUDE|ControlPayload.TRIM|ControlPayload.CRUISE))!=0)){
@@ -207,6 +223,9 @@ public class HelicopterEntity extends Entity {
     @Override public void tick(){
         super.tick();previousRotorAngle=rotorAngle;rotorAngle+=(float)(flight.rpm*65);
         if(getWorld().isClient){
+            previousLightYaw=visualLightYaw;previousLightPitch=visualLightPitch;
+            visualLightYaw=MathHelper.lerp(.55f,visualLightYaw,flight.searchlightYaw);
+            visualLightPitch=MathHelper.lerp(.55f,visualLightPitch,flight.searchlightPitch);
             previousGearExtension=gearExtension;previousVisualPitch=visualPitch;previousVisualRoll=visualRoll;
             gearExtension=MathHelper.lerp(.15f,gearExtension,flight.gear?1:0);
             smoothPitch=MathHelper.lerp(.45f,smoothPitch,(float)flight.pitch);smoothRoll=MathHelper.lerp(.45f,smoothRoll,(float)flight.roll);
@@ -433,6 +452,8 @@ public class HelicopterEntity extends Entity {
     private NbtCompound saveFlight(){
         NbtCompound n=new NbtCompound();n.putInt("Version",4);
         n.putInt("RopeCarrierId",activeRope!=null&&!activeRope.isRemoved()?activeRope.getId():-1);
+        n.putBoolean("Searchlight",flight.searchlight&&!flight.wreck);
+        n.putFloat("SearchlightYaw",flight.searchlightYaw);n.putFloat("SearchlightPitch",flight.searchlightPitch);
         n.putInt("DifficultyMode",flight.difficultyMode);n.putInt("AutoPhase",flight.autoPhase);
         n.putInt("RadioTrack",flight.radioTrack);n.putInt("RadioRevision",flight.radioRevision);n.putLong("RadioStarted",flight.radioStartedTick);
         n.putBoolean("Waypoint",flight.waypoint);n.putDouble("WaypointX",flight.waypointX);n.putDouble("WaypointZ",flight.waypointZ);
@@ -445,6 +466,9 @@ public class HelicopterEntity extends Entity {
     private static double number(NbtCompound n,String key,double fallback,double min,double max){double v=n.contains(key)?n.getDouble(key):fallback;return Double.isFinite(v)?FlightPhysics.clamp(v,min,max):fallback;}
     private void loadFlight(NbtCompound n){
         ropeCarrierId=n.contains("RopeCarrierId")?n.getInt("RopeCarrierId"):-1;
+        flight.searchlight=n.getBoolean("Searchlight");
+        flight.searchlightYaw=(float)number(n,"SearchlightYaw",0,-120,120);
+        flight.searchlightPitch=(float)number(n,"SearchlightPitch",-65,-85,-15);
         flight.difficultyMode=n.contains("DifficultyMode")?Math.clamp(n.getInt("DifficultyMode"),0,2):HeliConfig.INSTANCE.difficulty.ordinal();
         flight.autoPhase=Math.clamp(n.getInt("AutoPhase"),0,3);
         flight.radioTrack=n.contains("RadioTrack")?Math.clamp(n.getInt("RadioTrack"),-1,7):-1;

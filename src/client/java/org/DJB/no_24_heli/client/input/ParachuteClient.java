@@ -7,6 +7,9 @@ import org.DJB.no_24_heli.client.render.ParachuteRenderer;
 import org.DJB.no_24_heli.entity.ParachuteEntity;
 import org.DJB.no_24_heli.network.ParachutePayload;
 import org.DJB.no_24_heli.registry.ModParachutes;
+import org.DJB.no_24_heli.No_24_heli;
+import org.DJB.no_24_heli.item.ParachuteItem;
+import net.minecraft.client.item.ModelPredicateProviderRegistry;
 
 
 import net.fabricmc.api.EnvType;
@@ -79,6 +82,9 @@ public final class ParachuteClient {
      * GUI 打开时输入回中；断线清除待发请求；服务端仍重新验证资格与所属伞。
      */
     public static void initialize() {
+        // 原版谓词限制在 0～1：完整、未折叠、损坏分别为 0、0.5、1，不替换物品或组件。
+        ModelPredicateProviderRegistry.register(ModParachutes.PARACHUTE,No_24_heli.id("pack_state"),
+                (stack,world,entity,seed)->ParachuteItem.isLost(stack)?1:ParachuteItem.isPacked(stack)?0:.5f);
         EntityRendererRegistry.register(ModParachutes.CANOPY, ParachuteRenderer::new);
         HudRenderCallback.EVENT.register(ParachuteFoldingHud::draw);
         LivingEntityFeatureRendererRegistrationCallback.EVENT.register((type, renderer, helper, context) -> {

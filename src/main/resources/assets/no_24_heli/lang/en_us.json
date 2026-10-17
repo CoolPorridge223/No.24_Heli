@@ -49,7 +49,6 @@
   "key.no_24_heli.rope": "Deploy / retract rope",
   "key.no_24_heli.rappel": "Rappel / grab rope and climb",
   "key.no_24_heli.service": "Fuel and cargo",
-  "key.no_24_heli.mouse": "Toggle mouse cyclic",
   "key.no_24_heli.pedal_left": "Left pedal",
   "key.no_24_heli.pedal_right": "Right pedal",
   "message.no_24_heli.parts_missing": "Need one fuselage, rotor, tail rotor, engine and fuel tank.",
@@ -195,5 +194,12 @@
   "advancement.no_24_heli.different_ending.title": "Could the Ending Change?",
   "advancement.no_24_heli.different_ending.description": "Deploy a parachute for the first time.",
   "item.no_24_heli.legend_badge": "Purple and Gold 24 Badge",
-  "item.no_24_heli.sunrise_badge": "Rising Sun Badge"
+  "item.no_24_heli.sunrise_badge": "Rising Sun Badge",
+  "key.no_24_heli.searchlight": "Toggle belly searchlight",
+  "key.no_24_heli.light_left": "Searchlight left",
+  "key.no_24_heli.light_right": "Searchlight right",
+  "key.no_24_heli.light_up": "Raise searchlight",
+  "key.no_24_heli.light_down": "Lower searchlight",
+  "item.no_24_heli.parachute_open": "Unfolded Parachute Pack",
+  "item.no_24_heli.parachute_broken": "Damaged Parachute Pack"
 }

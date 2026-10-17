@@ -66,6 +66,8 @@ public final class HelicopterModel {
     private final List<Face> rotor = new ArrayList<>(), tailRotor = new ArrayList<>();
     /** 内衬与座椅仅近距离绘制，灯罩单独自发光；漆面不再叠加影响光影深度的透明高光层。 */
     private final List<Face> interior = new ArrayList<>(), lamp = new ArrayList<>();
+    /** 机腹云台的活动镜框、独立灯芯与机头/尾鳍红灯；静态网格跨实体复用。 */
+    private final List<Face> searchlight=new ArrayList<>(),searchlightLens=new ArrayList<>(),navigationLights=new ArrayList<>();
     /** 支柱使用单位长度缓存，收放时仅更新四根支柱的变换，机身铰点保持固定。 */
     private final List<Face> strut = new ArrayList<>();
     /** 舱灯位置只用于内饰光照衰减，单位：机体局部格数。 */
@@ -114,13 +116,17 @@ public final class HelicopterModel {
         buildRotors();
         // 顶部发动机整流罩、后向排气管和旋翼轴均为旋转曲面。
         // 整流罩最低处在舱顶附近，不能让外部发动机穿进驾驶员眼睛上方。
-        ellipsoid(shell, new Vec3d(0, 2.27, -.52), new Vec3d(.49, .24, .91), PAINT);
-        tube(shell, new Vec3d(0, 2.02, -.52), new Vec3d(0, 2.20, -.52), .28, .28, PAINT);
+        ellipsoid(shell, new Vec3d(0, 2.33, -.52), new Vec3d(.49, .24, .91), PAINT);
+        // 轴座底面抬高八厘米，避免舱灯后方仅数毫米净距在第一人称/光影下露出外部结构。
+        tube(shell, new Vec3d(0, 2.10, -.52), new Vec3d(0, 2.24, -.52), .28, .28, PAINT);
         tube(shell, new Vec3d(-.30, 2.30, -1.05), new Vec3d(-.30, 2.33, -1.66), .12, .14, METAL);
         tube(shell, new Vec3d(.30, 2.30, -1.05), new Vec3d(.30, 2.33, -1.66), .12, .14, METAL);
         tube(shell, new Vec3d(0, 2.18, -.17), new Vec3d(0, 2.71, -.17), .065, .065, METAL);
         ellipsoid(shell, new Vec3d(0, .44, 1.24), new Vec3d(.17, .19, .19), WHITE);
-        ellipsoid(shell, new Vec3d(0, .42, 1.39), new Vec3d(.075, .075, .03), DARK);
+        ellipsoid(searchlight,new Vec3d(0,0,.177),new Vec3d(.115,.115,.03),DARK);
+        ellipsoid(searchlightLens,new Vec3d(0,0,.205),new Vec3d(.082,.082,.006),WHITE);
+        ellipsoid(navigationLights,new Vec3d(0,1.205,1.74),new Vec3d(.035,.025,.035),WHITE);
+        ellipsoid(navigationLights,new Vec3d(0,3.025,-5.55),new Vec3d(.03,.025,.04),WHITE);
         for (Face face : shell) if (paintedMaterial(face.material)) {
             camouflage.add(new Face(camouflageVertex(face.a), camouflageVertex(face.b),
                     camouflageVertex(face.c), camouflageVertex(face.d), WHITE));
@@ -137,7 +143,8 @@ public final class HelicopterModel {
         List<Double> stations = new ArrayList<>();
         for (int i = 0; i <= longitudinalSegments; i++)
             stations.add(-1.78 + 3.75 * i / longitudinalSegments);
-        stations.addAll(List.of(-1.03, -.92, -.38, -.31, .46, .53, 1.47, 1.55));
+        // 后舱壁也参与同一截面采样，使其边缘与舱顶内衬共用顶点，消除顶灯后方的局部相交。
+        stations.addAll(List.of(-1.08, -1.03, -.92, -.38, -.31, .46, .53, 1.47, 1.55));
         stations.sort(Double::compare);
         // 窗边可能恰好落在均匀截面上，先合并重合采样，避免零宽面导致漏光和光影暗斑。
         for (int i = stations.size() - 1; i > 0; i--)
@@ -759,7 +766,9 @@ public final class HelicopterModel {
         List<Face> faces = switch (part) {
             case "glass" -> glass; case "gear" -> gear; case "rotor" -> rotor; case "tail" -> tailRotor;
             case "number" -> number; case "wordmark" -> wordmark; case "camouflage" -> camouflage;
-            case "interior" -> interior; case "lamp" -> lamp; case "strut" -> strut; default -> shell;
+            case "interior" -> interior; case "lamp" -> lamp; case "strut" -> strut;
+            case "searchlight" -> searchlight; case "searchlight_lens" -> searchlightLens;
+            case "navigation_lights" -> navigationLights; default -> shell;
         };
         boolean decal = part.equals("number") || part.equals("wordmark"), camo = part.equals("camouflage");
         boolean body = part.equals("shell"), undercarriage = part.equals("gear") || part.equals("strut");
@@ -785,6 +794,8 @@ public final class HelicopterModel {
             if (wreck) color = color & 0xff000000 | (color >> 2 & 0x003f3f3f);
             if (decal) color = 0xffffffff;
             if (emitting) color = 0xffffefc4;
+            if(part.equals("searchlight_lens"))color=wreck?0xff302c24:0xfffff0cd;
+            if(part.equals("navigation_lights"))color=wreck?0xff351010:0xffff2920;
             surfaceVertex(matrices, buffer, face.a, color, faceLight);
             surfaceVertex(matrices, buffer, face.b, color, faceLight);
             surfaceVertex(matrices, buffer, face.c, color, faceLight);

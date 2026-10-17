@@ -53,6 +53,13 @@ public final class ParachuteItem extends Item implements Equipment {
     /** 原版右键使用仅对未折叠且仍有伞面的伞包启动。 */
     public static boolean canFold(ItemStack stack) { return isParachute(stack) && !isPacked(stack) && !isLost(stack); }
 
+    /** 功能：物品名称与三种手持模型对应；原版 ItemStack 仍保留同一注册名、耐久、附魔和自定义名称。 */
+    @Override public Text getName(ItemStack stack){
+        if(isLost(stack))return Text.translatable("item.no_24_heli.parachute_broken");
+        if(!isPacked(stack))return Text.translatable("item.no_24_heli.parachute_open");
+        return super.getName(stack);
+    }
+
     /** 原版 NbtComponent 返回安全副本，读写不会破坏物品组件共享。 */
     private static NbtCompound data(ItemStack stack) {
         return stack.getOrDefault(DataComponentTypes.CUSTOM_DATA, NbtComponent.DEFAULT).copyNbt();

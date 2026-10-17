@@ -251,7 +251,7 @@ public final class CockpitDashboardRenderer {
     }
 
     /**
-     * 功能：在右侧双框排列十种异常与八种控制图标；引用 MC API：net.minecraft.util.math.Vec3d 绘制实体指示器。
+     * 功能：在右侧双框排列十种异常与九种控制图标；引用 MC API：net.minecraft.util.math.Vec3d 绘制实体指示器。
      * 端侧：渲染线程；参数：h/m/b/light 为飞机及环境；返回：无；副作用：提交状态图标。
      * 排查：异常发生才点亮红/琥珀灯，控制启用显示绿色；近地警告只读取当前乘坐飞机。
      */
@@ -267,12 +267,12 @@ public final class CockpitDashboardRenderer {
         for (int i = 0; i < faults.length; i++) icon(m, b, warningKeys[i], .32 + i % 5 * .105,
                 -.035 - i / 5 * .075, .051, faults[i], i == 7 ? AMBER : RED, light);
         boolean[] enabled = {s.altitudeHold, s.trim, s.cruise, s.gear, s.autopilot, s.autoPhase == 1 || s.autoPhase == 2,
-                s.autoPhase == 3, s.waypoint};
-        String[] controlKeys = {"altitude", "trim", "cruise", "gear", "autopilot", "takeoff", "landing", "waypoint"};
+                s.autoPhase == 3, s.waypoint,s.searchlight&&!s.wreck};
+        String[] controlKeys = {"altitude", "trim", "cruise", "gear", "autopilot", "takeoff", "landing", "waypoint","searchlight"};
         roundedPanel(m, b, .26, -.31, .80, -.185, .006, 0xff586775, light);
         rectangle(m, b, .27, -.302, .79, -.193, FACE_Z, BLACK, light);
-        for (int i = 0; i < enabled.length; i++) icon(m, b, controlKeys[i], .33 + i % 4 * .13,
-                -.217 - i / 4 * .057, .042, enabled[i], GREEN, light);
+        for (int i = 0; i < enabled.length; i++) icon(m, b, controlKeys[i], .32 + i % 5 * .105,
+                -.217 - i / 5 * .057, .038, enabled[i], GREEN, light);
     }
 
     /**
@@ -287,7 +287,7 @@ public final class CockpitDashboardRenderer {
         m.push(); m.translate(x, y, NEEDLE_Z); m.scale((float) (size / 2), (float) (size / 2), 1);
         int color = active ? onColor : 0xff435560;
         switch (key) {
-            case "altitude", "trim", "cruise", "gear", "autopilot", "takeoff", "landing", "waypoint" -> controlSymbol(m, b, key, color, light);
+            case "altitude", "trim", "cruise", "gear", "autopilot", "takeoff", "landing", "waypoint","searchlight" -> controlSymbol(m, b, key, color, light);
             default -> faultSymbol(m, b, key, color, light);
         }
         disk(m, b, 1.07, -.92, .11, .002, active ? onColor : 0xff26353b, light);
@@ -378,6 +378,14 @@ public final class CockpitDashboardRenderer {
             case "waypoint" -> {
                 ring(m, b, 0, .25, .5, color, light); stroke(m, b, -.4, -.05, 0, -.9, color, light);
                 stroke(m, b, 0, -.9, .4, -.05, color, light);
+            }
+            case "searchlight" -> {
+                ring(m,b,-.55,.2,.42,color,light);
+                stroke(m,b,-.25,.5,.85,.8,color,light);
+                stroke(m,b,-.15,.2,.95,.2,color,light);
+                stroke(m,b,-.25,-.1,.85,-.4,color,light);
+                stroke(m,b,-.75,-.2,-.75,-.75,color,light);
+                stroke(m,b,-.75,-.75,.15,-.75,color,light);
             }
         }
     }

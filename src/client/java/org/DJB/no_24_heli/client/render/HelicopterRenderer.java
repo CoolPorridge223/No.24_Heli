@@ -102,6 +102,13 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
             if (heli.flight.paint < CAMOUFLAGE.length) drawPart("camouflage", selected, matrices, consumers,
                     RenderLayer.getEntitySolid(CAMOUFLAGE[heli.flight.paint]), heli, light, gpu, distant);
             if (near || cockpit) drawPart("interior", selected, matrices, consumers, solid, heli, light, gpu, distant);
+            matrices.push();matrices.translate(0,.44,1.24);matrices.multiply(SearchlightRenderer.gimbal(heli,delta));
+            drawPart("searchlight",selected,matrices,consumers,solid,heli,light,gpu,distant);
+            if(heli.flight.searchlight&&!heli.flight.wreck)
+                drawGlow("searchlight_lens",selected,matrices,consumers,heli,gpu,distant);
+            matrices.pop();
+            if(heli.flight.wreck)drawPart("navigation_lights",selected,matrices,consumers,solid,heli,light,gpu,distant);
+            else drawGlow("navigation_lights",selected,matrices,consumers,heli,gpu,distant);
             float angle = MathHelper.lerp(delta, heli.previousRotorAngle, heli.rotorAngle);
             if (!heli.flight.wreck && heli.flight.rotor > 0) {
                 matrices.push(); matrices.translate(0, 2.71, -.17);
@@ -131,7 +138,16 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         selected.render("glass", matrices, glassSprite.getTextureSpecificVertexConsumer(
                 consumers.getBuffer(TexturedRenderLayers.getEntityCutout())),
                 light, heli.flight.paint, heli.flight.wreck);
-        matrices.pop(); super.render(heli, yaw, delta, matrices, consumers, light);
+        matrices.pop();
+        super.render(heli, yaw, delta, matrices, consumers, light);
+    }
+
+    /** 功能：绘制共享自发光灯芯；客户端渲染线程，发光描边时仍交给原消费者保证兼容。 */
+    private static void drawGlow(String part,HelicopterModel model,MatrixStack matrices,VertexConsumerProvider consumers,
+            HelicopterEntity heli,boolean gpu,boolean distant){
+        var layer=RenderLayer.getEyes(TEXTURE);
+        if(gpu)HelicopterMesh.drawGlow(model,part,heli.flight.paint,false,distant,matrices,layer,SearchlightRenderer.shader());
+        else model.render(part,matrices,consumers.getBuffer(layer),LightmapTextureManager.MAX_LIGHT_COORDINATE,heli.flight.paint,false);
     }
 
     /**

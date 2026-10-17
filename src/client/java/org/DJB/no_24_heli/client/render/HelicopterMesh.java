@@ -153,13 +153,24 @@ public final class HelicopterMesh {
      */
     static void draw(HelicopterModel model, String part, int paint, boolean wreck, boolean distant,
             MatrixStack matrices, RenderLayer layer, int light) {
+        draw(mesh(model,part,paint,wreck,distant), matrices, layer, light, true);
+    }
+
+    /** 功能：返回同外观部件的共享显存分组；仅渲染线程，第一次可见时上传。 */
+    private static List<Segment> mesh(HelicopterModel model,String part,int paint,boolean wreck,boolean distant){
         Key key = new Key(part, paint, wreck, distant);
         List<Segment> segments = CACHE.get(key);
         if (segments == null) {
             segments = upload(model, part, paint, wreck);
             CACHE.put(key, segments);
         }
-        draw(segments, matrices, layer, light, true);
+        return segments;
+    }
+
+    /** 功能：复用静态模型缓存绘制自发光灯具；仅客户端，原版用无定向光程序，Iris 保持图层程序。 */
+    static void drawGlow(HelicopterModel model,String part,int paint,boolean wreck,boolean distant,
+            MatrixStack matrices,RenderLayer layer,ShaderProgram unlit){
+        draw(mesh(model,part,paint,wreck,distant),matrices,layer,0,false,unlit);
     }
 
     /**
@@ -168,9 +179,16 @@ public final class HelicopterMesh {
      * 引用 MC API：RenderLayer 成对启停，VertexBuffer 不重传顶点；不改变 Iris 当前绘制阶段。
      */
     static void draw(List<Segment> segments, MatrixStack matrices, RenderLayer layer, int light, boolean directional) {
+        draw(segments,matrices,layer,light,directional,null);
+    }
+
+    /** 功能：按需覆盖原版局部坐标程序；客户端渲染线程，供探照灯与标识灯保留正确雾距而不受定向光。 */
+    static void draw(List<Segment> segments, MatrixStack matrices, RenderLayer layer, int light,
+            boolean directional,ShaderProgram unlit) {
         layer.startDrawing();
         try {
-            ShaderProgram program = pipeline == null && directional ? shader : RenderSystem.getShader();
+            ShaderProgram program = pipeline == null && unlit!=null ? unlit :
+                    pipeline == null && directional ? shader : RenderSystem.getShader();
             Matrix4f modelView = new Matrix4f(RenderSystem.getModelViewMatrix()).mul(matrices.peek().getPositionMatrix());
             program.initializeUniforms(VertexFormat.DrawMode.QUADS, modelView, RenderSystem.getProjectionMatrix(),
                     net.minecraft.client.MinecraftClient.getInstance().getWindow());

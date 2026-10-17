@@ -1,6 +1,17 @@
 {
-  "parent": "minecraft:item/generated",
-  "textures": {
-    "layer0": "no_24_heli:item/parachute"
-  }
+  "parent": "no_24_heli:item/parachute_packed",
+  "overrides": [
+    {
+      "predicate": {
+        "no_24_heli:pack_state": 0.5
+      },
+      "model": "no_24_heli:item/parachute_unpacked"
+    },
+    {
+      "predicate": {
+        "no_24_heli:pack_state": 1
+      },
+      "model": "no_24_heli:item/parachute_damaged"
+    }
+  ]
 }
