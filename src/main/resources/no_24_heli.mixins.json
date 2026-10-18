@@ -4,6 +4,9 @@
   "package": "org.DJB.no_24_heli.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "PilotInventoryMixin",
+    "PilotScreenHandlerMixin",
+    "PilotCreativePacketMixin",
     "ParachuteEquipmentMixin",
     "ParachuteVanillaRepairMixin"
   ],

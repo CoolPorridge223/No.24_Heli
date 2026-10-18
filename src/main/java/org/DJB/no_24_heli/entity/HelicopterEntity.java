@@ -456,6 +456,8 @@ public class HelicopterEntity extends Entity {
     /** 存档版本 3：显式字段，旧存档缺少部件字段时默认完整，损毁状态绝不重置。 */
     private NbtCompound saveFlight(){
         NbtCompound n=new NbtCompound();n.putInt("Version",4);
+        // 供主副驾联动摇杆和远端握杆姿态读取；读档结束仍由 clearInputs 清除，不恢复控制意图。
+        n.putFloat("CyclicPitch",flight.cyclicPitch);n.putFloat("CyclicRoll",flight.cyclicRoll);
         n.putInt("RopeCarrierId",activeRope!=null&&!activeRope.isRemoved()?activeRope.getId():-1);
         n.putBoolean("Searchlight",flight.searchlight&&!flight.wreck);
         n.putFloat("SearchlightYaw",flight.searchlightYaw);n.putFloat("SearchlightPitch",flight.searchlightPitch);
@@ -470,6 +472,8 @@ public class HelicopterEntity extends Entity {
     }
     private static double number(NbtCompound n,String key,double fallback,double min,double max){double v=n.contains(key)?n.getDouble(key):fallback;return Double.isFinite(v)?FlightPhysics.clamp(v,min,max):fallback;}
     private void loadFlight(NbtCompound n){
+        flight.cyclicPitch=(float)number(n,"CyclicPitch",0,-1,1);
+        flight.cyclicRoll=(float)number(n,"CyclicRoll",0,-1,1);
         ropeCarrierId=n.contains("RopeCarrierId")?n.getInt("RopeCarrierId"):-1;
         flight.searchlight=n.getBoolean("Searchlight");
         flight.searchlightYaw=(float)number(n,"SearchlightYaw",0,-120,120);

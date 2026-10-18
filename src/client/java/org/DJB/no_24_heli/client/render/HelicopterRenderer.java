@@ -104,6 +104,16 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
             if (heli.flight.paint < CAMOUFLAGE.length) drawPart("camouflage", selected, matrices, consumers,
                     RenderLayer.getEntitySolid(CAMOUFLAGE[heli.flight.paint]), heli, light, gpu, distant);
             if (near || cockpit) drawPart("interior", selected, matrices, consumers, solid, heli, light, gpu, distant);
+            if (near || cockpit) {
+                Quaternionf stickRotation = CockpitControlsRenderer.rotation(heli, delta);
+                for (double side : new double[]{-.38, .38}) {
+                    matrices.push();
+                    matrices.translate(side, CockpitControlsRenderer.BASE_Y, CockpitControlsRenderer.BASE_Z);
+                    matrices.multiply(stickRotation);
+                    drawPart("cyclic", selected, matrices, consumers, solid, heli, light, gpu, distant);
+                    matrices.pop();
+                }
+            }
             matrices.push();matrices.translate(0,.44,1.24);matrices.multiply(SearchlightRenderer.gimbal(heli,delta));
             drawPart("searchlight",selected,matrices,consumers,solid,heli,light,gpu,distant);
             drawPart("searchlight_lens",selected,matrices,consumers,solid,heli,light,gpu,distant);
@@ -135,6 +145,8 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         if (!collecting && (near || cockpit)) model.render("lamp", matrices, consumers.getBuffer(heli.flight.wreck
                 ? RenderLayer.getEntityCutout(TEXTURE) : RenderLayer.getEyes(TEXTURE)),
                 heli.flight.wreck ? light : LightmapTextureManager.MAX_LIGHT_COORDINATE, heli.flight.paint, heli.flight.wreck);
+        if (near || cockpit) CockpitControlsRenderer.renderArms(heli, delta, matrices, consumers,
+                heli.flight.wreck ? light : (light & 0xffff0000) | Math.max(light & 0xffff, LightmapTextureManager.pack(11, 0)));
         if (!collecting && !HelicopterMesh.isShadowPass() && (cockpit || camera.lengthSquared() < INSTRUMENT_DISTANCE_SQUARED))
             dashboard.render(heli, delta, matrices, consumers, light);
         // 窗缘走原版裁切层，透明中央的片元被丢弃，不依赖光影对半透明实体的混合实现。

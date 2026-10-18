@@ -14,6 +14,7 @@
       "org.DJB.no_24_heli.client.No_24_heliDataGenerator"
     ],
     "client": [
+      "org.DJB.no_24_heli.client.PilotVerification",
       "org.DJB.no_24_heli.client.No_24_heliClient"
     ],
     "main": [

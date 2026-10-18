@@ -1,0 +1,181 @@
+{
+  "parent": "minecraft:block/block",
+  "ambientocclusion": false,
+  "textures": {
+    "materials": "no_24_heli:item/pilot_headset_materials",
+    "particle": "no_24_heli:item/pilot_headset_materials"
+  },
+  "display": {
+    "head": {
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1.6,
+        1.6,
+        1.6
+      ]
+    },
+    "gui": {
+      "rotation": [
+        15,
+        -35,
+        0
+      ],
+      "translation": [
+        0,
+        -0.8,
+        0
+      ],
+      "scale": [
+        1.1,
+        1.1,
+        1.1
+      ]
+    },
+    "ground": {
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "translation": [
+        0,
+        2.5,
+        0
+      ],
+      "scale": [
+        0.55,
+        0.55,
+        0.55
+      ]
+    },
+    "fixed": {
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "translation": [
+        0,
+        -0.5,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    "firstperson_righthand": {
+      "rotation": [
+        0,
+        135,
+        0
+      ],
+      "translation": [
+        1.5,
+        2,
+        0
+      ],
+      "scale": [
+        0.7,
+        0.7,
+        0.7
+      ]
+    },
+    "firstperson_lefthand": {
+      "rotation": [
+        0,
+        225,
+        0
+      ],
+      "translation": [
+        1.5,
+        2,
+        0
+      ],
+      "scale": [
+        0.7,
+        0.7,
+        0.7
+      ]
+    },
+    "thirdperson_righthand": {
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "translation": [
+        0,
+        2,
+        1
+      ],
+      "scale": [
+        0.65,
+        0.65,
+        0.65
+      ]
+    },
+    "thirdperson_lefthand": {
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "translation": [
+        0,
+        2,
+        1
+      ],
+      "scale": [
+        0.65,
+        0.65,
+        0.65
+      ]
+    }
+  },
+  "elements": [
+    {"name":"头梁外壳","from":[3.2,12.75,7.0],"to":[12.8,13.3,9.0],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"头梁内软垫","from":[4.0,12.55,7.15],"to":[12.0,12.76,8.85],"faces":{"north":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"south":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"east":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"west":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"up":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"down":{"uv":[1,0.25,15,1.75],"texture":"#materials"}}},
+    {"name":"头梁缝线","from":[4.0,13.31,7.85],"to":[12.0,13.38,8.15],"faces":{"north":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"south":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"east":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"west":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"up":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"down":{"uv":[1,14.25,15,15.75],"texture":"#materials"}}},
+    {"name":"左头梁竖臂","from":[3.0,9.0,7.15],"to":[3.5,12.8,8.85],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"左伸缩金属滑轨","from":[2.85,8.6,7.65],"to":[3.05,11.5,8.35],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"左贴耳软垫","from":[2.75,5.3,6.0],"to":[3.49,9.7,10.0],"faces":{"north":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"south":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"east":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"west":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"up":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"down":{"uv":[1,0.25,15,1.75],"texture":"#materials"}}},
+    {"name":"左耳罩主体","from":[1.8,5.6,6.2],"to":[2.8,9.4,9.8],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"左耳罩上圆角","from":[1.95,9.4,6.55],"to":[2.8,9.75,9.45],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"左耳罩下圆角","from":[1.95,5.25,6.55],"to":[2.8,5.6,9.45],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"左外侧面板","from":[1.6,6.1,6.7],"to":[1.81,8.9,9.3],"faces":{"north":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"south":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"east":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"west":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"up":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"down":{"uv":[1,0.25,15,1.75],"texture":"#materials"}}},
+    {"name":"左面板金属条","from":[1.54,6.55,7.85],"to":[1.61,8.5,8.15],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"左金色标识","from":[1.53,7.1,8.35],"to":[1.62,7.95,8.75],"faces":{"north":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"south":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"east":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"west":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"up":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"down":{"uv":[1,12.25,15,13.75],"texture":"#materials"}}},
+    {"name":"左上连接螺钉","from":[1.5,8.55,7.8],"to":[1.64,8.85,8.2],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"左下连接螺钉","from":[1.5,6.15,7.8],"to":[1.64,6.45,8.2],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"右头梁竖臂","from":[12.5,9.0,7.15],"to":[13.0,12.8,8.85],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"右伸缩金属滑轨","from":[12.95,8.6,7.65],"to":[13.15,11.5,8.35],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"右贴耳软垫","from":[12.51,5.3,6.0],"to":[13.25,9.7,10.0],"faces":{"north":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"south":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"east":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"west":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"up":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"down":{"uv":[1,0.25,15,1.75],"texture":"#materials"}}},
+    {"name":"右耳罩主体","from":[13.2,5.6,6.2],"to":[14.2,9.4,9.8],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"右耳罩上圆角","from":[13.2,9.4,6.55],"to":[14.05,9.75,9.45],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"右耳罩下圆角","from":[13.2,5.25,6.55],"to":[14.05,5.6,9.45],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"右外侧面板","from":[14.19,6.1,6.7],"to":[14.4,8.9,9.3],"faces":{"north":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"south":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"east":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"west":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"up":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"down":{"uv":[1,0.25,15,1.75],"texture":"#materials"}}},
+    {"name":"右面板金属条","from":[14.39,6.55,7.85],"to":[14.46,8.5,8.15],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"右金色标识","from":[14.379999999999999,7.1,8.35],"to":[14.47,7.95,8.75],"faces":{"north":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"south":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"east":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"west":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"up":{"uv":[1,12.25,15,13.75],"texture":"#materials"},"down":{"uv":[1,12.25,15,13.75],"texture":"#materials"}}},
+    {"name":"右上连接螺钉","from":[14.36,8.55,7.8],"to":[14.5,8.85,8.2],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"右下连接螺钉","from":[14.36,6.15,7.8],"to":[14.5,6.45,8.2],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"麦克风转轴","from":[1.55,5.5,9.2],"to":[2.35,6.3,10.0],"faces":{"north":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"south":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"east":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"west":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"up":{"uv":[1,4.25,15,5.75],"texture":"#materials"},"down":{"uv":[1,4.25,15,5.75],"texture":"#materials"}}},
+    {"name":"麦克风侧杆","from":[2.0,5.55,9.8],"to":[2.4,5.95,13.3],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"麦克风前弯杆","from":[2.05,5.05,13.1],"to":[5.7,5.45,13.5],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"麦克风弯头","from":[2.05,5.05,12.95],"to":[2.45,5.95,13.5],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"话筒海绵","from":[5.4,4.65,13.0],"to":[7.1,5.85,14.0],"faces":{"north":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"south":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"east":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"west":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"up":{"uv":[1,0.25,15,1.75],"texture":"#materials"},"down":{"uv":[1,0.25,15,1.75],"texture":"#materials"}}},
+    {"name":"话筒端面","from":[7.1,4.85,13.15],"to":[7.3,5.65,13.85],"faces":{"north":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"south":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"east":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"west":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"up":{"uv":[1,2.25,15,3.75],"texture":"#materials"},"down":{"uv":[1,2.25,15,3.75],"texture":"#materials"}}},
+    {"name":"话筒网格上","from":[5.65,5.45,14.01],"to":[6.85,5.55,14.04],"faces":{"north":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"south":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"east":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"west":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"up":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"down":{"uv":[1,14.25,15,15.75],"texture":"#materials"}}},
+    {"name":"话筒网格下","from":[5.65,5.0,14.01],"to":[6.85,5.1,14.04],"faces":{"north":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"south":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"east":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"west":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"up":{"uv":[1,14.25,15,15.75],"texture":"#materials"},"down":{"uv":[1,14.25,15,15.75],"texture":"#materials"}}}
+  ]
+}

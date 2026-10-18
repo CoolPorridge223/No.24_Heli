@@ -70,6 +70,8 @@ public final class HelicopterModel {
     private final List<Face> searchlight=new ArrayList<>(),searchlightLens=new ArrayList<>(),navigationLights=new ArrayList<>();
     /** 支柱使用单位长度缓存，收放时仅更新四根支柱的变换，机身铰点保持固定。 */
     private final List<Face> strut = new ArrayList<>();
+    /** 独立杆体以底座为原点，两侧共用几何并各自应用联动矩阵。 */
+    private final List<Face> cyclic = new ArrayList<>();
     /** 舱灯位置只用于内饰光照衰减，单位：机体局部格数。 */
     private static final Vec3d CABIN_LAMP_POSITION = new Vec3d(0, 1.94, -.12);
 
@@ -492,9 +494,11 @@ public final class HelicopterModel {
             ellipsoid(interior, new Vec3d(side, .69, -.12), new Vec3d(.29, .10, .36), SEAT);
             ellipsoid(interior, new Vec3d(side, 1.01, -.40), new Vec3d(.29, .43, .09), SEAT);
             ellipsoid(interior, new Vec3d(side, 1.38, -.41), new Vec3d(.18, .13, .09), SEAT);
-            tube(interior, new Vec3d(side, .58, .25), new Vec3d(side, .91, .17), .023, .023, DARK);
-            ellipsoid(interior, new Vec3d(side, .93, .17), new Vec3d(.04, .07, .04), DARK);
+            ellipsoid(interior, new Vec3d(side, CockpitControlsRenderer.BASE_Y, CockpitControlsRenderer.BASE_Z),
+                    new Vec3d(.065, .045, .065), DARK);
         }
+        tube(cyclic, Vec3d.ZERO, CockpitControlsRenderer.GRIP.add(0, -.03, 0), .023, .023, DARK);
+        ellipsoid(cyclic, CockpitControlsRenderer.GRIP, new Vec3d(.04, .07, .04), DARK);
         // 灯具紧贴舱顶内侧；透镜独立自发光，内衬使用局部灯光，不依赖额外动态光照模组。
         ellipsoid(interior, new Vec3d(0, 1.965, -.12), new Vec3d(.14, .025, .095), METAL);
         ellipsoid(lamp, new Vec3d(0, 1.943, -.12), new Vec3d(.105, .012, .063), WHITE);
@@ -805,7 +809,7 @@ public final class HelicopterModel {
             case "number" -> number; case "wordmark" -> wordmark; case "camouflage" -> camouflage;
             case "interior" -> interior; case "lamp" -> lamp; case "strut" -> strut;
             case "searchlight" -> searchlight; case "searchlight_lens" -> searchlightLens;
-            case "navigation_lights" -> navigationLights; default -> shell;
+            case "navigation_lights" -> navigationLights; case "cyclic" -> cyclic; default -> shell;
         };
         boolean decal = part.equals("number") || part.equals("wordmark"), camo = part.equals("camouflage");
         boolean body = part.equals("shell"), undercarriage = part.equals("gear") || part.equals("strut");

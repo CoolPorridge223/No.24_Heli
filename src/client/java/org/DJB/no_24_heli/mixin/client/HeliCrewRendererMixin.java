@@ -36,6 +36,8 @@ import org.spongepowered.asm.mixin.injection.invoke.arg.Args;
 @Environment(EnvType.CLIENT)
 @Mixin(LivingEntityRenderer.class)
 public abstract class HeliCrewRendererMixin {
+    /** 自定义握杆臂替代玩家原右臂；每次绘制结束恢复，避免污染离机人物及其他渲染。 */
+    @org.spongepowered.asm.mixin.Unique private boolean heli$hiddenArm, heli$armVisible, heli$sleeveVisible;
     /** 完整描述符避免同时命中 net.minecraft.client.render.entity.LivingEntityRenderer 的桥接方法。 */
     private static final String RENDER = "render(Lnet/minecraft/entity/LivingEntity;FFLnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider;I)V";
     /** 复用 net.minecraft.client.render.entity.LivingEntityRenderer#model，在原版坐姿完成后调整腿部位置。 */
@@ -65,6 +67,11 @@ public abstract class HeliCrewRendererMixin {
     @Inject(method = RENDER, at = @At("RETURN"))
     private void restorePosition(LivingEntity entity, float yaw, float delta, MatrixStack matrices,
             VertexConsumerProvider vertices, int light, CallbackInfo ci) {
+        if (heli$hiddenArm && model instanceof net.minecraft.client.render.entity.model.PlayerEntityModel<?> playerModel) {
+            playerModel.rightArm.visible = heli$armVisible;
+            playerModel.rightSleeve.visible = heli$sleeveVisible;
+            heli$hiddenArm = false;
+        }
         if (entity.getVehicle() instanceof HelicopterEntity) matrices.pop();
     }
 
@@ -114,6 +121,12 @@ public abstract class HeliCrewRendererMixin {
         biped.rightLeg.pitch = biped.leftLeg.pitch = -(float) Math.PI / 2;
         biped.rightLeg.yaw = biped.leftLeg.yaw = 0;
         biped.rightLeg.roll = biped.leftLeg.roll = 0;
+        if (model instanceof net.minecraft.client.render.entity.model.PlayerEntityModel<?> playerModel) {
+            heli$armVisible = playerModel.rightArm.visible;
+            heli$sleeveVisible = playerModel.rightSleeve.visible;
+            playerModel.rightArm.visible = playerModel.rightSleeve.visible = false;
+            heli$hiddenArm = true;
+        }
     }
 
     /**

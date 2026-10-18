@@ -1,4 +1,10 @@
 {
+  "slot.no_24_heli.goggles": "飞行员目镜槽",
+  "slot.no_24_heli.headset": "飞行员耳麦槽",
+  "tooltip.no_24_heli.pilot_goggles": "右键穿戴至目镜槽 · 日间减光 · 夜间夜视",
+  "item.no_24_heli.pilot_goggles": "飞行员目镜",
+  "item.no_24_heli.pilot_headset": "飞行员耳麦",
+  "tooltip.no_24_heli.pilot_headset": "右键穿戴至耳麦槽 · 可与目镜同时佩戴",
   "key.no_24_heli.view": "切换机内 / 第三人称驾驶视角",
   "cockpit.no_24_heli.attitude": "姿态",
   "cockpit.no_24_heli.manual": "手动驾驶",

@@ -124,6 +124,7 @@ public class No_24_heliClient implements ClientModInitializer {
         return 32;
     }
     @Override public void onInitializeClient(){
+        org.DJB.no_24_heli.client.render.PilotEquipmentClient.register();
         org.DJB.no_24_heli.client.render.HelicopterMesh.register();
         org.DJB.no_24_heli.client.render.SearchlightRenderer.register();
         ParachuteClient.initialize();

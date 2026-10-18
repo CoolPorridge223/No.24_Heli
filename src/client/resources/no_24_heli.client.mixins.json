@@ -4,6 +4,11 @@
   "package": "org.DJB.no_24_heli.mixin.client",
   "compatibilityLevel": "JAVA_21",
   "client": [
+    "PilotVisionMixin",
+    "PilotLightmapMixin",
+    "PilotHudMixin",
+    "PilotCreativeScreenMixin",
+    "PilotSlotBackgroundMixin",
     "DrivingInputMixin",
     "HeliCameraMixin",
     "HeliFovMixin",

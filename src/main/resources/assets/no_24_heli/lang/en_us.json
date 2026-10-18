@@ -1,4 +1,10 @@
 {
+  "slot.no_24_heli.goggles": "Pilot goggles slot",
+  "slot.no_24_heli.headset": "Pilot headset slot",
+  "tooltip.no_24_heli.pilot_goggles": "Right-click to equip in the goggles slot · Day glare reduction · Night vision",
+  "item.no_24_heli.pilot_goggles": "Pilot Goggles",
+  "item.no_24_heli.pilot_headset": "Pilot Headset",
+  "tooltip.no_24_heli.pilot_headset": "Right-click to equip in the headset slot · Compatible with goggles",
   "key.no_24_heli.view": "Toggle cockpit / third-person view",
   "cockpit.no_24_heli.attitude": "ATTITUDE",
   "cockpit.no_24_heli.manual": "MANUAL FLIGHT",

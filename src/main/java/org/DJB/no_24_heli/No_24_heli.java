@@ -65,6 +65,7 @@ public class No_24_heli implements ModInitializer {
     public static final SoundEvent DAMAGE_SOUND=Registry.register(Registries.SOUND_EVENT,id("rotor_damage"),SoundEvent.of(id("rotor_damage")));
     @Override public void onInitialize() {
         HeliConfig.load();
+        org.DJB.no_24_heli.registry.ModItems.register();
         org.DJB.no_24_heli.registry.ModParachutes.initialize();
         org.DJB.no_24_heli.registry.ModAdvancements.initialize();
         RadioTransferServer.register();
@@ -102,6 +103,8 @@ public class No_24_heli implements ModInitializer {
             return net.minecraft.util.TypedActionResult.pass(stack);
         });
         Registry.register(Registries.ITEM_GROUP,id("equipment"),FabricItemGroup.builder().displayName(Text.translatable("itemGroup.no_24_heli")).icon(()->new ItemStack(HELICOPTER)).entries((ctx,entries)->{
+            entries.add(org.DJB.no_24_heli.registry.ModItems.PILOT_HEADSET);
+            entries.add(org.DJB.no_24_heli.registry.ModItems.PILOT_GOGGLES);
             entries.add(HELICOPTER); entries.add(org.DJB.no_24_heli.registry.ModParachutes.PARACHUTE); entries.add(ROTOR); entries.add(TAIL); entries.add(ENGINE); entries.add(TANK); entries.add(FUSELAGE); entries.add(KEROSENE); entries.add(CRUDE); entries.add(REPAIR); entries.add(HELIPAD_ITEM); entries.add(RADAR_ITEM); for(Item paint:PAINTS) entries.add(paint);
         }).build());
         PayloadTypeRegistry.playC2S().register(DifficultyPayload.ID,DifficultyPayload.CODEC);
