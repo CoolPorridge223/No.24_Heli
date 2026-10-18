@@ -11,26 +11,21 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.LivingEntityFeatureRendererRegistrationCallback;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.entity.PlayerEntityRenderer;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.util.math.MathHelper;
-import net.minecraft.world.LightType;
 import org.DJB.no_24_heli.data.PilotEquipment;
 import org.DJB.no_24_heli.network.PilotEquipmentPayload;
 
 /**
- * 职责：接收装备外观、绘制日间减光并为原版光照计算提供夜视强度，不写药水状态或游戏亮度选项。
- * 引用 Fabric 客户端网络与实体加载事件解决追踪包先于实体生成的顺序；DrawContext 绘制减光。
+ * 职责：接收装备外观，仅在本地玩家第一人称提供夜间夜视强度，不写药水状态或游戏亮度选项。
+ * 引用 Fabric 客户端网络与实体加载事件解决追踪包先于实体生成的顺序；MinecraftClient 判断当前视角。
  * 生命周期：客户端初始化、收到快照与每帧渲染；只在客户端主线程运行。
- * 排查：夜视残留查 hasGoggles；洞穴发黑查天空光权重；跨服外观查断线清空 pending。
+ * 排查：夜视残留查装备和透视条件；跨服外观查断线清空 pending。
  */
 @Environment(EnvType.CLIENT)
 public final class PilotEquipmentClient {
     /** 尚未生成对应玩家实体时暂存一次快照，断线清空。 */
     private static final Map<UUID, PilotEquipmentPayload> PENDING = new HashMap<>();
-    /** 日间室外最多减光 18%，不遮挡 HUD，不修改用户亮度设置。 */
-    private static final float DAY_DIM = .18f;
 
     /** 仅静态渲染工具。 */
     private PilotEquipmentClient() {}
@@ -65,9 +60,12 @@ public final class PilotEquipmentClient {
         player.getInventory().setStack(PilotEquipment.GOGGLES, packet.goggles());
     }
 
-    /** 日落/日出各用 1000 tick 平滑过渡，无天空光维度保持夜视；读取时间而非客户端缓存 isNight。 */
+    /** 本地第一人称下日落/日出各用 1000 tick 平滑过渡，无天空光维度保持夜视；其他视角不启用目镜效果。 */
     public static float nightStrength(PlayerEntity player) {
-        if (!PilotEquipment.hasGoggles(player) || player.isSpectator()) return 0;
+        var client = MinecraftClient.getInstance();
+        if (player != client.player || client.getCameraEntity() != player
+                || !client.options.getPerspective().isFirstPerson()
+                || !PilotEquipment.hasGoggles(player) || player.isSpectator()) return 0;
         var world = player.getWorld();
         if (!world.getDimension().hasSkyLight()) return 1;
         long time = Math.floorMod(world.getTimeOfDay(), 24000);
@@ -75,14 +73,4 @@ public final class PilotEquipmentClient {
                 : time <= 23000 ? 1 : (24000 - time) / 1000f;
     }
 
-    /** HUD 绘制之前压暗世界画面；天空光为零时不压暗，背包及 HUD 仍按原亮度显示。 */
-    public static void drawDayFilter(DrawContext context) {
-        var client = MinecraftClient.getInstance();
-        if (client.player == null || client.world == null || !PilotEquipment.hasGoggles(client.player)
-                || client.player.isSpectator()) return;
-        float sky = client.world.getLightLevel(LightType.SKY, client.gameRenderer.getCamera().getBlockPos()) / 15f;
-        float rain = 1 - client.world.getRainGradient(1) * .65f;
-        int alpha = MathHelper.clamp(Math.round(255 * DAY_DIM * (1 - nightStrength(client.player)) * sky * rain), 0, 255);
-        if (alpha > 0) context.fill(0, 0, context.getScaledWindowWidth(), context.getScaledWindowHeight(), alpha << 24);
-    }
 }

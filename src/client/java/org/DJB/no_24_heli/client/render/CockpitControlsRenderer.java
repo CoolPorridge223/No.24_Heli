@@ -33,10 +33,10 @@ import org.joml.Vector3f;
  */
 @Environment(EnvType.CLIENT)
 public final class CockpitControlsRenderer {
-    /** 两座共享底座高度和前后位置，较旧底座前移 0.30 格；座椅前缘约 Z=0.24。 */
-    public static final double BASE_Y = .58, BASE_Z = .55;
-    /** 握点相对底座坐标，单位格；与 HelicopterModel 的独立杆体几何保持一致。 */
-    public static final Vec3d GRIP = new Vec3d(0, .40, -.08);
+    /** 底座下缘 0.635 格嵌入 0.64 格高地板；前后位置与双座统一前移，单位格。 */
+    public static final double BASE_Y = .68, BASE_Z = .55 + HelicopterEntity.SEAT_FORWARD_OFFSET;
+    /** 握点降至 0.83 格高，单位格；与 HelicopterModel 的独立杆体几何保持一致，手掌保持在仪表下缘之下。 */
+    public static final Vec3d GRIP = new Vec3d(0, .15, -.08);
     /** 满杆偏转 14 度，显示以约 0.1 秒响应跟随输入，不修改原飞行参数。 */
     private static final float MAX_ANGLE = (float) Math.toRadians(14);
     /** 以机体为弱键，记录显示轴和上一帧的世界 tick 时间，阴影重复绘制不会加速动画。 */
@@ -58,7 +58,7 @@ public final class CockpitControlsRenderer {
      */
     public static Quaternionf rotation(HelicopterEntity heli, float delta) {
         var client = MinecraftClient.getInstance();
-        float pitch = heli.flight.cyclicPitch, roll = heli.flight.cyclicRoll;
+        float pitch = heli.flight.stickPitch, roll = heli.flight.stickRoll;
         if (client.player != null && heli.isPilot(client.player) && !heli.flight.autopilot && heli.flight.autoPhase == 0) {
             pitch = client.currentScreen == null ? (client.options.backKey.isPressed() ? 1 : 0)
                     - (client.options.forwardKey.isPressed() ? 1 : 0) : 0;
@@ -93,18 +93,19 @@ public final class CockpitControlsRenderer {
         for (var passenger : heli.getPassengerList()) {
             if (!(passenger instanceof AbstractClientPlayerEntity player) || player.isInvisible() || !player.isAlive()) continue;
             double side = heli.isPilot(player) ? .38 : -.38;
-            Vec3d shoulder = new Vec3d(side - .25, 1.32, -.12);
-            Vec3d elbow = new Vec3d(side - .29, 1.03, .18);
-            Vec3d grip = grip(side, rotation);
+            Vec3d shoulder = new Vec3d(side - .25, 1.22, -.12 + HelicopterEntity.SEAT_FORWARD_OFFSET);
+            Vec3d elbow = new Vec3d(side - .29, .86, .18 + HelicopterEntity.SEAT_FORWARD_OFFSET);
+            Vector3f palmOffset = new Vector3f(-.085f, 0, 0).rotate(rotation);
+            Vec3d grip = grip(side, rotation).add(palmOffset.x, palmOffset.y, palmOffset.z);
             // 手掌末端越过握点四厘米，使杆柄落在手掌体积内部，而不是贴着指尖悬空。
             Vec3d palmEnd = grip.add(grip.subtract(elbow).normalize().multiply(.04));
             ModelPart[] parts = player.getSkinTextures().model() == SkinTextures.Model.SLIM ? SLIM : REGULAR;
             RenderLayer layer = RenderLayer.getEntityTranslucent(player.getSkinTextures().texture());
-            drawArmSegment(parts[0], shoulder, elbow, matrices, consumers, layer, light);
-            drawArmSegment(parts[1], elbow, palmEnd, matrices, consumers, layer, light);
+            drawArmSegment(parts[0], shoulder, elbow, 0, matrices, consumers, layer, light);
+            drawArmSegment(parts[1], elbow, palmEnd, (float) Math.PI / 2, matrices, consumers, layer, light);
             if (player.isPartVisible(PlayerModelPart.RIGHT_SLEEVE)) {
-                drawArmSegment(parts[2], shoulder, elbow, matrices, consumers, layer, light);
-                drawArmSegment(parts[3], elbow, palmEnd, matrices, consumers, layer, light);
+                drawArmSegment(parts[2], shoulder, elbow, 0, matrices, consumers, layer, light);
+                drawArmSegment(parts[3], elbow, palmEnd, (float) Math.PI / 2, matrices, consumers, layer, light);
             }
         }
     }
@@ -121,14 +122,14 @@ public final class CockpitControlsRenderer {
         return new ModelPart[]{root.getChild("arm0"), root.getChild("arm1"), root.getChild("arm2"), root.getChild("arm3")};
     }
 
-    /** net.minecraft.client.model.ModelPart 以像素建模；按两端点长度缩放，矩阵作用域不会影响座舱。 */
-    private static void drawArmSegment(ModelPart part, Vec3d start, Vec3d end, MatrixStack matrices,
+    /** net.minecraft.client.model.ModelPart 按端点缩放；前臂绕长轴转九十度，手掌从杆柄侧面包住摇杆。 */
+    private static void drawArmSegment(ModelPart part, Vec3d start, Vec3d end, float twist, MatrixStack matrices,
             VertexConsumerProvider consumers, RenderLayer layer, int light) {
         Vec3d direction = end.subtract(start);
         matrices.push();
         matrices.translate(start.x, start.y, start.z);
         matrices.multiply(new Quaternionf().rotationTo(new Vector3f(0, 1, 0),
-                new Vector3f((float) direction.x, (float) direction.y, (float) direction.z).normalize()));
+                new Vector3f((float) direction.x, (float) direction.y, (float) direction.z).normalize()).rotateY(twist));
         matrices.scale(.88f, (float) direction.length() / (6f / 16), .88f);
         part.render(matrices, consumers.getBuffer(layer), light, OverlayTexture.DEFAULT_UV);
         matrices.pop();

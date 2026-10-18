@@ -6,8 +6,12 @@ public final class FlightState {
     public double rpm, collective, pitch, roll, yaw, yawRate, vx, vy, vz;
     public double fuel, rotor = 100, tail = 100, engine = 100, tank = 100, hull = 100;
     public double targetAltitude, targetSpeed;
+    /** 高度保持下正在手动升降或松键制动；仅服务端瞬态，不同步、不存档，制动后捕获新高度。 */
+    public boolean altitudeAdjusting;
     public boolean running, armed, altitudeHold, trim, cruise, gear = true;
     public boolean wreck, rope;
+    /** 起飞升力不足警告；服务端按部件、旋翼处天气和地面支撑实时重算，随快照同步，旧数据默认关闭。 */
+    public boolean takeoffPowerLow;
     /** 探照灯开关和相对机头的云台角，单位：度；左右 ±120°，俯仰 -85°～-15°，默认朝前下方。 */
     public boolean searchlight;
     public float searchlightYaw,searchlightPitch=-65;
@@ -34,7 +38,10 @@ public final class FlightState {
     public long radioStartedTick;
     /** 无驾驶员的连续飞行 tick，保存以避免重载反复刷新悬停保护。 */
     public int abandonedTicks;
-    /** 清除控制输入只影响操纵杆，不会抹掉惯性和旋翼转速。 */
+    /** 舱内联动摇杆的显示输入，范围 -1～1；独立于接地时被物理清零的周期变距，随实体快照同步。 */
+    public float stickPitch, stickRoll;
+    /** 参与服务端物理积分的连续轴输入，范围 -1～1；接地时周期变距归零。 */
     public float cyclicPitch, cyclicRoll, pedal, collectiveInput;
-    public void clearInputs() { cyclicPitch = cyclicRoll = pedal = collectiveInput = 0; }
+    /** 功能：服务端在超时、离座和读档时清除输入与摇杆显示，不抹掉惯性或旋翼转速；不依赖 MC API。 */
+    public void clearInputs() { stickPitch = stickRoll = cyclicPitch = cyclicRoll = pedal = collectiveInput = 0; }
 }

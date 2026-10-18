@@ -1,0 +1,482 @@
+/** 文件：直升机旋转分部碰撞、连续扫掠及命中定位；端侧：COMMON，服务端权威。 */
+package org.DJB.no_24_heli.entity;
+
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.projectile.ProjectileEntity;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.World;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+
+/**
+ * 职责：以模型局部坐标定义多个有向盒，包围盒仅筛选候选，接触及射线都由分离轴判断。
+ * 引用 net.minecraft.world.World#getBlockCollisions 读取原版方块碰撞形状，Box 只提供轴对齐候选范围。
+ * 生命周期：实体移动、转动、攻击与客户端选取时调用；世界主线程，不创建附属实体或写客户端物理。
+ * 排查：空处受撞查是否绕过 sweep/raycast；部位错位查姿态旋转顺序；低速卡地查接触容差和滑橇。
+ */
+public final class HelicopterCollision {
+    /** 整机最远顶点距原点不足七格；扩大候选查询以覆盖跨实体区段的细长尾部。 */
+    public static final double QUERY_RADIUS = 7;
+    /** 接触容差，单位格；防止贴地或沿墙平移被浮点误差当成新的穿入。 */
+    private static final double EPSILON = 1.0e-5;
+    /** 静态净空容差大于移动接触误差，单位格；贴地停稳后的微小舍入差不能阻止起飞。 */
+    private static final double CLEARANCE_EPSILON = EPSILON * 4;
+    /** 机体角度每半度采样一次，尾端相邻采样位移小于六厘米，避免原地转向跳过薄障碍。 */
+    private static final double ROTATION_STEP = .5;
+    /** 原版世界轴，用于有向盒与轴对齐方块之间的十五轴分离检测。 */
+    private static final Vec3d[] WORLD_AXES = {new Vec3d(1, 0, 0), new Vec3d(0, 1, 0), new Vec3d(0, 0, 1)};
+
+    /** 部位对应现有机身、引擎、油箱、主旋翼和尾部耐久，不额外引入存档槽。 */
+    public enum Part { CABIN, ENGINE, FUEL_TANK, TAIL_BOOM, TAIL_ROTOR, MAIN_ROTOR, LANDING_GEAR }
+
+    /** 姿态单位为度；顺序与机模一致：偏航、俯仰、横滚。 */
+    public record Pose(double yaw, double pitch, double roll) {
+        /** net.minecraft.util.math.MathHelper 包装偏航差，避免跨 ±180° 时反向扫过整圈。 */
+        public Pose interpolate(Pose target, double fraction) {
+            return new Pose(yaw + MathHelper.wrapDegrees(target.yaw - yaw) * fraction,
+                    pitch + (target.pitch - pitch) * fraction, roll + (target.roll - roll) * fraction);
+        }
+        /** 只旋转局部向量，绝不把大世界坐标转换为单精度。 */
+        public Quaternionf rotation() {
+            return new Quaternionf().rotationY((float) Math.toRadians(-yaw))
+                    .rotateX((float) Math.toRadians(-pitch)).rotateZ((float) Math.toRadians(roll));
+        }
+    }
+
+    /** 射线的真实部位、世界命中点和距起点平方距离，供近战和原版投射物共用。 */
+    public record Hit(Part part, Vec3d position, double distanceSquared) {}
+    /** 两个实体接触的双方部位；普通生物没有机体部位，otherPart 为 null。 */
+    public record Contact(Part part, Part otherPart) {}
+
+    /** 同一实体姿态未变化时复用分部盒和分离轴；存于实体自身，卸载即释放，不建立全局世界缓存。 */
+    record Cache(Pose pose, Vec3d origin, float rotorAngle, float gear, double rpm, double rotor, double tail,
+                 boolean wreck, List<Shape> shapes, Box bounds, Box cabinBounds) {}
+
+    /** 一个有向盒的世界中心、半尺寸和正交基；bounds 只是宽相位候选范围。 */
+    public record Shape(Part part, Vec3d center, Vec3d half, Quaternionf rotation, Vec3d[] axes, Vec3d[] collisionAxes, Box bounds) {
+        /** 复用已算好的正交基平移盒，供轴向逐段移动时重用，避免重建另一架飞机的整套几何。 */
+        private Shape offset(Vec3d delta) {
+            return new Shape(part, center.add(delta), half, rotation, axes, collisionAxes, bounds.offset(delta));
+        }
+        /** 将世界点投影到本盒正交基，供 net.minecraft.util.math.Box#raycast 精确裁剪线段。 */
+        private Vec3d local(Vec3d point) {
+            Vec3d relative = point.subtract(center);
+            return new Vec3d(relative.dotProduct(axes[0]), relative.dotProduct(axes[1]), relative.dotProduct(axes[2]));
+        }
+        /** 返回本盒在任意轴上的投影半径。 */
+        private double radius(Vec3d axis) {
+            return Math.abs(axis.dotProduct(axes[0])) * half.x + Math.abs(axis.dotProduct(axes[1])) * half.y
+                    + Math.abs(axis.dotProduct(axes[2])) * half.z;
+        }
+        /**
+         * 功能：连续扫掠本盒相对静止方块的平移，返回首次碰撞比例；1 表示整段可走。
+         * 引用 net.minecraft.util.math.Box#getCenter 获取方块分解盒中心；不按离散速度采样，避免高速穿墙。
+         * 已经重叠的外部传送状态允许离开；正常入侵由移动和旋转入口提前阻止。
+         */
+        public double sweep(Box target, Vec3d movement) {
+            if (!bounds.stretch(movement).expand(EPSILON).intersects(target)) return 1;
+            Vec3d relative = center.subtract(target.getCenter());
+            Vec3d extent = new Vec3d(target.getLengthX() / 2, target.getLengthY() / 2, target.getLengthZ() / 2);
+            double enter = Double.NEGATIVE_INFINITY, leave = Double.POSITIVE_INFINITY;
+            for (Vec3d axis : collisionAxes) {
+                double radius = radius(axis) + Math.abs(axis.x) * extent.x + Math.abs(axis.y) * extent.y
+                        + Math.abs(axis.z) * extent.z - EPSILON;
+                double distance = relative.dotProduct(axis), speed = movement.dotProduct(axis);
+                if (Math.abs(speed) < EPSILON) {
+                    if (Math.abs(distance) >= radius) return 1;
+                } else {
+                    double first = (-radius - distance) / speed, last = (radius - distance) / speed;
+                    enter = Math.max(enter, Math.min(first, last)); leave = Math.min(leave, Math.max(first, last));
+                    if (enter > leave) return 1;
+                }
+            }
+            return enter < -EPSILON || leave < 0 || enter >= 1 ? 1 : Math.max(0, enter);
+        }
+        /** 静态十五轴相交；接触面与相交体区分，支持安全旋转及放置。 */
+        public boolean intersects(Box target) {
+            if (!bounds.intersects(target)) return false;
+            Vec3d relative = center.subtract(target.getCenter());
+            for (Vec3d axis : collisionAxes) {
+                double radius = radius(axis) + Math.abs(axis.x) * target.getLengthX() / 2
+                        + Math.abs(axis.y) * target.getLengthY() / 2 + Math.abs(axis.z) * target.getLengthZ() / 2;
+                if (Math.abs(relative.dotProduct(axis)) >= radius - CLEARANCE_EPSILON) return false;
+            }
+            return true;
+        }
+        /** 有向盒之间也用十五轴检测，避免两架飞机的候选盒空处互相伤害。 */
+        public boolean intersects(Shape target) {
+            return sweep(target, Vec3d.ZERO) == 0;
+        }
+        /** 两个有向盒的连续平移扫掠；静态调用返回零表示有体积交叠。 */
+        public double sweep(Shape target, Vec3d movement) {
+            if (!bounds.stretch(movement).expand(EPSILON).intersects(target.bounds)) return 1;
+            List<Vec3d> separating = new ArrayList<>(15);
+            separating.addAll(List.of(axes)); separating.addAll(List.of(target.axes));
+            for (Vec3d a : axes) for (Vec3d b : target.axes) {
+                Vec3d cross = a.crossProduct(b);
+                if (cross.lengthSquared() > EPSILON * EPSILON) separating.add(cross.normalize());
+            }
+            Vec3d relative = center.subtract(target.center);
+            double enter = Double.NEGATIVE_INFINITY, leave = Double.POSITIVE_INFINITY;
+            for (Vec3d axis : separating) {
+                double radius = radius(axis) + target.radius(axis) - EPSILON;
+                double distance = relative.dotProduct(axis), speed = movement.dotProduct(axis);
+                if (Math.abs(speed) < EPSILON) { if (Math.abs(distance) >= radius) return 1; }
+                else {
+                    double first = (-radius - distance) / speed, last = (radius - distance) / speed;
+                    enter = Math.max(enter, Math.min(first, last)); leave = Math.min(leave, Math.max(first, last));
+                    if (enter > leave) return 1;
+                }
+            }
+            if (movement.lengthSquared() == 0) return 0;
+            return enter < -EPSILON || leave < 0 || enter >= 1 ? 1 : Math.max(0, enter);
+        }
+    }
+
+    /** 仅静态几何工具，不实例化。 */
+    private HelicopterCollision() {}
+
+    /** 客户端采用已有平滑姿态，服务端采用权威姿态；构造父类时 FlightState 尚未初始化则使用水平姿态。 */
+    public static Pose pose(HelicopterEntity heli) {
+        if (heli.flight == null) return new Pose(heli.getYaw(), 0, 0);
+        return new Pose(heli.getYaw(), heli.getWorld().isClient ? heli.visualPitch : heli.flight.pitch,
+                heli.getWorld().isClient ? heli.visualRoll : heli.flight.roll);
+    }
+
+    /** 把格数局部向量旋转后保留双精度世界平移，供渲染和碰撞公用。 */
+    private static Vec3d rotate(Vec3d value, Quaternionf rotation) {
+        Vector3f result = new Vector3f((float) value.x, (float) value.y, (float) value.z).rotate(rotation);
+        return new Vec3d(result.x, result.y, result.z);
+    }
+
+    /** 构建一组当前姿态下的真实分部盒，调用者可在一轮方块查询中复用。 */
+    public static List<Shape> shapes(HelicopterEntity heli) {
+        Pose pose = pose(heli); Vec3d origin = heli.getPos(); Cache cache = heli.collisionCache;
+        float gear = heli.flight == null ? 1 : heli.gearExtension;
+        double rpm = heli.flight == null ? 0 : heli.flight.rpm, rotor = heli.flight == null ? 100 : heli.flight.rotor;
+        double tail = heli.flight == null ? 100 : heli.flight.tail; boolean wreck = heli.flight != null && heli.flight.wreck;
+        if (cache != null && cache.pose.equals(pose) && cache.origin.equals(origin) && cache.rotorAngle == heli.rotorAngle
+                && cache.gear == gear && cache.rpm == rpm && cache.rotor == rotor && cache.tail == tail && cache.wreck == wreck)
+            return cache.shapes;
+        List<Shape> result = List.copyOf(shapes(heli, pose, origin));
+        Box cabin = bounds(result.stream().filter(shape -> shape.part == Part.CABIN || shape.part == Part.FUEL_TANK).toList());
+        heli.collisionCache = new Cache(pose, origin, heli.rotorAngle, gear, rpm, rotor, tail, wreck, result, bounds(result), cabin);
+        return result;
+    }
+
+    /**
+     * 功能：按机模包络分段构造机舱、鼻锥、动力罩、油箱、五段尾梁、尾翼、双桨及滑橇。
+     * 引用 net.minecraft.util.math.Box 保存局部几何；仅查询状态，COMMON 主线程，不写实体位置。
+     * 旋翼转动时使用九条薄盒近似扫掠圆盘，停转时保留四片实际桨叶，圆盘角落不会充满整方盒。
+     */
+    public static List<Shape> shapes(HelicopterEntity heli, Pose pose, Vec3d origin) {
+        return shapes(heli, pose, origin, false);
+    }
+
+    /** 任务净空使用放架和转动桨盘的最大包络；普通碰撞继续按当前动画状态构造。 */
+    private static List<Shape> shapes(HelicopterEntity heli, Pose pose, Vec3d origin, boolean flightEnvelope) {
+        List<Shape> result = new ArrayList<>(); Quaternionf body = pose.rotation();
+        add(result, Part.CABIN, new Box(-.78, .53, -.92, .78, 1.77, .52), origin, body);
+        add(result, Part.CABIN, new Box(-.63, 1.77, -.75, .63, 2.04, .46), origin, body);
+        add(result, Part.CABIN, new Box(-.67, .61, .52, .67, 1.75, 1.13), origin, body);
+        add(result, Part.CABIN, new Box(-.48, .64, 1.13, .48, 1.43, 1.62), origin, body);
+        add(result, Part.CABIN, new Box(-.26, .74, 1.62, .26, 1.10, 1.95), origin, body);
+        add(result, Part.CABIN, new Box(-.17, .12, 1.05, .17, .56, 1.43), origin, body);
+        add(result, Part.CABIN, new Box(-.68, .59, -1.30, .68, 1.67, -.92), origin, body);
+        add(result, Part.FUEL_TANK, new Box(.78, .67, -.80, .95, 1.28, .39), origin, body);
+        add(result, Part.CABIN, new Box(-.95, .67, -.80, -.78, 1.28, .39), origin, body);
+        add(result, Part.ENGINE, new Box(-.43, 2.02, -1.23, .43, 2.54, .20), origin, body);
+        add(result, Part.MAIN_ROTOR, new Box(-.065, 2.18, -.235, .065, 2.71, -.105), origin, body);
+        add(result, Part.TAIL_BOOM, new Box(-.38, 1.01, -1.78, .38, 1.65, -1.30), origin, body);
+        add(result, Part.TAIL_BOOM, new Box(-.23, 1.15, -2.18, .23, 1.74, -1.78), origin, body);
+        add(result, Part.TAIL_BOOM, new Box(-.18, 1.36, -3.40, .18, 1.85, -2.18), origin, body);
+        add(result, Part.TAIL_BOOM, new Box(-.13, 1.56, -4.35, .13, 1.95, -3.40), origin, body);
+        add(result, Part.TAIL_BOOM, new Box(-.10, 1.72, -5.07, .10, 1.98, -4.35), origin, body);
+        // 水平尾翼与模型同步前移 .20 格，后缘 z=-4.15 避开尾桨完整扫掠包络。
+        add(result, Part.TAIL_BOOM, new Box(-1.08, 1.755, -4.15, 1.08, 1.845, -3.57), origin, body);
+        for (int i = 0; i < 4; i++) {
+            double low = 1.50 + i * .375, t = (i + .5) / 4, back = -5.0 - .55 * t;
+            double chord = .24 + .20 * Math.sin(Math.PI * t) - .17 * t;
+            add(result, Part.TAIL_BOOM, new Box(-.05, low, back - chord, .05, low + .375, back + chord), origin, body);
+        }
+        double stow = flightEnvelope || heli.flight == null ? 0 : 1 - heli.gearExtension;
+        for (double side : new double[]{-1, 1}) {
+            add(result, Part.LANDING_GEAR, new Box(side * 1.05 - .045, .075 + .32 * stow, -1.47 - .45 * stow,
+                    side * 1.05 + .045, .165 + .32 * stow, 1.23 - .45 * stow), origin, body);
+            add(result, Part.LANDING_GEAR, new Box(side * 1.05 - .045, .12 + .32 * stow, 1.23 - .45 * stow,
+                    side * 1.05 + .045, .475 + .32 * stow, 1.89 - .45 * stow), origin, body);
+        }
+        if (heli.flight == null || !heli.flight.wreck && heli.flight.rotor > 0) {
+            rotor(result, Part.MAIN_ROTOR, new Vec3d(0, 2.71, -.17), 3.70, .06,
+                    heli.rotorAngle, flightEnvelope || heli.flight != null && heli.flight.rpm > .05, origin, body, false);
+        }
+        if (heli.flight == null || !heli.flight.wreck && heli.flight.tail > 0) {
+            rotor(result, Part.TAIL_ROTOR, new Vec3d(.23, 1.84, -4.94), .65, .055,
+                    heli.rotorAngle * 2, flightEnvelope || heli.flight != null && heli.flight.rpm > .05, origin, body, true);
+        }
+        return result;
+    }
+
+    /** 转动桨盘为薄分段圆盘；停转桨叶以轴上四盒随真实桨叶角度旋转，不产生圆盘角落假碰撞。 */
+    private static void rotor(List<Shape> result, Part part, Vec3d pivot, double radius, double thickness,
+            float angle, boolean spinning, Vec3d origin, Quaternionf body, boolean tail) {
+        Quaternionf plane = new Quaternionf(body);
+        if (tail) plane.rotateY((float) (Math.PI / 2)).rotateX((float) (Math.PI / 2));
+        Vec3d center = origin.add(rotate(pivot, body));
+        double hub = tail ? .075 : .20;
+        add(result, part, new Box(-hub, -thickness, -hub, hub, thickness, hub), center, plane);
+        if (spinning) {
+            for (int i = 0; i < 9; i++) {
+                double x0 = -radius + radius * 2 * i / 9, x1 = -radius + radius * 2 * (i + 1) / 9;
+                double nearest = x0 <= 0 && x1 >= 0 ? 0 : Math.min(Math.abs(x0), Math.abs(x1));
+                double length = Math.sqrt(radius * radius - nearest * nearest);
+                add(result, part, new Box(x0, -thickness, -length, x1, thickness, length), center, plane);
+            }
+        } else for (int i = 0; i < 4; i++) {
+            Quaternionf blade = new Quaternionf(plane).rotateY((float) Math.toRadians(angle + i * 90));
+            double chord = tail ? .05 : .085;
+            add(result, part, new Box(.08, -thickness, -chord, radius, thickness, chord), center, blade);
+        }
+    }
+
+    /** 从局部盒生成有向盒及保守世界范围；net.minecraft.util.math.Box 的轴对齐性质仅限此候选范围。 */
+    private static void add(List<Shape> result, Part part, Box local, Vec3d origin, Quaternionf rotation) {
+        Vec3d[] axes = {rotate(WORLD_AXES[0], rotation), rotate(WORLD_AXES[1], rotation), rotate(WORLD_AXES[2], rotation)};
+        Vec3d half = new Vec3d(local.getLengthX() / 2, local.getLengthY() / 2, local.getLengthZ() / 2);
+        Vec3d center = origin.add(rotate(local.getCenter(), rotation));
+        Vec3d extent = new Vec3d(Math.abs(axes[0].x) * half.x + Math.abs(axes[1].x) * half.y + Math.abs(axes[2].x) * half.z,
+                Math.abs(axes[0].y) * half.x + Math.abs(axes[1].y) * half.y + Math.abs(axes[2].y) * half.z,
+                Math.abs(axes[0].z) * half.x + Math.abs(axes[1].z) * half.y + Math.abs(axes[2].z) * half.z);
+        List<Vec3d> collisionAxes = new ArrayList<>(15);
+        collisionAxes.addAll(List.of(WORLD_AXES)); collisionAxes.addAll(List.of(axes));
+        for (Vec3d a : axes) for (Vec3d b : WORLD_AXES) {
+            Vec3d cross = a.crossProduct(b);
+            if (cross.lengthSquared() > EPSILON * EPSILON) collisionAxes.add(cross.normalize());
+        }
+        result.add(new Shape(part, center, half, new Quaternionf(rotation), axes, collisionAxes.toArray(Vec3d[]::new),
+                new Box(center.subtract(extent), center.add(extent))));
+    }
+
+    /** 真实整机候选范围包含尾鳍和桨盘，随偏航、俯仰和横滚更新。 */
+    public static Box bounds(HelicopterEntity heli) { shapes(heli); return heli.collisionCache.bounds; }
+
+    /** 合并一组分部盒的宽相位范围。 */
+    private static Box bounds(List<Shape> shapes) {
+        Box result = shapes.getFirst().bounds;
+        for (int i = 1; i < shapes.size(); i++) result = result.union(shapes.get(i).bounds);
+        return result;
+    }
+
+    /** 原版水流/火焰等环境检查仅使用机舱，不让长尾或高处桨盘扩大浸水范围。 */
+    public static Box cabinBounds(HelicopterEntity heli) {
+        shapes(heli); return heli.collisionCache.cabinBounds;
+    }
+
+    /** 读取原版方块碰撞形状并分解为真实组成盒；保留台阶、围栏及非完整方块形状。 */
+    private static List<Box> obstacles(HelicopterEntity heli, Box area) {
+        List<Box> result = new ArrayList<>();
+        for (var shape : heli.getWorld().getBlockCollisions(heli, area.expand(EPSILON))) result.addAll(shape.getBoundingBoxes());
+        return result;
+    }
+
+    /** 原版移动入口的碰撞裁剪，先垂直再按水平主轴，保留沿墙滑动与原版接地状态更新。 */
+    public static Vec3d adjustMovement(HelicopterEntity heli, Vec3d movement) {
+        List<Shape> shapes = shapes(heli); List<Box> blocks = obstacles(heli, bounds(shapes).stretch(movement));
+        List<Shape> aircraft = new ArrayList<>();
+        for (HelicopterEntity other : candidates(heli.getWorld(), heli, bounds(shapes).stretch(movement))) aircraft.addAll(shapes(other));
+        Vec3d moved = Vec3d.ZERO;
+        int[] order = Math.abs(movement.x) < Math.abs(movement.z) ? new int[]{1, 0, 2} : new int[]{1, 2, 0};
+        for (int axis : order) {
+            double amount = axis == 0 ? movement.x : axis == 1 ? movement.y : movement.z;
+            if (amount == 0) continue;
+            Vec3d delta = WORLD_AXES[axis].multiply(amount); double fraction = 1; Part contact = Part.CABIN;
+            Vec3d shift = moved.negate();
+            List<Box> shiftedBlocks = blocks.stream().map(block -> block.offset(shift)).toList();
+            List<Shape> shiftedAircraft = aircraft.stream().map(other -> other.offset(shift)).toList();
+            for (Shape shape : shapes) for (Box block : shiftedBlocks) {
+                double hit = shape.sweep(block, delta);
+                if (hit < fraction) { fraction = hit; contact = shape.part; }
+            }
+            if (fraction < 1) heli.recordBlockImpact(contact, Math.abs(amount));
+            for (Shape shape : shapes) for (Shape other : shiftedAircraft)
+                fraction = Math.min(fraction, shape.sweep(other, delta));
+            moved = moved.add(delta.multiply(fraction));
+        }
+        // 世界边界是四个轴向平面；只限制朝边界外的位移，已经越界的传送实体仍能返回。
+        var border = heli.getWorld().getWorldBorder(); Box box = bounds(shapes);
+        double x = moved.x, z = moved.z;
+        if (x > 0) x = Math.min(x, Math.max(0, border.getBoundEast() - box.maxX));
+        if (x < 0) x = Math.max(x, Math.min(0, border.getBoundWest() - box.minX));
+        if (z > 0) z = Math.min(z, Math.max(0, border.getBoundSouth() - box.maxZ));
+        if (z < 0) z = Math.max(z, Math.min(0, border.getBoundNorth() - box.minZ));
+        return new Vec3d(x, moved.y, z);
+    }
+
+    /** 检查起落架或机舱在八厘米内的方块支撑，不把悬空尾桨与宽相位空角当作落地。 */
+    public static boolean supported(HelicopterEntity heli) {
+        List<Shape> shapes = shapes(heli); Vec3d down = new Vec3d(0, -.08, 0);
+        List<Box> blocks = obstacles(heli, bounds(shapes).stretch(down));
+        for (Shape shape : shapes) if (shape.part == Part.LANDING_GEAR || shape.part == Part.CABIN || shape.part == Part.FUEL_TANK)
+            for (Box block : blocks) if (shape.sweep(block, down) < 1) return true;
+        return false;
+    }
+
+    /** 新机和回收整机放置时检查真实分部盒；放置者可从尾梁下退出，不把本人当成生成障碍。 */
+    public static boolean isSpaceEmpty(HelicopterEntity heli, Entity placingEntity) {
+        List<Shape> shapes = shapes(heli);
+        for (Box block : obstacles(heli, bounds(shapes))) for (Shape shape : shapes) if (shape.intersects(block)) return false;
+        for (Entity other : heli.getWorld().getOtherEntities(heli, bounds(shapes).expand(QUERY_RADIUS),
+                other -> other != placingEntity && !other.isSpectator() && !heli.isConnectedThroughVehicle(other) && other.canHit())) {
+            if (other instanceof HelicopterEntity aircraft) {
+                for (Shape shape : shapes) for (Shape target : shapes(aircraft)) if (shape.intersects(target)) return false;
+            } else for (Shape shape : shapes) if (shape.intersects(other.getBoundingBox())) return false;
+        }
+        return heli.getWorld().getWorldBorder().contains(bounds(shapes));
+    }
+
+    /**
+     * 功能：检查自动起降的完整竖直通道，以转动桨盘和放下的起落架覆盖任务中的最大包络。
+     * 引用 MC API：net.minecraft.world.World#getBlockCollisions 提供真实障碍；有向盒连续扫掠排除空角。
+     * 端侧：服务端主线程；参数：heli 为当前飞机，height 为带方向的升降格数；返回：整段是否安全。
+     * 副作用：无，不修改旋翼、起落架或实体位置；排查：地面接触只阻止向下穿入，不阻止向上离开。
+     */
+    public static boolean verticalClearance(HelicopterEntity heli, double height) {
+        Vec3d movement = new Vec3d(0, height, 0);
+        List<Shape> parts = shapes(heli, pose(heli), heli.getPos(), true);
+        Box area = bounds(parts).stretch(movement);
+        if (!heli.getWorld().getWorldBorder().contains(area)) return false;
+        List<Box> blocks = obstacles(heli, area);
+        for (Shape part : parts) for (Box block : blocks) {
+            // 旧飞机触地后展开滑橇可能浅嵌承重面；只允许从滑橇下半部向上退出，侧墙、顶板和机身重叠仍拒绝。
+            boolean leavingSupport = height > 0 && part.part == Part.LANDING_GEAR
+                    && block.maxY <= part.center.y + CLEARANCE_EPSILON;
+            if ((part.intersects(block) && !leavingSupport) || part.sweep(block, movement) < 1) return false;
+        }
+        for (HelicopterEntity other : candidates(heli.getWorld(), heli, area))
+            for (Shape part : parts) for (Shape target : shapes(other))
+                if (part.intersects(target) || part.sweep(target, movement) < 1) return false;
+        return true;
+    }
+
+    /** 原地旋转也检查尾部扫掠；受阻时停在最后安全姿态，记录部位与尾端线速度。 */
+    public static Pose limitRotation(HelicopterEntity heli, Pose previous, Pose requested) {
+        double angle = Math.max(Math.abs(MathHelper.wrapDegrees(requested.yaw - previous.yaw)),
+                Math.max(Math.abs(requested.pitch - previous.pitch), Math.abs(requested.roll - previous.roll)));
+        int steps = (int) Math.ceil(angle / ROTATION_STEP);
+        if (steps == 0) return requested;
+        List<HelicopterEntity> aircraft = candidates(heli.getWorld(), heli,
+                new Box(heli.getPos().add(-QUERY_RADIUS, -QUERY_RADIUS, -QUERY_RADIUS),
+                        heli.getPos().add(QUERY_RADIUS, QUERY_RADIUS, QUERY_RADIUS)));
+        for (int i = 1; i <= steps; i++) {
+            Pose sample = previous.interpolate(requested, i / (double) steps); List<Shape> shapes = shapes(heli, sample, heli.getPos());
+            List<Box> blocks = obstacles(heli, bounds(shapes));
+            for (Shape shape : shapes) for (Box block : blocks) if (shape.intersects(block)) {
+                heli.recordBlockImpact(shape.part, Math.toRadians(angle) * shape.center.distanceTo(heli.getPos()));
+                return previous.interpolate(requested, (i - 1.0) / steps);
+            }
+            for (HelicopterEntity other : aircraft) for (Shape shape : shapes) for (Shape target : shapes(other))
+                if (shape.intersects(target)) {
+                    double speed = Math.toRadians(angle) * shape.center.distanceTo(heli.getPos());
+                    heli.recordBlockImpact(shape.part, speed); other.collide(target.part, speed);
+                    return previous.interpolate(requested, (i - 1.0) / steps);
+                }
+        }
+        return requested;
+    }
+
+    /** 发动旋翼时即使机体静止也检测桨盘接触，损伤限定在接触的主桨或尾桨。 */
+    public static void spinningContact(HelicopterEntity heli) {
+        if (heli.flight.rpm <= .05 || heli.flight.wreck) return;
+        List<Shape> shapes = shapes(heli); List<Box> blocks = obstacles(heli, bounds(shapes));
+        for (Shape shape : shapes) if (shape.part == Part.MAIN_ROTOR || shape.part == Part.TAIL_ROTOR)
+            for (Box block : blocks) if (shape.intersects(block)) {
+                heli.recordBlockImpact(shape.part, heli.flight.rpm * (shape.part == Part.MAIN_ROTOR ? 1.1 : .8));
+                return;
+            }
+    }
+
+    /** 获取移动扫过其他实体的首个部位；连续平移扫掠替代原来整块轴对齐盒的相交即伤害。 */
+    public static Part sweptPart(HelicopterEntity heli, Box target, Vec3d previous, Vec3d movement) {
+        Part part = null; double first = Double.POSITIVE_INFINITY;
+        for (Shape shape : shapes(heli, pose(heli), previous)) {
+            if (shape.intersects(target)) return shape.part;
+            double fraction = shape.sweep(target, movement);
+            if (fraction < 1 && fraction < first) { first = fraction; part = shape.part; }
+        }
+        return part;
+    }
+
+    /** 两架飞机分别使用真实分部盒，其他实体沿用原版轴对齐实体盒。 */
+    public static Contact sweptContact(HelicopterEntity heli, Entity target, Vec3d previous, Vec3d movement) {
+        if (!(target instanceof HelicopterEntity aircraft)) {
+            Part part = sweptPart(heli, target.getBoundingBox(), previous, movement);
+            return part == null ? null : new Contact(part, null);
+        }
+        Contact contact = null; double first = Double.POSITIVE_INFINITY; List<Shape> targets = shapes(aircraft);
+        for (Shape shape : shapes(heli, pose(heli), previous)) for (Shape other : targets) {
+            if (shape.intersects(other)) return new Contact(shape.part, other.part);
+            double fraction = shape.sweep(other, movement);
+            if (fraction < 1 && fraction < first) { first = fraction; contact = new Contact(shape.part, other.part); }
+        }
+        return contact;
+    }
+
+    /** 根据真实盒面返回最近射线命中；在盒内部起射时距离为零，不返回候选大盒的空角。 */
+    public static Hit raycast(HelicopterEntity heli, Vec3d start, Vec3d end) {
+        Hit closest = null;
+        for (Shape shape : shapes(heli)) {
+            Vec3d a = shape.local(start), b = shape.local(end); Box local = new Box(shape.half.negate(), shape.half);
+            var point = local.contains(a) ? java.util.Optional.of(a) : local.raycast(a, b);
+            if (point.isEmpty()) continue;
+            Vec3d p = point.get(); Vec3d world = shape.center.add(shape.axes[0].multiply(p.x))
+                    .add(shape.axes[1].multiply(p.y)).add(shape.axes[2].multiply(p.z));
+            double distance = start.squaredDistanceTo(world);
+            if (closest == null || distance < closest.distanceSquared) closest = new Hit(shape.part, world, distance);
+        }
+        return closest;
+    }
+
+    /** 外部非定向伤害按离来源最近的实际盒面定位，不再把攻击者高度当作中弹位置。 */
+    public static Part nearestPart(HelicopterEntity heli, Vec3d point) {
+        Part result = Part.CABIN; double nearest = Double.POSITIVE_INFINITY;
+        for (Shape shape : shapes(heli)) {
+            Vec3d local = shape.local(point);
+            double dx = Math.max(0, Math.abs(local.x) - shape.half.x), dy = Math.max(0, Math.abs(local.y) - shape.half.y);
+            double dz = Math.max(0, Math.abs(local.z) - shape.half.z), distance = dx * dx + dy * dy + dz * dz;
+            if (distance < nearest) { nearest = distance; result = shape.part; }
+        }
+        return result;
+    }
+
+    /** 原版选取入口补查长尾候选；同机乘员及其投射物不命中本机。 */
+    public static List<HelicopterEntity> candidates(World world, Entity source, Box area) {
+        return world.getEntitiesByClass(HelicopterEntity.class, area.expand(QUERY_RADIUS), heli -> {
+            if (heli == source || source != null && heli.isConnectedThroughVehicle(source)) return false;
+            return !(source instanceof ProjectileEntity projectile && projectile.getOwner() != null
+                    && heli.hasPassenger(projectile.getOwner()));
+        });
+    }
+
+    /** 其他实体的移动也按旋转盒裁剪，原版不得把整机大包围盒的空角变成一面隐形墙。 */
+    public static Vec3d clipActor(Entity actor, Vec3d movement) {
+        if (actor.noClip || actor.isSpectator() || actor instanceof RopeSeatEntity || actor.getRootVehicle() instanceof RopeSeatEntity)
+            return movement;
+        List<HelicopterEntity> aircraft = candidates(actor.getWorld(), actor, actor.getBoundingBox().stretch(movement));
+        if (aircraft.isEmpty()) return movement;
+        Vec3d moved = Vec3d.ZERO;
+        for (int axis : new int[]{1, 0, 2}) {
+            double amount = axis == 0 ? movement.x : axis == 1 ? movement.y : movement.z;
+            if (amount == 0) continue;
+            Vec3d delta = WORLD_AXES[axis].multiply(amount); double fraction = 1;
+            Box box = actor.getBoundingBox().offset(moved);
+            for (HelicopterEntity heli : aircraft) for (Shape shape : shapes(heli))
+                fraction = Math.min(fraction, shape.sweep(box, delta.negate()));
+            moved = moved.add(delta.multiply(fraction));
+        }
+        return moved;
+    }
+}

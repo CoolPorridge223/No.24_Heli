@@ -7,13 +7,12 @@ import net.fabricmc.api.Environment;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.Vec3d;
-import org.DJB.no_24_heli.entity.HelicopterEntity;
 
 /**
  * 职责：在实体面板重现 HUD 方框、左向指针和高低位数字鼓，保持世界空间遮挡。
  * 引用：net.minecraft.client.util.math.MatrixStack 将逻辑仪表像素映射到机体曲面；
  * net.minecraft.client.render.VertexConsumer 提交经局部裁切的七段数字和刻线。
- * 生命周期：CockpitDashboardRenderer 每帧更新读数后绘制两表。
+ * 生命周期：CockpitDashboardRenderer 每帧传入 FlightInstruments 的共用读数后绘制两表。
  * 端侧/线程：客户端渲染线程，只读取同步飞行状态。
  * 排查：滚动方向查 value-mark；进位查高低位是否共用相邻数字；越界查局部 Clip，不能使用屏幕裁剪。
  */
@@ -32,37 +31,16 @@ public final class CockpitTapeRenderer {
     private static final double DIGIT_PITCH = 6, ROLL_PITCH = 11;
     private static final int INK = 0xffe6f4ee, BORDER = 0xff557d77, BACKGROUND = 0xff101c1f;
     private static final Vec3d NORMAL = new Vec3d(0, 0, 1);
-    /** 每架飞机的显示快照以 120 毫秒时间常数平滑，不改变服务器数值。 */
-    private int vehicle = -1;
-    private long sampleTime;
-    private double altitude, verticalSpeed;
     /** 裁剪发生在仪表本地平面，模型转头、俯仰和横滚后仍随面板正确遮挡。 */
     private record Clip(double left, double top, double right, double bottom) {}
 
     /**
-     * 功能：更新两表平滑读数；引用 MC API：net.minecraft.entity.Entity#getLerpedPos 提供连续世界高度。
-     * 端侧：渲染线程；参数：heli/delta 为飞机与插值；返回：无；副作用：更新显示快照。
-     * 排查：切换飞机或长帧后直接重置，避免沿用另一架飞机的高度。
-     */
-    public void update(HelicopterEntity heli, float delta) {
-        long now = System.nanoTime();
-        double targetAltitude = heli.getLerpedPos(delta).y, targetSpeed = heli.flight.vy * 20;
-        if (vehicle != heli.getId() || now - sampleTime > 500_000_000L) {
-            vehicle = heli.getId(); altitude = targetAltitude; verticalSpeed = targetSpeed;
-        }
-        double blend = 1 - Math.exp(-Math.clamp((now - sampleTime) / 1e9, 0, .25) / .12);
-        altitude += (targetAltitude - altitude) * blend; verticalSpeed += (targetSpeed - verticalSpeed) * blend;
-        sampleTime = now;
-    }
-
-    /**
      * 功能：绘制单个实体方框仪表；引用 MC API：net.minecraft.client.util.math.MatrixStack 隔离仪表缩放。
-     * 端侧：渲染线程；参数：m/b/x/top/width/height/speed/light 为环境、格数尺寸、表类型和光照；返回：无。
+     * 端侧：渲染线程；参数：m/b/x/top/width/height/speed/value/light 为环境、尺寸、表类型、平滑读数和光照；返回：无。
      * 副作用：提交世界几何；排查：正值增加时刻度与数字均向下滚动，标题和单位由面板入口绘制。
      */
     public void draw(MatrixStack m, VertexConsumer b, double x, double top, double width, double height,
-            boolean speed, int light) {
-        double value = speed ? verticalSpeed : altitude;
+            boolean speed, double value, int light) {
         m.push(); m.translate(x, top, .014); m.scale((float) (width / WIDTH), (float) (-height / HEIGHT), 1);
         Clip all = new Clip(0, 0, WIDTH, HEIGHT);
         rect(m, b, 0, 0, WIDTH, HEIGHT, 0, BORDER, all, light);

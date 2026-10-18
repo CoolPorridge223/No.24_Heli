@@ -127,7 +127,7 @@ public class HelipadBlock extends BlockWithEntity {
         if(!player.isCreative())for(Item part:parts)if(player.getInventory().count(part)<1){player.sendMessage(Text.translatable("message.no_24_heli.parts_missing"),true);return ItemActionResult.FAIL;}
         HelicopterEntity heli=new HelicopterEntity(No_24_heli.HELI,world);
         heli.refreshPositionAndAngles(pos.getX()+.5,pos.getY()+THICKNESS+.01,pos.getZ()+.5,player.getYaw(),0);heli.flight.yaw=player.getYaw();
-        if(!world.isSpaceEmpty(heli,heli.getBoundingBox()))return ItemActionResult.FAIL;
+        if(!org.DJB.no_24_heli.entity.HelicopterCollision.isSpaceEmpty(heli,player))return ItemActionResult.FAIL;
         if(!world.spawnEntity(heli))return ItemActionResult.FAIL;
         if(!player.isCreative())for(Item part:parts){for(int i=0;i<player.getInventory().size();i++){var slot=player.getInventory().getStack(i);if(slot.isOf(part)){slot.decrement(1);break;}}}
         player.sendMessage(Text.translatable("message.no_24_heli.assembled"),true);return ItemActionResult.SUCCESS;

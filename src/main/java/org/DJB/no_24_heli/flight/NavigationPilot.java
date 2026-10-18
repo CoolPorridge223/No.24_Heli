@@ -285,7 +285,8 @@ public final class NavigationPilot {
             for(int z=MathHelper.floor(box.minZ)>>4;z<=MathHelper.floor(box.maxZ)>>4;z++)if(!world.getChunkManager().isChunkLoaded(x,z))return false;
         if(!world.getWorldBorder().contains(box)||world.getBlockCollisions(h,box).iterator().hasNext())return false;
         return world.getOtherEntities(h,box,e->!h.isConnectedThroughVehicle(e)&&!(e instanceof PlayerEntity)&&!(e instanceof RopeSeatEntity)
-                &&!(e.getRootVehicle() instanceof RopeSeatEntity)&&!e.isSpectator()&&(e.isCollidable()||e instanceof net.minecraft.entity.LivingEntity)).isEmpty();
+                &&!(e.getRootVehicle() instanceof RopeSeatEntity)&&!e.isSpectator()
+                &&(e.isCollidable()||e instanceof net.minecraft.entity.LivingEntity||e instanceof HelicopterEntity)).isEmpty();
     }
     /** 功能：通过 net.minecraft.entity.player.PlayerEntity#sendMessage 向当前驾驶员显示双语动作栏；仅服务端调用。 */
     private static void notify(HelicopterEntity h,String key){if(h.getFirstPassenger() instanceof PlayerEntity p)p.sendMessage(net.minecraft.text.Text.translatable("message.no_24_heli."+key),true);}

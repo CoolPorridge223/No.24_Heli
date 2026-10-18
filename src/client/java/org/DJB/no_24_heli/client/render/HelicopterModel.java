@@ -13,6 +13,7 @@ import net.minecraft.client.render.LightmapTextureManager;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.Vec3d;
+import org.DJB.no_24_heli.entity.HelicopterEntity;
 
 /**
  * 职责：缓存圆滑机身、锥形尾梁、弧形滑橇与旋翼的顶点，不以立方体拼接机身。
@@ -118,7 +119,11 @@ public final class HelicopterModel {
         buildRotors();
         buildEngineFairing();
         tube(shell, new Vec3d(0, 2.18, -.17), new Vec3d(0, 2.71, -.17), .065, .065, METAL);
-        ellipsoid(shell, new Vec3d(0, .44, 1.24), new Vec3d(.17, .19, .19), WHITE);
+        // 连接座止于蒙皮内部，球罩整体在机腹下方，避免球罩上缘穿入机舱。
+        Vec3d lightPivot = SearchlightRenderer.PIVOT;
+        tube(shell, new Vec3d(0, profile(lightPivot.z, 2) - profile(lightPivot.z, 3) + .02, lightPivot.z),
+                lightPivot.add(0, .17, 0), .065, .055, METAL);
+        ellipsoid(shell, lightPivot, new Vec3d(.17, .19, .19), WHITE);
         ellipsoid(searchlight,new Vec3d(0,0,.177),new Vec3d(.115,.115,.03),DARK);
         ellipsoid(searchlightLens,new Vec3d(0,0,.205),new Vec3d(.082,.082,.006),WHITE);
         for(double side:new double[]{-1,1})
@@ -431,7 +436,7 @@ public final class HelicopterModel {
     /**
      * 功能：构建细长尾梁和流线尾翼；引用 MC API：net.minecraft.util.math.Vec3d 描述轴线。
      * 端侧/线程：构造期；参数/返回：无；副作用：填充 shell。
-     * 排查：尾梁根部必须在后隔舱之后；薄尾翼需封闭上下端面，不能作为单片无厚度平面绘制。
+     * 排查：尾梁根部必须在后隔舱之后；薄尾翼需封闭上下端面，水平尾翼后缘需避开完整尾桨扫掠范围。
      */
     private void buildTail() {
         int stations = distant ? 8 : 16;
@@ -455,7 +460,8 @@ public final class HelicopterModel {
                     (end == 0 ? -i : i) * Math.PI / 12), new Vec3d(0, end == 0 ? -1 : 1, 0)));
             polygon(shell, edge, PAINT);
         }
-        ellipsoid(shell, new Vec3d(0, 1.80, -4.06), new Vec3d(1.08, .045, .29), PAINT);
+        // 水平尾翼前移 .20 格：后缘 z=-4.15，与尾桨最前端约 -4.289 留出 .139 格净距；同步分部碰撞盒。
+        ellipsoid(shell, new Vec3d(0, 1.80, -3.86), new Vec3d(1.08, .045, .29), PAINT);
         tube(shell, new Vec3d(0, 1.84, -4.94), new Vec3d(.23, 1.84, -4.94), .055, .055, METAL);
         tube(shell, new Vec3d(0, 1.86, -5.18), new Vec3d(0, 1.41, -5.35), .017, .017, METAL);
     }
@@ -491,9 +497,10 @@ public final class HelicopterModel {
     private void buildInterior() {
         buildFloor();
         for (double side : new double[]{-.38, .38}) {
-            ellipsoid(interior, new Vec3d(side, .69, -.12), new Vec3d(.29, .10, .36), SEAT);
-            ellipsoid(interior, new Vec3d(side, 1.01, -.40), new Vec3d(.29, .43, .09), SEAT);
-            ellipsoid(interior, new Vec3d(side, 1.38, -.41), new Vec3d(.18, .13, .09), SEAT);
+            double forward = HelicopterEntity.SEAT_FORWARD_OFFSET;
+            ellipsoid(interior, new Vec3d(side, .69, -.12 + forward), new Vec3d(.29, .10, .36), SEAT);
+            ellipsoid(interior, new Vec3d(side, 1.01, -.40 + forward), new Vec3d(.29, .43, .09), SEAT);
+            ellipsoid(interior, new Vec3d(side, 1.38, -.41 + forward), new Vec3d(.18, .13, .09), SEAT);
             ellipsoid(interior, new Vec3d(side, CockpitControlsRenderer.BASE_Y, CockpitControlsRenderer.BASE_Z),
                     new Vec3d(.065, .045, .065), DARK);
         }

@@ -6,11 +6,12 @@ public final class AutoFlightController {
 
     /**
      * 以起降开始时的水平坐标为锚点抵抗惯性和风；偏航保持当前方向。
-     * 起飞时先等预转完成，再渐增总距离地，最后交给高度控制爬升到十格。
+     * 起飞总距由高度控制从当前值渐变，未预转完成不产生升力，离地后爬升到十格。
      * 降落时沿同一垂线降至经实体验证的支撑面；接地停机由实体负责。
      */
     public static void step(FlightState s,double x,double y,double z,boolean grounded){
-        s.trim=true;s.altitudeHold=true;s.cruise=false;s.gear=true;
+        // 起飞离开实际方块支撑后自动收架，降落阶段始终放架。
+        s.trim=true;s.altitudeHold=true;s.cruise=false;s.gear=grounded||s.autoPhase==3;
         double ax=FlightPhysics.clamp((s.autoX-x)*.008-s.vx*.15,-.015,.015);
         double az=FlightPhysics.clamp((s.autoZ-z)*.008-s.vz*.15,-.015,.015);
         double yaw=Math.toRadians(s.yaw);
@@ -19,7 +20,6 @@ public final class AutoFlightController {
         s.pedal=(float)FlightPhysics.clamp(-s.yawRate*.7,-1,1);s.collectiveInput=0;
         s.targetAltitude=s.autoY;
         if(s.autoPhase==1&&s.armed)s.autoPhase=2;
-        if(s.autoPhase==2&&grounded&&s.armed)s.collective=Math.min(1,s.collective+.012);
         if(s.autoPhase==2&&!grounded&&Math.abs(y-s.autoY)<.25&&Math.abs(s.vy)<.025)s.autoPhase=0;
     }
 }

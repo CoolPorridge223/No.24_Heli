@@ -114,7 +114,9 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
                     matrices.pop();
                 }
             }
-            matrices.push();matrices.translate(0,.44,1.24);matrices.multiply(SearchlightRenderer.gimbal(heli,delta));
+            matrices.push();
+            matrices.translate(SearchlightRenderer.PIVOT.x,SearchlightRenderer.PIVOT.y,SearchlightRenderer.PIVOT.z);
+            matrices.multiply(SearchlightRenderer.gimbal(heli,delta));
             drawPart("searchlight",selected,matrices,consumers,solid,heli,light,gpu,distant);
             drawPart("searchlight_lens",selected,matrices,consumers,solid,heli,light,gpu,distant);
             if(!collecting&&heli.flight.searchlight&&!heli.flight.wreck)

@@ -62,8 +62,8 @@ import org.lwjgl.opengl.GL30C;
  */
 @Environment(EnvType.CLIENT)
 public final class SearchlightRenderer {
-    /** 光源位于球体云台的前镜片，单位：机体局部格数。 */
-    private static final Vec3d PIVOT=new Vec3d(0,.44,1.24);
+    /** 球罩顶端低于机腹，单位格；球罩、活动镜片与光束共用此机体局部支点，避免移动灯头后光束错位。 */
+    static final Vec3d PIVOT=new Vec3d(0,.31,1.24);
     /** 最大射程 64 格，发光半角十二度，采样额外留两度缓冲；只处理相机 96 格内的灯。 */
     static final double RANGE=64,SAMPLE_TANGENT=Math.tan(Math.toRadians(14));
     /** 仅处理相机 96 格内的灯；与动态模型共用的光锥参数保持上面的包可见常量。 */

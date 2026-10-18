@@ -32,9 +32,9 @@ import org.DJB.no_24_heli.entity.HelicopterEntity;
  */
 @Environment(EnvType.CLIENT)
 public final class CockpitDashboardRenderer {
-    /** 表盘圆周 48 段，单位为机体局部格数；层间距 0.001 格避免共面闪烁。 */
+    /** 表盘圆周 48 段；层深单位格，文字位于刻线前、指针后，针层间隔覆盖背光文字深度容差。 */
     private static final int SEGMENTS = 48;
-    private static final double FACE_Z = .012, INK_Z = .014, NEEDLE_Z = .017;
+    private static final double FACE_Z = .012, INK_Z = .014, TEXT_Z = .015, NEEDLE_Z = .035;
     /** 环境光下的外壳、表盘、文字及告警色；屏幕使用同一纯白实体底纹。 */
     private static final int CASE = 0xff343e47, BLACK = 0xff10191c, INK = 0xffd8eadc;
     private static final int GREEN = 0xff7ce3bc, AMBER = 0xffffd66b, RED = 0xffff6655;
@@ -62,20 +62,20 @@ public final class CockpitDashboardRenderer {
         VertexConsumer buffer = consumers.getBuffer(RenderLayer.getEntityCutoutNoCull(HelicopterRenderer.TEXTURE));
         roundedPanel(matrices, buffer, -.85, -.42, .85, .35, 0, CASE, light);
         var s = heli.flight;
+        var display = FlightInstruments.sample(heli, delta);
         int instrumentLight = s.running && !s.wreck ? LightmapTextureManager.MAX_LIGHT_COORDINATE : light;
         // 左驾驶席正前方：上排动力仪表，下排空速、垂速与世界高度。
-        dial(matrices, buffer, -.65, .18, .105, "fuel_dial", s.fuel, 0, HeliConfig.INSTANCE.fuelCapacity, "", instrumentLight);
-        dial(matrices, buffer, -.37, .18, .105, "rpm_dial", s.rpm * 100, 0, 100, "%", instrumentLight);
-        dial(matrices, buffer, -.09, .18, .105, "collective_dial", s.collective * 100, 0, 100, "%", instrumentLight);
-        dial(matrices, buffer, -.65, -.14, .115, "airspeed", Math.hypot(s.vx, s.vz) * 72, 0, 160, "km/h", instrumentLight);
-        tapes.update(heli, delta);
-        tapes.draw(matrices, buffer, -.455, .022, .17, .315, true, instrumentLight);
-        tapes.draw(matrices, buffer, -.225, .022, .17, .315, false, instrumentLight);
+        dial(matrices, buffer, -.65, .18, .105, "fuel_dial", display.fuel, 0, HeliConfig.INSTANCE.fuelCapacity, "", instrumentLight);
+        dial(matrices, buffer, -.37, .18, .105, "rpm_dial", display.rpm * 100, 0, 100, "%", instrumentLight);
+        dial(matrices, buffer, -.09, .18, .105, "collective_dial", display.collective * 100, 0, 100, "%", instrumentLight);
+        dial(matrices, buffer, -.65, -.14, .115, "airspeed", display.airspeed, 0, 160, "km/h", instrumentLight);
+        tapes.draw(matrices, buffer, -.455, .022, .17, .315, true, display.verticalSpeed, instrumentLight);
+        tapes.draw(matrices, buffer, -.225, .022, .17, .315, false, display.altitude, instrumentLight);
         text(matrices, Text.translatable("hud.no_24_heli.vario"), -.37, .043, .0028f, .20, INK, instrumentLight);
         text(matrices, Text.translatable("hud.no_24_heli.altimeter"), -.14, .043, .0028f, .20, INK, instrumentLight);
         text(matrices, Text.literal("m/s"), -.37, .003, .0023f, .12, GREEN, instrumentLight);
         text(matrices, Text.literal("m"), -.14, .003, .0023f, .12, GREEN, instrumentLight);
-        attitude(matrices, buffer, .16, .18, .082, s.pitch, s.roll, instrumentLight);
+        attitude(matrices, buffer, .16, .18, .082, display.pitch, display.roll, instrumentLight);
         radar(heli, delta, matrices, buffer, .54, .18, .12, instrumentLight);
         systems(heli, matrices, instrumentLight);
         indicators(heli, matrices, buffer, instrumentLight);
@@ -237,7 +237,10 @@ public final class CockpitDashboardRenderer {
                 ? "hud.no_24_heli.state_mamba" : "hud.no_24_heli.state"), .53, -.335, .0020f, .52, GREEN, light);
         if (s.waypoint) text(m, Text.translatable("hud.no_24_heli.waypoint",
                 (int) Math.hypot(s.waypointX - h.getX(), s.waypointZ - h.getZ())), .53, -.365, .002f, .52, AMBER, light);
-        if (GroundProximityWarning.level() > 0 && MinecraftClient.getInstance().player != null
+        if (s.takeoffPowerLow)
+            text(m, Text.translatable("cockpit.no_24_heli.takeoff_power"),
+                    .53, -.395, .0021f, .52, AMBER, light);
+        else if (GroundProximityWarning.level() > 0 && MinecraftClient.getInstance().player != null
                 && MinecraftClient.getInstance().player.getVehicle() == h)
             text(m, Text.translatable("hud.no_24_heli.ground_height", (int) Math.ceil(GroundProximityWarning.height())),
                     .53, -.395, .0021f, .52, INK, light);
@@ -445,7 +448,7 @@ public final class CockpitDashboardRenderer {
         var font = MinecraftClient.getInstance().textRenderer;
         int width = font.getWidth(value);
         float actual = Math.min(scale, (float) (maxWidth / Math.max(1, width)));
-        m.push(); m.translate(x, y, NEEDLE_Z + .002); m.scale(actual, -actual, actual);
+        m.push(); m.translate(x, y, TEXT_Z); m.scale(actual, -actual, actual);
         labels.add(new Label(new Matrix4f(m.peek().getPositionMatrix()), value,
                 -width / 2f, -font.fontHeight / 2f, color, light)); m.pop();
     }

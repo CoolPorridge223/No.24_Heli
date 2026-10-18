@@ -5,6 +5,7 @@
 package org.DJB.no_24_heli.client.hud;
 
 import org.DJB.no_24_heli.client.input.ParachuteClient;
+import org.DJB.no_24_heli.client.render.FlightInstruments;
 import org.DJB.no_24_heli.data.HeliConfig;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
 import org.DJB.no_24_heli.entity.RopeSeatEntity;
@@ -35,10 +36,6 @@ import java.util.Locale;
 public final class HeliHud {
     /** 在原版 GUI 比例上缩小到 85%，保留边缘留白和快捷栏空间。 */
     private static final float SCALE=.85f;
-    /** 仪表按渲染时间平滑快照，指针始终固定在中央。 */
-    private static int tapeVehicle=-1;
-    private static long tapeTime;
-    private static double tapeAltitude,tapeSpeed;
     /** 两个仪表共用外框尺寸，单位：缩放前 HUD 像素；仅客户端使用。 */
     private static final int TAPE_WIDTH=58,TAPE_HEIGHT=114,TAPE_HEADER=14;
     /** 两表内部间距 8 像素，随整体缩放；空速表左侧留白仍为 8 HUD 像素。 */
@@ -127,15 +124,16 @@ public final class HeliHud {
         if(!(mc.player.getVehicle() instanceof HelicopterEntity h))return;
         // 机内的全部飞行读数、机组、导航、部件与警告由实体仪表板呈现，不叠加屏幕 HUD。
         if(mc.options.getPerspective().isFirstPerson())return;
-        var s=h.flight;var m=ctx.getMatrices();m.push();m.scale(SCALE,SCALE,1);
+        var s=h.flight;var display=FlightInstruments.sample(h,counter.getTickDelta(false));
+        var m=ctx.getMatrices();m.push();m.scale(SCALE,SCALE,1);
         int w=(int)(ctx.getScaledWindowWidth()/SCALE),height=(int)(ctx.getScaledWindowHeight()/SCALE),x=10;
         // 底部统一缩放，窄窗口也为左侧仪表、中央血条和右侧飞行数据留出独立空间。
         float bottomScale=Math.min(1,w/560f);int bw=(int)(w/bottomScale);
         m.push();m.translate(0,height,0);m.scale(bottomScale,bottomScale,1);
         m.push();m.translate(2,-59,0);m.scale(.78f,.78f,1);
-        gauge(ctx,31,32,29,"fuel_dial",s.fuel,0,HeliConfig.INSTANCE.fuelCapacity,"",0xffffd66b);
-        gauge(ctx,96,32,29,"rpm_dial",s.rpm*100,0,100,"%",0xff7ce3bc);
-        gauge(ctx,161,32,29,"collective_dial",s.collective*100,0,100,"%",0xff7ce3bc);
+        gauge(ctx,31,32,29,"fuel_dial",display.fuel,0,HeliConfig.INSTANCE.fuelCapacity,"",0xffffd66b);
+        gauge(ctx,96,32,29,"rpm_dial",display.rpm*100,0,100,"%",0xff7ce3bc);
+        gauge(ctx,161,32,29,"collective_dial",display.collective*100,0,100,"%",0xff7ce3bc);
         m.pop();
         text(ctx,s.difficultyMode==2?"hud.no_24_heli.state_zobayan":s.hardcoreMode?"hud.no_24_heli.state_mamba":"hud.no_24_heli.state",4,-84,0xffffd66b);
         String status="H "+(s.altitudeHold?"●":"○")+"  J "+(s.trim?"●":"○")+"  I "+(s.cruise?"●":"○")+"  G "+(s.gear?"↓":"↑");
@@ -159,21 +157,20 @@ public final class HeliHud {
             ctx.drawCenteredTextWithShadow(mc.textRenderer,Text.translatable("hud.no_24_heli."+keys[i]),0,0,0xffd8e8d9);m.pop();
         }
         // 从左到右为垂速、高度、空速；两条刻度带共用外框和固定中心数字窗。
-        gauge(ctx,bw-40,AIRSPEED_CENTER_Y,AIRSPEED_RADIUS,"airspeed",Math.hypot(s.vx,s.vz)*72,0,160,"km/h",0xff7ce3bc);
-        double altitude=h.getLerpedPos(counter.getTickDelta(false)).y;
-        smoothTapes(h,altitude);
+        gauge(ctx,bw-40,AIRSPEED_CENTER_Y,AIRSPEED_RADIUS,"airspeed",display.airspeed,0,160,"km/h",0xff7ce3bc);
         float altitudeX=bw-40-AIRSPEED_RADIUS-TAPE_GAP-TAPE_WIDTH*TAPE_SCALE;
         m.push();
         // 圆盘最下方像素占据 cy+radius 到 cy+radius+1，外框底边对齐同一条下边界。
         m.translate(altitudeX,AIRSPEED_CENTER_Y+AIRSPEED_RADIUS+1,0);m.scale(TAPE_SCALE,TAPE_SCALE,1);
-        verticalTape(ctx,-TAPE_WIDTH-TAPE_GAP,-TAPE_HEIGHT,tapeSpeed,true);
-        verticalTape(ctx,0,-TAPE_HEIGHT,tapeAltitude,false);
+        verticalTape(ctx,-TAPE_WIDTH-TAPE_GAP,-TAPE_HEIGHT,display.verticalSpeed,true);
+        verticalTape(ctx,0,-TAPE_HEIGHT,display.altitude,false);
         m.pop();
         m.pop();
         int warningY=10;
         if(s.tail<20){warn(ctx,"tail",warningY);warningY+=11;}
         if(s.rotor<50){warn(ctx,"rotor",warningY);warningY+=11;}
         if(s.fuel<80){warn(ctx,"fuel",warningY);warningY+=11;}
+        if(s.takeoffPowerLow){warn(ctx,"takeoff_power",warningY);warningY+=11;}
         if(!s.running&&!h.isOnGround()&&s.armed){warn(ctx,"autorotation",warningY);warningY+=11;}
         if(s.running&&!s.armed){warn(ctx,"spooling",warningY);warningY+=11;}
         if(s.restricted){warn(ctx,"restricted",warningY);warningY+=11;}
@@ -185,10 +182,10 @@ public final class HeliHud {
         }
         // 右上缩小地平仪，旋转线条真实表达俯仰和横滚。
         int cx=w-143,cy=32;ctx.fill(cx-25,cy-25,cx+25,cy+25,0xa0193329);
-        m.push();m.translate(cx,cy,0);m.multiply(RotationAxis.POSITIVE_Z.rotationDegrees((float)-s.roll));
-        int offset=(int)Math.clamp(s.pitch*.5,-10,10);
-        ctx.fill(-17,offset-1,17,offset+1,0xff90e0b4);
-        ctx.fill(-8,offset-8,8,offset-7,0xff547969);ctx.fill(-8,offset+7,8,offset+8,0xff547969);m.pop();
+        m.push();m.translate(cx,cy,0);m.multiply(RotationAxis.POSITIVE_Z.rotationDegrees((float)-display.roll));
+        float offset=(float)Math.clamp(display.pitch*.5,-10,10);m.translate(0,offset,0);
+        ctx.fill(-17,-1,17,1,0xff90e0b4);
+        ctx.fill(-8,-8,8,-7,0xff547969);ctx.fill(-8,7,8,8,0xff547969);m.pop();
         ctx.fill(cx-14,cy,cx-4,cy+1,0xffffd66b);ctx.fill(cx+4,cy,cx+14,cy+1,0xffffd66b);ctx.fill(cx-1,cy-2,cx+1,cy+3,0xffffd66b);
         HeliRadar.draw(ctx,h,w-4);
         m.pop();
@@ -197,13 +194,6 @@ public final class HeliHud {
     private static void crewName(DrawContext ctx,HelicopterEntity h,int seat,int x,int y){
         Text name=seat<h.getPassengerList().size()?h.getPassengerList().get(seat).getName():Text.translatable("hud.no_24_heli.empty_seat");
         ctx.drawText(MinecraftClient.getInstance().textRenderer,name,x,y,0xffe6f4ee,true);
-    }
-    /** 120 毫秒时间常数避免刻度突跳，换乘或暂停后立即初始化。 */
-    private static void smoothTapes(HelicopterEntity h,double altitude){
-        long now=System.nanoTime();
-        if(tapeVehicle!=h.getId()||now-tapeTime>500_000_000L){tapeVehicle=h.getId();tapeAltitude=altitude;tapeSpeed=h.flight.vy*20;}
-        double blend=1-Math.exp(-Math.clamp((now-tapeTime)/1e9,0,.25)/.12);
-        tapeAltitude+=(altitude-tapeAltitude)*blend;tapeSpeed+=(h.flight.vy*20-tapeSpeed)*blend;tapeTime=now;
     }
     /**
      * 功能：让刻度与数字在中心完全不透明、两端渐淡到 50%。
@@ -391,14 +381,15 @@ public final class HeliHud {
             double a=Math.toRadians(135+i*270.0/8);
             line(ctx,cx+(int)(Math.cos(a)*(radius-3)),cy+(int)(Math.sin(a)*(radius-3)),cx+(int)(Math.cos(a)*(radius-7)),cy+(int)(Math.sin(a)*(radius-7)),color);
         }
-        double a=Math.toRadians(135+Math.clamp((value-min)/(max-min),0,1)*270);
-        line(ctx,cx,cy,cx+(int)(Math.cos(a)*(radius-9)),cy+(int)(Math.sin(a)*(radius-9)),0xffffd66b);
-        ctx.fill(cx-2,cy-2,cx+3,cy+3,0xffffd66b);
         var m=ctx.getMatrices();m.push();m.translate(cx,cy-radius/2f,0);m.scale(.85f,.85f,1);
         ctx.drawCenteredTextWithShadow(mc.textRenderer,Text.translatable("hud.no_24_heli."+label),0,0,color);m.pop();
         m.push();m.translate(cx,cy+radius*.43,0);m.scale(.75f,.75f,1);
-        //ctx.fill(-28,-1,29,10,0xff101c1b)
-        ;ctx.drawCenteredTextWithShadow(mc.textRenderer,f(value)+unit,0,0,0xffe6f4ee);m.pop();
+        ctx.drawCenteredTextWithShadow(mc.textRenderer,f(value)+unit,0,0,0xffe6f4ee);m.pop();
+        // 数字之后再绘制针与针轴，并提高 GUI 深度；浮点旋转保留平滑动画。
+        m.push();m.translate(cx,cy,1);
+        ctx.fill(-2,-2,3,3,0xffffd66b);
+        m.multiply(RotationAxis.POSITIVE_Z.rotationDegrees((float)(135+Math.clamp((value-min)/(max-min),0,1)*270)));
+        ctx.fill(0,0,radius-8,1,0xffffd66b);m.pop();
     }
     private static void line(DrawContext ctx,int x,int y,int ex,int ey,int color){
         int steps=Math.max(Math.abs(ex-x),Math.abs(ey-y));

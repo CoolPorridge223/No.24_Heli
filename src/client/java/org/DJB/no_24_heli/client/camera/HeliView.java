@@ -32,7 +32,8 @@ public final class HeliView {
     private static boolean cockpitInitialized;
     private static float lookYaw,lookPitch,oldLookYaw,oldLookPitch;
     /** 主副驾横向偏移、眼高、眼睛前后位置，单位：相对机体原点的格数。 */
-    private static final float SEAT_OFFSET=.38f,EYE_HEIGHT=1.68f,EYE_FORWARD=-.02f;
+    private static final float SEAT_OFFSET=.38f,EYE_HEIGHT=1.68f,
+            EYE_FORWARD=(float)(-.02+HelicopterEntity.SEAT_FORWARD_OFFSET);
     /** 初始下看 8°，自由观察水平 ±105°、垂直 ±70°，避免视线穿入椅背。 */
     private static final float DEFAULT_LOOK_PITCH=8,MAX_LOOK_YAW=105,MAX_LOOK_PITCH=70;
     /** 每次滚动改变一格，4–24 格范围内仍交给原版碰撞裁剪。 */

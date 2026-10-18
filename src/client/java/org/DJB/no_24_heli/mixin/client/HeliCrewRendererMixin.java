@@ -54,7 +54,8 @@ public abstract class HeliCrewRendererMixin {
     private void seatPosition(LivingEntity entity, float yaw, float delta, MatrixStack matrices,
             VertexConsumerProvider vertices, int light, CallbackInfo ci) {
         if (!(entity.getVehicle() instanceof HelicopterEntity heli)) return;
-        Vector3f seat = new Vector3f(heli.isPilot(entity) ? .38f : -.38f, .10f, -.12f)
+        Vector3f seat = new Vector3f(heli.isPilot(entity) ? .38f : -.38f, .10f,
+                (float) (-.12 + HelicopterEntity.SEAT_FORWARD_OFFSET))
                 .rotate(HeliView.bodyRotation(heli, delta));
         Vec3d correction = heli.getLerpedPos(delta).add(seat.x, seat.y, seat.z).subtract(entity.getLerpedPos(delta));
         matrices.push(); matrices.translate(correction.x, correction.y, correction.z);

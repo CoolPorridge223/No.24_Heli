@@ -7,8 +7,28 @@ import org.DJB.no_24_heli.data.HeliConfig;
 public final class FlightPhysics {
     /** 每 tick 的重力加速度，单位为格/tick²。 */
     public static final double GRAVITY = 0.04;
-    /** 起落架放下时每 tick 额外保留 97% 的水平速度；只在空中施加，不改变垂直升力或地面摩擦。 */
-    private static final double GEAR_DRAG = .97;
+    /** 起落架放下时每 tick 额外保留 99.5% 的水平速度；只在空中施加，不改变垂直升力或地面摩擦。 */
+    private static final double GEAR_DRAG = .995;
+    /** 高度误差转目标垂速的增益，单位 tick⁻¹；垂速闭环响应与加速度上限分别为 tick⁻¹、格/tick²。 */
+    private static final double ALTITUDE_GAIN = .025, VERTICAL_RESPONSE = .12, MAX_VERTICAL_ACCELERATION = .012;
+    /** 高度保持与手动升降的垂速上限，单位格/tick，0.16 对应 3.2 m/s。 */
+    private static final double MAX_ASSISTED_VERTICAL_SPEED = .16;
+    /** 自动高度控制每 tick 最多改变 0.8% 总距，并以 25% 比例趋近目标，抑制突变与来回摆动。 */
+    private static final double COLLECTIVE_STEP = .008, COLLECTIVE_RESPONSE = .25;
+    /** 松开升降键后垂速小于 0.1 m/s 时捕获当前高度，避免恢复操纵前的旧高度。 */
+    private static final double ALTITUDE_CAPTURE_SPEED = .005;
+
+    /**
+     * 功能：判断当前部件和天气下，额定转速、最大总距、水平姿态的动力升力能否超过重力。
+     * 引用 MC API：无，复用物理积分器的旋翼、发动机与雨天系数；不把正常预转误判成动力不足。
+     * 端侧：COMMON 纯计算，服务端用于起飞预检；参数：s 为机况，rain 为旋翼处是否下雨。
+     * 返回：是否具有水平离地所需的升力；副作用：无；排查：此处只预估动力，不替代净空或燃油检查。
+     */
+    public static boolean hasTakeoffPower(FlightState s, boolean rain) {
+        double enginePower = (.45+.55*s.engine/100)*(rain ? .94 : 1);
+        double rotorPower = s.rotor/100*(rain ? .97 : 1);
+        return s.engine > 0 && .072*rotorPower*enginePower > GRAVITY;
+    }
 
     /** 功能：取得水平速度保留比例；纯服务端计算，无 MC API，导航前馈与物理使用同一阻力。 */
     public static double horizontalDrag(boolean hardcore, boolean gearDown) {
@@ -37,8 +57,14 @@ public final class FlightPhysics {
         double speed = Math.hypot(s.vx, s.vz);
         boolean powered = s.running && s.engine > 0 && s.fuel > 0;
         if (!powered) { s.running = false; s.altitudeHold = false; s.cruise = false; }
-        if (s.collectiveInput != 0) s.targetAltitude = altitude;
-        s.collective = clamp(s.collective + s.collectiveInput * .008, 0, 1);
+        boolean autoTakeoff = grounded && (s.autoPhase == 1 || s.autoPhase == 2);
+        boolean altitudeControl = s.altitudeHold && powered && (s.armed || autoTakeoff) && (!grounded || autoTakeoff);
+        if (!altitudeControl) {
+            s.altitudeAdjusting = false;
+            if (s.collectiveInput != 0) s.targetAltitude = altitude;
+            // 自转储能与偏航扭矩必须读取本 tick 的手动总距，保留原来的积分顺序。
+            s.collective = clamp(s.collective+s.collectiveInput*COLLECTIVE_STEP,0,1);
+        }
         // 启动必须达到额定转速；此后引擎损伤降低功率而不是绕过起飞门槛。
         double spool = 1.0 / c.spoolTicks();
         if (powered) {
@@ -70,14 +96,31 @@ public final class FlightPhysics {
         double pitch = Math.toRadians(s.pitch), roll = Math.toRadians(s.roll), yaw = Math.toRadians(s.yaw);
         double enginePower = powered ? (.45+.55*s.engine/100)*(rain ? .94 : 1) : 1;
         double rotorPower = s.rotor/100 * (rain ? .97 : 1);
-        // 高度外环生成受限垂速，垂速内环生成加速度。前馈实时补偿倾斜、雨天、
-        // 转速及部件损伤；不累积积分项，动力不足时不会积分饱和后突然蹿升。
-        if (s.altitudeHold && powered && s.armed && s.collectiveInput == 0 && !grounded) {
-            double targetVy = clamp((s.targetAltitude-altitude)*.025, -.16, .16);
-            double acceleration = clamp((targetVy-s.vy)*.18, -.018, .018);
-            double authority = .072*s.rpm*s.rpm*rotorPower*enginePower*Math.cos(pitch)*Math.cos(roll);
+        // 手动总距仍在地面、关闭辅助或失去动力时直接增减；高度保持下改为指定升降速度，
+        // 使持续下降无需与旧高度目标对抗。前馈补偿倾斜、天气和损伤，不累积积分项。
+        if (altitudeControl) {
+            double targetVy;
+            if (s.collectiveInput != 0) {
+                s.altitudeAdjusting = true;
+                s.targetAltitude = altitude;
+                targetVy = s.collectiveInput * MAX_ASSISTED_VERTICAL_SPEED;
+            } else if (s.altitudeAdjusting && !s.autopilot && s.autoPhase == 0 && s.abandonedTicks == 0) {
+                // 松键先消除当前垂速，再锁住新高度；制动期间不向刚刚经过的高度回拉。
+                s.targetAltitude = altitude;
+                targetVy = 0;
+                if (Math.abs(s.vy) < ALTITUDE_CAPTURE_SPEED) s.altitudeAdjusting = false;
+            } else {
+                s.altitudeAdjusting = false;
+                targetVy = clamp((s.targetAltitude-altitude)*ALTITUDE_GAIN,
+                        -MAX_ASSISTED_VERTICAL_SPEED, MAX_ASSISTED_VERTICAL_SPEED);
+            }
+            double acceleration = clamp((targetVy-s.vy)*VERTICAL_RESPONSE,
+                    -MAX_VERTICAL_ACCELERATION, MAX_VERTICAL_ACCELERATION);
+            // 地面自动起飞按额定转速预置总距，避免预转初期因 rpm² 接近零把总距拉满。
+            double controlRpm = autoTakeoff ? 1 : s.rpm;
+            double authority = .072*controlRpm*controlRpm*rotorPower*enginePower*Math.cos(pitch)*Math.cos(roll);
             double target = clamp((GRAVITY+s.vy*(1/.985-1)+acceleration)/Math.max(.001,authority), 0, 1);
-            s.collective = approach(s.collective,target,.045);
+            s.collective += clamp((target-s.collective)*COLLECTIVE_RESPONSE,-COLLECTIVE_STEP,COLLECTIVE_STEP);
         }
         // 未完成预转禁止离地；已起飞后允许残余转速和自转产生升力。
         double lift = s.armed ? .072*s.collective*s.rpm*s.rpm*rotorPower*enginePower : 0;
