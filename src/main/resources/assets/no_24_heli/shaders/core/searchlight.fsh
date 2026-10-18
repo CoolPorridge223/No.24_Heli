@@ -51,7 +51,7 @@ float lightVisibility() {
 void main() {
     // 独立灯头深度遍历只读取材质透明度，不能读取正在写入的深度或主相机快照。
     if (LightMode == 4) {
-        if (texture(BlockAtlas, materialUv).a < 0.1) discard;
+        if (texture(BlockAtlas, materialUv).a * materialTint.a < 0.1) discard;
         fragColor = vec4(0.0);
         return;
     }
@@ -59,10 +59,10 @@ void main() {
     float depth = texture(SceneDepth, screen * DepthScale + DepthJitter).r;
     vec4 savedPosition = InverseProjection * vec4(screen * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
     float savedZ = savedPosition.z / savedPosition.w;
-    float tolerance = max(LightMode >= 2 ? 0.005 : 0.08, fwidth(viewPosition.z) * 1.5 / DepthScale);
+    float tolerance = max(LightMode == 2 || LightMode == 3 ? 0.005 : 0.08, fwidth(viewPosition.z) * 1.5 / DepthScale);
     if (viewPosition.z < savedZ - tolerance) discard;
     float fogVisibility = 1.0 - smoothstep(FogStart, max(FogStart + 0.001, FogEnd), vertexDistance);
-    if (LightMode >= 2) {
+    if (LightMode == 2 || LightMode == 3) {
         vec4 glyph = texture(FontAtlas, materialUv);
         if (LightMode == 3) glyph = vec4(1.0, 1.0, 1.0, glyph.r);
         fragColor = glyph * materialTint;
@@ -83,11 +83,13 @@ void main() {
         * max(0.0, 1.0 - distanceToLight * distanceToLight / 4096.0) * fogVisibility * sqrt(incidence) * visibility;
     vec3 scene = texture(SceneColor, screen).rgb;
     // 材质颜色独立于太阳阴影；遮挡使用灯头透视深度，不能沿世界竖直方向投影。
-    vec4 material = texture(BlockAtlas, materialUv) * vec4(materialTint.rgb, 1.0);
+    vec4 material = texture(BlockAtlas, materialUv) * materialTint;
     vec4 overlay = texture(BlockAtlas, materialOverlayUv) * materialOverlayTint;
     material.rgb = mix(material.rgb, overlay.rgb, overlay.a);
     if (material.a < 0.1) discard;
     // 探照灯的暖色目标亮度提高到原来的两倍，柔边、距离衰减和遮挡仍共同控制补光。
     vec3 illuminated = material.rgb * vec3(0.95, 0.93, 0.86) * 2.0;
-    fragColor = vec4(max(illuminated - scene, vec3(0.0)) * strength, 0.0);
+    vec3 addition = max(illuminated - scene, vec3(0.0)) * strength;
+    // 实体和方块实体可由多个同面材质层组成，沿用透明度合成，避免重复加法导致过曝。
+    fragColor = LightMode == 5 ? vec4(scene + addition, material.a) : vec4(addition, 0.0);
 }
