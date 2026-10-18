@@ -92,8 +92,10 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         boolean distant = !cockpit && camera.lengthSquared() > LOD_DISTANCE_SQUARED;
         if (distant && distantModel == null) distantModel = new HelicopterModel(true);
         HelicopterModel selected = distant ? distantModel : model;
+        // 探照灯需要实际材质顶点，收集时不能绕过消费者直接画入场景，也不能重复登记灯芯和仪表。
+        boolean collecting=consumers instanceof SearchlightModels;
         // 原版发光描边需要写入专用消费者，保留其既有路径；常规实体直接复用显存。
-        boolean gpu = !client.hasOutline(heli) && HelicopterMesh.begin();
+        boolean gpu = !collecting && !client.hasOutline(heli) && HelicopterMesh.begin();
         try {
             RenderLayer painted = RenderLayer.getEntitySolid(PAINT_SURFACE), solid = RenderLayer.getEntityCutout(SURFACE);
             drawPart("shell", selected, matrices, consumers, painted, heli, light, gpu, distant);
@@ -105,11 +107,11 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
             matrices.push();matrices.translate(0,.44,1.24);matrices.multiply(SearchlightRenderer.gimbal(heli,delta));
             drawPart("searchlight",selected,matrices,consumers,solid,heli,light,gpu,distant);
             drawPart("searchlight_lens",selected,matrices,consumers,solid,heli,light,gpu,distant);
-            if(heli.flight.searchlight&&!heli.flight.wreck)
+            if(!collecting&&heli.flight.searchlight&&!heli.flight.wreck)
                 SearchlightRenderer.queueGlow(selected,"searchlight_lens",heli,distant,matrices,0xfffff0cd);
             matrices.pop();
             drawPart("navigation_lights",selected,matrices,consumers,solid,heli,light,gpu,distant);
-            if(SearchlightRenderer.navigationLightsOn(heli,delta))
+            if(!collecting&&SearchlightRenderer.navigationLightsOn(heli,delta))
                 SearchlightRenderer.queueGlow(selected,"navigation_lights",heli,distant,matrices,0xffff2920);
             float angle = MathHelper.lerp(delta, heli.previousRotorAngle, heli.rotorAngle);
             if (!heli.flight.wreck && heli.flight.rotor > 0) {
@@ -130,10 +132,10 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         } finally {
             if (gpu) HelicopterMesh.end();
         }
-        if (near || cockpit) model.render("lamp", matrices, consumers.getBuffer(heli.flight.wreck
+        if (!collecting && (near || cockpit)) model.render("lamp", matrices, consumers.getBuffer(heli.flight.wreck
                 ? RenderLayer.getEntityCutout(TEXTURE) : RenderLayer.getEyes(TEXTURE)),
                 heli.flight.wreck ? light : LightmapTextureManager.MAX_LIGHT_COORDINATE, heli.flight.paint, heli.flight.wreck);
-        if (!HelicopterMesh.isShadowPass() && (cockpit || camera.lengthSquared() < INSTRUMENT_DISTANCE_SQUARED))
+        if (!collecting && !HelicopterMesh.isShadowPass() && (cockpit || camera.lengthSquared() < INSTRUMENT_DISTANCE_SQUARED))
             dashboard.render(heli, delta, matrices, consumers, light);
         // 窗缘走原版裁切层，透明中央的片元被丢弃，不依赖光影对半透明实体的混合实现。
         var glassSprite = client.getSpriteAtlas(SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE).apply(GLASS_SPRITE);
