@@ -91,8 +91,8 @@ public final class CockpitControlsRenderer {
             VertexConsumerProvider consumers, int light) {
         Quaternionf rotation = rotation(heli, delta);
         for (var passenger : heli.getPassengerList()) {
-            if (!(passenger instanceof AbstractClientPlayerEntity player) || player.isInvisible() || !player.isAlive()) continue;
-            double side = heli.isPilot(player) ? .38 : -.38;
+            if (!(passenger instanceof AbstractClientPlayerEntity player) || player.isInvisible() || !player.isAlive() || !CabinPassengerRenderer.holdsStick(heli,player)) continue;
+            double side = heli.cabin.accessSide(player)==0 ? .38 : -.38;
             Vec3d shoulder = new Vec3d(side - .25, 1.22, -.12 + HelicopterEntity.SEAT_FORWARD_OFFSET);
             Vec3d elbow = new Vec3d(side - .29, .86, .18 + HelicopterEntity.SEAT_FORWARD_OFFSET);
             Vector3f palmOffset = new Vector3f(-.085f, 0, 0).rotate(rotation);

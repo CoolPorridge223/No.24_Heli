@@ -56,7 +56,7 @@ public final class HelicopterCollision {
 
     /** 同一实体姿态未变化时复用分部盒和分离轴；存于实体自身，卸载即释放，不建立全局世界缓存。 */
     record Cache(Pose pose, Vec3d origin, float rotorAngle, float gear, double rpm, double rotor, double tail,
-                 boolean wreck, List<Shape> shapes, Box bounds, Box cabinBounds) {}
+                 boolean wreck, float leftDoor, float rightDoor, List<Shape> shapes, Box bounds, Box cabinBounds) {}
 
     /** 一个有向盒的世界中心、半尺寸和正交基；bounds 只是宽相位候选范围。 */
     public record Shape(Part part, Vec3d center, Vec3d half, Quaternionf rotation, Vec3d[] axes, Vec3d[] collisionAxes, Box bounds) {
@@ -161,12 +161,13 @@ public final class HelicopterCollision {
         float gear = heli.flight == null ? 1 : heli.gearExtension;
         double rpm = heli.flight == null ? 0 : heli.flight.rpm, rotor = heli.flight == null ? 100 : heli.flight.rotor;
         double tail = heli.flight == null ? 100 : heli.flight.tail; boolean wreck = heli.flight != null && heli.flight.wreck;
-        if (cache != null && cache.pose.equals(pose) && cache.origin.equals(origin) && cache.rotorAngle == heli.rotorAngle
+        float leftDoor=heli.cabin==null?0:heli.cabin.doorProgress(0,0),rightDoor=heli.cabin==null?0:heli.cabin.doorProgress(1,0);
+        if (cache != null && cache.leftDoor==leftDoor && cache.rightDoor==rightDoor && cache.pose.equals(pose) && cache.origin.equals(origin) && cache.rotorAngle == heli.rotorAngle
                 && cache.gear == gear && cache.rpm == rpm && cache.rotor == rotor && cache.tail == tail && cache.wreck == wreck)
             return cache.shapes;
         List<Shape> result = List.copyOf(shapes(heli, pose, origin));
         Box cabin = bounds(result.stream().filter(shape -> shape.part == Part.CABIN || shape.part == Part.FUEL_TANK).toList());
-        heli.collisionCache = new Cache(pose, origin, heli.rotorAngle, gear, rpm, rotor, tail, wreck, result, bounds(result), cabin);
+        heli.collisionCache = new Cache(pose, origin, heli.rotorAngle, gear, rpm, rotor, tail, wreck, leftDoor, rightDoor, result, bounds(result), cabin);
         return result;
     }
 
@@ -188,9 +189,21 @@ public final class HelicopterCollision {
         add(result, Part.CABIN, new Box(-.48, .64, 1.13, .48, 1.43, 1.62), origin, body);
         add(result, Part.CABIN, new Box(-.26, .74, 1.62, .26, 1.10, 1.95), origin, body);
         add(result, Part.CABIN, new Box(-.17, .12, 1.05, .17, .56, 1.43), origin, body);
-        add(result, Part.CABIN, new Box(-.68, .59, -1.30, .68, 1.67, -.92), origin, body);
+        add(result, Part.CABIN, new Box(-.78, .53, -1.60, .78, 1.91, -.92), origin, body);
         add(result, Part.FUEL_TANK, new Box(.78, .67, -.80, .95, 1.28, .39), origin, body);
         add(result, Part.CABIN, new Box(-.95, .67, -.80, -.78, 1.28, .39), origin, body);
+        // 滑出的门板纳入命中及净空，不能把已滑到后方的门留在旧侧窗位置。
+        for(int side=0;side<2;side++){
+            double progress=heli.cabin==null?0:heli.cabin.doorProgress(side,0);
+            double railX=side==0?.87:-.87;
+            add(result,Part.CABIN,new Box(railX-.025,1.835,HelicopterCabin.DOOR_BACK-HelicopterCabin.DOOR_TRAVEL-.06,
+                    railX+.025,1.885,.49),origin,body);
+            if(progress<=0)continue;
+            double x=(side==0?1:-1)*(.91+.12*Math.min(1,progress*5));
+            double back=HelicopterCabin.DOOR_BACK-HelicopterCabin.DOOR_TRAVEL*progress;
+            double front=HelicopterCabin.DOOR_FRONT-HelicopterCabin.DOOR_TRAVEL*progress;
+            add(result,Part.CABIN,new Box(x-.06,.64,back,x+.06,1.84,front),origin,body);
+        }
         add(result, Part.ENGINE, new Box(-.43, 2.02, -1.23, .43, 2.54, .20), origin, body);
         add(result, Part.MAIN_ROTOR, new Box(-.065, 2.18, -.235, .065, 2.71, -.105), origin, body);
         add(result, Part.TAIL_BOOM, new Box(-.38, 1.01, -1.78, .38, 1.65, -1.30), origin, body);

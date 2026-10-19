@@ -14,6 +14,7 @@ import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.Vec3d;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.entity.HelicopterCabin;
 
 /**
  * 职责：缓存圆滑机身、锥形尾梁、弧形滑橇与旋翼的顶点，不以立方体拼接机身。
@@ -45,7 +46,7 @@ public final class HelicopterModel {
     /** 地板顶面沿用原 0.64 格高度，厚 3.5 厘米；相对内蒙皮另留 2.5 厘米净距。 */
     private static final double FLOOR_TOP = .64, FLOOR_THICKNESS = .035, FLOOR_CLEARANCE = .025;
     /** 地板限定在后隔舱之前与仪表罩下方，沿机腹按 32 段采样，单位：格。 */
-    private static final double FLOOR_BACK = -1.02, FLOOR_FRONT = 1.10;
+    private static final double FLOOR_BACK = -1.60, FLOOR_FRONT = 1.10;
     private static final int FLOOR_SEGMENTS = 32;
     /** 色带按高度平面裁切，机腹分界低于字样下缘，防止金色字样落在金色底漆上。 */
     private static final double BELLY_TOP = .56, BELT_BOTTOM = .79, BELT_TOP = 1.10, TRIM_TOP = 1.15;
@@ -58,7 +59,7 @@ public final class HelicopterModel {
     /** 各纵截面依次为 Z、半宽、中心高度、半高；形状按参考图的圆鼻、宽舱和收腰机尾采样。 */
     private static final double[][] BODY_PROFILE = {
             {-5.06, .075, 1.87, .075}, {-3.40, .14, 1.68, .14}, {-2.10, .20, 1.49, .20},
-            {-1.78, .25, 1.40, .25}, {-1.55, .43, 1.21, .38}, {-1.15, .83, 1.23, .68},
+            {-1.78, .25, 1.40, .25}, {-1.55, .84, 1.24, .76}, {-1.15, .96, 1.24, .80},
             {-.65, .97, 1.24, .80}, {0, .98, 1.24, .83}, {.50, .91, 1.23, .80},
             {.95, .79, 1.16, .67}, {1.40, .60, 1.03, .47}, {1.75, .36, .91, .28},
             {1.97, .025, .86, .035}};
@@ -73,6 +74,8 @@ public final class HelicopterModel {
     private final List<Face> strut = new ArrayList<>();
     /** 独立杆体以底座为原点，两侧共用几何并各自应用联动矩阵。 */
     private final List<Face> cyclic = new ArrayList<>();
+    /** 每侧滑门的外壳、内衬、两块玻璃及涂装独立缓存，所有面共用同一平移。 */
+    private final java.util.Map<String,List<Face>> doors = new java.util.HashMap<>();
     /** 舱灯位置只用于内饰光照衰减，单位：机体局部格数。 */
     private static final Vec3d CABIN_LAMP_POSITION = new Vec3d(0, 1.94, -.12);
 
@@ -112,8 +115,11 @@ public final class HelicopterModel {
         longitudinalSegments = distant ? 28 : 56;
         buildCabin();
         if (!distant) buildPanelSeams();
+        splitDoors(shell,"shell");splitDoors(interior,"interior");splitDoors(glass,"glass");
+        buildDoorRails();
         buildTail();
         buildNumber();
+        splitDoors(number,"number");splitDoors(wordmark,"wordmark");
         buildInterior();
         buildGear();
         buildRotors();
@@ -130,9 +136,57 @@ public final class HelicopterModel {
         for(double side:new double[]{-1,1})
             ellipsoid(navigationLights,new Vec3d(side*.47,2.42,-.35),new Vec3d(.04,.03,.045),WHITE);
         ellipsoid(navigationLights,new Vec3d(0,3.025,-5.55),new Vec3d(.03,.025,.04),WHITE);
+        for(int side=0;side<2;side++){
+            List<Face> camo=new ArrayList<>();
+            for(Face face:doors.get("door"+side+"_shell"))if(paintedMaterial(face.material))
+                camo.add(new Face(camouflageVertex(face.a),camouflageVertex(face.b),
+                        camouflageVertex(face.c),camouflageVertex(face.d),WHITE));
+            doors.put("door"+side+"_camouflage",camo);
+        }
         for (Face face : shell) if (paintedMaterial(face.material)) {
             camouflage.add(new Face(camouflageVertex(face.a), camouflageVertex(face.b),
                     camouflageVertex(face.c), camouflageVertex(face.d), WHITE));
+        }
+    }
+
+    /**
+     * 功能：从真实蒙皮拆出滑门，不在原实心外壳上叠一块假门；模型构造期调用。
+     * 引用 net.minecraft.util.math.Vec3d 取面中心，边界已加入同一纵向采样，近远模型共用门框。
+     * 排查：开门残留面查源列表及角度范围；必须在座椅/地板生成前分离内衬。
+     */
+    private void splitDoors(List<Face> source,String part){
+        for(int side=0;side<2;side++)doors.put("door"+side+"_"+part,new ArrayList<>());
+        source.removeIf(face->{
+            Vec3d p=face.a.position.add(face.b.position).add(face.c.position).add(face.d.position).multiply(.25);
+            double angle=Math.abs(Math.atan2(p.x/profile(p.z,1),(p.y-profile(p.z,2))/profile(p.z,3)));
+            if(p.z<HelicopterCabin.DOOR_BACK-.00001||p.z>HelicopterCabin.DOOR_FRONT+.00001
+                    ||angle<Math.PI/4-.001||angle>Math.PI*3/4+.001)return false;
+            doors.get("door"+(p.x>=0?0:1)+"_"+part).add(face);return true;
+        });
+    }
+
+    /** 曲面门边加细密封圈，上下导轨固定在机身；net.minecraft.util.math.Vec3d 描述局部格数。 */
+    private void buildDoorRails(){
+        for(int side=0;side<2;side++){
+            double sign=side==0?1:-1;
+            List<Face> door=doors.get("door"+side+"_shell");
+            for(double z:new double[]{HelicopterCabin.DOOR_BACK,HelicopterCabin.DOOR_FRONT})
+                for(int i=0;i<12;i++)tube(door,bodyPoint(z,sign*(Math.PI/4+i*Math.PI/24)),
+                        bodyPoint(z,sign*(Math.PI/4+(i+1)*Math.PI/24)),.009,.009,SEAL);
+            for(double angle:new double[]{Math.PI/4,3*Math.PI/4})for(int i=0;i<24;i++){
+                double z=HelicopterCabin.DOOR_BACK+(HelicopterCabin.DOOR_FRONT-HelicopterCabin.DOOR_BACK)*i/24;
+                double next=HelicopterCabin.DOOR_BACK+(HelicopterCabin.DOOR_FRONT-HelicopterCabin.DOOR_BACK)*(i+1)/24;
+                tube(door,bodyPoint(z,sign*angle),bodyPoint(next,sign*angle),.009,.009,SEAL);
+            }
+            // 导轨覆盖整段后滑行程，尾梁支架与门上滚轮使全开门板仍有真实连接。
+            tube(shell,new Vec3d(sign*.87,1.86,HelicopterCabin.DOOR_BACK-HelicopterCabin.DOOR_TRAVEL-.06),
+                    new Vec3d(sign*.87,1.86,.49),.018,.018,METAL);
+            tube(shell,new Vec3d(sign*.15,1.68,-2.75),new Vec3d(sign*.87,1.86,-2.75),.022,.022,METAL);
+            for(double z:new double[]{HelicopterCabin.DOOR_BACK+.12,HelicopterCabin.DOOR_FRONT-.12}){
+                Vec3d edge=bodyPoint(z,sign*Math.PI/4);
+                tube(door,edge,new Vec3d(sign*.75,1.86,z),.022,.022,METAL);
+                ellipsoid(door,new Vec3d(sign*.75,1.86,z),new Vec3d(.035,.035,.045),DARK);
+            }
         }
     }
 
@@ -173,7 +227,7 @@ public final class HelicopterModel {
         for (int i = 0; i <= longitudinalSegments; i++)
             stations.add(-1.78 + 3.75 * i / longitudinalSegments);
         // 后舱壁也参与同一截面采样，使其边缘与舱顶内衬共用顶点，消除顶灯后方的局部相交。
-        stations.addAll(List.of(-1.08, -1.03, -.92, -.38, -.31, .46, .53, 1.47, 1.55));
+        stations.addAll(List.of(-1.65, HelicopterCabin.DOOR_BACK, -1.03, -.92, -.38, -.31, .46, HelicopterCabin.DOOR_FRONT, .53, 1.47, 1.55));
         stations.sort(Double::compare);
         // 窗边可能恰好落在均匀截面上，先合并重合采样，避免零宽面导致漏光和光影暗斑。
         for (int i = stations.size() - 1; i > 0; i--)
@@ -207,7 +261,7 @@ public final class HelicopterModel {
         // 尾梁与机舱在 -1.78 截面共用整圈顶点，不再用有缝的独立圆柱相插。
         bodyCap(-1.78, true, true, LINER);
         // 尾梁的所有根部结构位于隔舱后方，机内后视只能看到封闭的后舱壁。
-        bodyCap(-1.08, true, true, LINER);
+        bodyCap(-1.65, true, true, LINER);
         // 门缝与把手保持细线条，不能再形成凸出窗外的积木块。
         for (double side : new double[]{-1, 1}) {
             tube(shell, new Vec3d(side * .965, 1.13, -.28), new Vec3d(side * .96, 1.13, .04), .018, .018, DARK);
@@ -497,12 +551,12 @@ public final class HelicopterModel {
      */
     private void buildInterior() {
         buildFloor();
-        for (double side : new double[]{-.38, .38}) {
-            double forward = HelicopterEntity.SEAT_FORWARD_OFFSET;
+        for (int row=0;row<2;row++) for (double side : new double[]{-.38, .38}) {
+            double forward = HelicopterEntity.SEAT_FORWARD_OFFSET-row*HelicopterCabin.ROW_SPACING;
             ellipsoid(interior, new Vec3d(side, .69, -.12 + forward), new Vec3d(.29, .10, .36), SEAT);
             ellipsoid(interior, new Vec3d(side, 1.01, -.40 + forward), new Vec3d(.29, .43, .09), SEAT);
             ellipsoid(interior, new Vec3d(side, 1.38, -.41 + forward), new Vec3d(.18, .13, .09), SEAT);
-            ellipsoid(interior, new Vec3d(side, CockpitControlsRenderer.BASE_Y, CockpitControlsRenderer.BASE_Z),
+            if(row==0)ellipsoid(interior, new Vec3d(side, CockpitControlsRenderer.BASE_Y, CockpitControlsRenderer.BASE_Z),
                     new Vec3d(.065, .045, .065), DARK);
         }
         tube(cyclic, Vec3d.ZERO, CockpitControlsRenderer.GRIP.add(0, -.03, 0), .023, .023, DARK);
@@ -812,16 +866,16 @@ public final class HelicopterModel {
     /** 功能：共用缓存上传与描边兼容路径的面色规则；仅客户端；blockLightFilter 按原舱灯分组筛选，无世界修改。 */
     private void renderFaces(String part, MatrixStack matrices, VertexConsumer buffer, int light,
             int paint, boolean wreck, int blockLightFilter) {
-        List<Face> faces = switch (part) {
+        List<Face> faces = doors.containsKey(part) ? doors.get(part) : switch (part) {
             case "glass" -> glass; case "gear" -> gear; case "rotor" -> rotor; case "tail" -> tailRotor;
             case "number" -> number; case "wordmark" -> wordmark; case "camouflage" -> camouflage;
             case "interior" -> interior; case "lamp" -> lamp; case "strut" -> strut;
             case "searchlight" -> searchlight; case "searchlight_lens" -> searchlightLens;
             case "navigation_lights" -> navigationLights; case "cyclic" -> cyclic; default -> shell;
         };
-        boolean decal = part.equals("number") || part.equals("wordmark"), camo = part.equals("camouflage");
-        boolean body = part.equals("shell"), undercarriage = part.equals("gear") || part.equals("strut");
-        boolean cabin = part.equals("interior"), emitting = part.equals("lamp") && !wreck;
+        boolean decal = part.endsWith("number") || part.endsWith("wordmark"), camo = part.endsWith("camouflage");
+        boolean body = part.endsWith("shell"), undercarriage = part.equals("gear") || part.equals("strut");
+        boolean cabin = part.endsWith("interior"), emitting = part.equals("lamp") && !wreck;
         for (Face face : faces) {
             if (blockLightFilter >= 0 && face.blockLight != blockLightFilter << 4) continue;
             // 迷彩喷漆面只由独立材质提交一次；玻璃、金属与内饰继续走既有图层。

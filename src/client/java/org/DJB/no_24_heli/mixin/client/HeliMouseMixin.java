@@ -29,6 +29,9 @@ public class HeliMouseMixin {
     @Inject(method = "onMouseButton", at = @At("HEAD"), cancellable = true)
     private void followCamera(long window, int button, int action, int modifiers, CallbackInfo ci) {
         MinecraftClient client = MinecraftClient.getInstance();
+        if(window==client.getWindow().getHandle()&&org.DJB.no_24_heli.client.input.CabinDoorClient.handleMouse(button,action)){
+            ci.cancel();return;
+        }
         if(window==client.getWindow().getHandle()&&org.DJB.no_24_heli.client.input.ParachuteClient.handleMouse(button,action)){
             ci.cancel();return;
         }

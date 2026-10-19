@@ -127,6 +127,7 @@ public class No_24_heliClient implements ClientModInitializer {
         org.DJB.no_24_heli.client.render.PilotEquipmentClient.register();
         org.DJB.no_24_heli.client.render.HelicopterMesh.register();
         org.DJB.no_24_heli.client.render.SearchlightRenderer.register();
+        org.DJB.no_24_heli.client.input.CabinDoorClient.initialize();
         ParachuteClient.initialize();
         ExploredMap.register();RadioLibrary.initialize();ServerRadioCache.register();
         net.minecraft.client.render.block.entity.BlockEntityRendererFactories.register(No_24_heli.HELIPAD_ENTITY,HelipadRenderer::new);

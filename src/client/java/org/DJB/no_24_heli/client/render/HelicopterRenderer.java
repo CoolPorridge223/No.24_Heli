@@ -99,6 +99,19 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         try {
             RenderLayer painted = RenderLayer.getEntitySolid(PAINT_SURFACE), solid = RenderLayer.getEntityCutout(SURFACE);
             drawPart("shell", selected, matrices, consumers, painted, heli, light, gpu, distant);
+            for(int side=0;side<2;side++){
+                matrices.push();translateDoor(matrices,heli,side,delta);
+                String prefix="door"+side+"_";
+                drawPart(prefix+"shell",selected,matrices,consumers,painted,heli,light,gpu,distant);
+                if(near||cockpit)drawPart(prefix+"interior",selected,matrices,consumers,solid,heli,light,gpu,distant);
+                if(heli.flight.paint<CAMOUFLAGE.length)drawPart(prefix+"camouflage",selected,matrices,consumers,
+                        RenderLayer.getEntitySolid(CAMOUFLAGE[heli.flight.paint]),heli,light,gpu,distant);
+                if(heli.flight.paint==5){
+                    drawPart(prefix+"number",selected,matrices,consumers,RenderLayer.getEntityCutout(NUMBER),heli,light,gpu,distant);
+                    drawPart(prefix+"wordmark",selected,matrices,consumers,RenderLayer.getEntityCutout(WORDMARK),heli,light,gpu,distant);
+                }
+                matrices.pop();
+            }
             drawGear(selected, matrices, consumers, painted, heli, light, gpu, distant,
                     MathHelper.lerp(delta, heli.previousGearExtension, heli.gearExtension));
             if (heli.flight.paint < CAMOUFLAGE.length) drawPart("camouflage", selected, matrices, consumers,
@@ -156,8 +169,22 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         selected.render("glass", matrices, glassSprite.getTextureSpecificVertexConsumer(
                 consumers.getBuffer(TexturedRenderLayers.getEntityCutout())),
                 light, heli.flight.paint, heli.flight.wreck);
+        for(int side=0;side<2;side++){
+            matrices.push();translateDoor(matrices,heli,side,delta);
+            selected.render("door"+side+"_glass",matrices,glassSprite.getTextureSpecificVertexConsumer(
+                    consumers.getBuffer(TexturedRenderLayers.getEntityCutout())),light,heli.flight.paint,heli.flight.wreck);
+            matrices.pop();
+        }
+        CabinPassengerRenderer.renderFirstPerson(heli,delta,matrices,consumers,light);
         matrices.pop();
         super.render(heli, yaw, delta, matrices, consumers, light);
+    }
+
+    /** 先向外脱离密封条再后滑，左右门、玻璃、内衬和字样使用相同矩阵。 */
+    private static void translateDoor(MatrixStack matrices,HelicopterEntity heli,int side,float delta){
+        float p=heli.cabin.doorProgress(side,delta);
+        matrices.translate((side==0?1:-1)*.12*Math.min(1,p*5),0,
+                -org.DJB.no_24_heli.entity.HelicopterCabin.DOOR_TRAVEL*p);
     }
 
     /**

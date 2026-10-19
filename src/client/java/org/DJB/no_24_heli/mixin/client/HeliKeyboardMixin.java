@@ -19,6 +19,8 @@ public class HeliKeyboardMixin {
     @Inject(method="onKey",at=@At("HEAD"),cancellable=true)
     private void followCamera(long window,int key,int scan,int action,int modifiers,CallbackInfo ci){
         var client=MinecraftClient.getInstance();
+        // 舱门优先处理机内/侧门场景，离舱后 F 才交给开伞。
+        if(window==client.getWindow().getHandle()&&org.DJB.no_24_heli.client.input.CabinDoorClient.handleKey(key,scan,action)){ci.cancel();return;}
         // 新伞键只在自由落体/开伞状态接管，原版 F 交换副手在其他场景照常使用。
         if(window==client.getWindow().getHandle()&&ParachuteClient.handleKey(key,scan,action)){ci.cancel();return;}
         if(window!=client.getWindow().getHandle()||client.currentScreen!=null||client.player==null

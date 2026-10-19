@@ -224,5 +224,14 @@
   "key.no_24_heli.light_up": "抬高探照灯",
   "key.no_24_heli.light_down": "压低探照灯",
   "item.no_24_heli.parachute_open": "未折叠的滑翔伞包",
-  "item.no_24_heli.parachute_broken": "损坏的滑翔伞包"
+  "item.no_24_heli.parachute_broken": "损坏的滑翔伞包",
+  "key.no_24_heli.cabin_door": "开关本侧舱门",
+  "hud.no_24_heli.door_open_after": "打开舱门",
+  "message.no_24_heli.door_closed": "请先打开本侧舱门",
+  "message.no_24_heli.door_wait": "请等待舱门完全打开",
+  "message.no_24_heli.door_busy": "乘员正在上下机，暂时不能关闭舱门",
+  "message.no_24_heli.side_full": "本侧座位已满，请从另一侧登机",
+  "message.no_24_heli.door_exit_blocked": "本侧出口被挡住，无法离机",
+  "hud.no_24_heli.rear_left": "左后排",
+  "hud.no_24_heli.rear_right": "右后排"
 }

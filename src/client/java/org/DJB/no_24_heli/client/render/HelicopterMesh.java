@@ -237,7 +237,7 @@ public final class HelicopterMesh {
      */
     private static List<Segment> upload(HelicopterModel model, String part, int paint, boolean wreck) {
         List<Segment> result = new ArrayList<>();
-        boolean cabin = part.equals("interior") && !wreck;
+        boolean cabin = part.endsWith("interior") && !wreck;
         for (int floor = cabin ? CABIN_LIGHT_MIN : -1; floor <= (cabin ? CABIN_LIGHT_MAX : -1); floor++) {
             try (BufferAllocator allocator = new BufferAllocator(BUILD_CAPACITY)) {
                 BufferBuilder builder = new BufferBuilder(allocator, VertexFormat.DrawMode.QUADS,

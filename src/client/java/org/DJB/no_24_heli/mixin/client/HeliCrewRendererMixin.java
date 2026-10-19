@@ -3,6 +3,7 @@ package org.DJB.no_24_heli.mixin.client;
 
 import org.DJB.no_24_heli.client.camera.HeliView;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.client.render.CabinPassengerRenderer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.render.VertexConsumerProvider;
@@ -54,8 +55,8 @@ public abstract class HeliCrewRendererMixin {
     private void seatPosition(LivingEntity entity, float yaw, float delta, MatrixStack matrices,
             VertexConsumerProvider vertices, int light, CallbackInfo ci) {
         if (!(entity.getVehicle() instanceof HelicopterEntity heli)) return;
-        Vector3f seat = new Vector3f(heli.isPilot(entity) ? .38f : -.38f, .10f,
-                (float) (-.12 + HelicopterEntity.SEAT_FORWARD_OFFSET))
+        Vec3d local = heli.cabin.position(entity, delta);
+        Vector3f seat = new Vector3f((float)local.x, (float)local.y, (float)local.z)
                 .rotate(HeliView.bodyRotation(heli, delta));
         Vec3d correction = heli.getLerpedPos(delta).add(seat.x, seat.y, seat.z).subtract(entity.getLerpedPos(delta));
         matrices.push(); matrices.translate(correction.x, correction.y, correction.z);
@@ -87,7 +88,7 @@ public abstract class HeliCrewRendererMixin {
         if (!(entity.getVehicle() instanceof HelicopterEntity heli) || !entity.isAlive()) return;
         matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(bodyYaw - 180));
         matrices.multiply(HeliView.bodyRotation(heli, delta));
-        matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180));
+        matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180 + CabinPassengerRenderer.yaw(heli, entity, delta)));
         matrices.translate(0, HIP_HEIGHT, 0);
         matrices.scale(SEATED_SCALE, SEATED_SCALE, SEATED_SCALE);
         matrices.translate(0, -HIP_HEIGHT, 0);
@@ -118,11 +119,9 @@ public abstract class HeliCrewRendererMixin {
             shift = At.Shift.AFTER))
     private void alignLegs(LivingEntity entity, float yaw, float delta, MatrixStack matrices,
             VertexConsumerProvider vertices, int light, CallbackInfo ci) {
-        if (!(entity.getVehicle() instanceof HelicopterEntity) || !(model instanceof BipedEntityModel<?> biped)) return;
-        biped.rightLeg.pitch = biped.leftLeg.pitch = -(float) Math.PI / 2;
-        biped.rightLeg.yaw = biped.leftLeg.yaw = 0;
-        biped.rightLeg.roll = biped.leftLeg.roll = 0;
-        if (model instanceof net.minecraft.client.render.entity.model.PlayerEntityModel<?> playerModel) {
+        if (!(entity.getVehicle() instanceof HelicopterEntity heli) || !(model instanceof BipedEntityModel<?> biped)) return;
+        CabinPassengerRenderer.pose(biped, heli, entity, delta);
+        if (CabinPassengerRenderer.holdsStick(heli,entity) && model instanceof net.minecraft.client.render.entity.model.PlayerEntityModel<?> playerModel) {
             heli$armVisible = playerModel.rightArm.visible;
             heli$sleeveVisible = playerModel.rightSleeve.visible;
             playerModel.rightArm.visible = playerModel.rightSleeve.visible = false;

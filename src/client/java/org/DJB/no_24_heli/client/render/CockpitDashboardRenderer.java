@@ -249,8 +249,8 @@ public final class CockpitDashboardRenderer {
                     .53, -.395, .0021f, .52, INK, light);
         for (int seat = 0; seat < 2; seat++) {
             final boolean pilot = seat == 0;
-            Text name = h.getPassengerList().stream().filter(p -> h.isPilot(p) == pilot).findFirst()
-                    .map(net.minecraft.entity.Entity::getName).orElse(Text.translatable("hud.no_24_heli.empty_seat"));
+            Text name = h.cabin.occupant(seat)!=null ? h.cabin.occupant(seat).getName()
+                    : Text.translatable("hud.no_24_heli.empty_seat");
             text(m, Text.translatable(pilot ? "hud.no_24_heli.pilot" : "hud.no_24_heli.copilot").append(": ").append(name),
                     pilot ? -.54 : -.02, -.355, .0025f, .48, INK, light);
         }

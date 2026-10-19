@@ -133,6 +133,14 @@ public class No_24_heli implements ModInitializer {
             }
             ServerPlayNetworking.send(context.player(),new SettingsPayload(false,HeliConfig.INSTANCE.explosionBlockDamage,allowed,saved));
         }));
+        PayloadTypeRegistry.playC2S().register(org.DJB.no_24_heli.network.CabinDoorPayload.ID,
+                org.DJB.no_24_heli.network.CabinDoorPayload.CODEC);
+        ServerPlayNetworking.registerGlobalReceiver(org.DJB.no_24_heli.network.CabinDoorPayload.ID,
+                (packet,context)->context.server().execute(()->{
+                    // 只按当前维度查找，距离、门侧及动画限流由舱位组件复核。
+                    if(context.player().getWorld().getEntityById(packet.entityId()) instanceof HelicopterEntity heli)
+                        heli.cabin.toggleDoor(context.player());
+                }));
         PayloadTypeRegistry.playC2S().register(ControlPayload.ID,ControlPayload.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(ControlPayload.ID,(packet,context)->context.server().execute(()->{
             if(context.player().getVehicle() instanceof HelicopterEntity heli) heli.control(context.player(),packet);

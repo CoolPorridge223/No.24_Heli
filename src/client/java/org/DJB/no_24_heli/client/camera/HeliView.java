@@ -14,7 +14,7 @@ import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 /**
- * 职责：登机切第三人称，V 切机内/机外，下机恢复；机内眼位跟随机体倾斜。
+ * 职责：登机保持透视，V 切机内/机外，下机恢复；机内眼位跟随机体倾斜。
  * 引用：net.minecraft.client.option.Perspective 切换原版透视；net.minecraft.util.math.Vec3d 保存座椅眼位。
  * 生命周期：客户端 tick 管理乘骑，Camera Mixin 每帧读取姿态。
  * 端侧/线程：客户端线程；不改玩家朝向，避免产生额外飞控输入。
@@ -31,9 +31,6 @@ public final class HeliView {
     /** 机内相对观察在每次切入时初始化；单位为度，仅保存在本客户端。 */
     private static boolean cockpitInitialized;
     private static float lookYaw,lookPitch,oldLookYaw,oldLookPitch;
-    /** 主副驾横向偏移、眼高、眼睛前后位置，单位：相对机体原点的格数。 */
-    private static final float SEAT_OFFSET=.38f,EYE_HEIGHT=1.68f,
-            EYE_FORWARD=(float)(-.02+HelicopterEntity.SEAT_FORWARD_OFFSET);
     /** 初始下看 8°，自由观察水平 ±105°、垂直 ±70°，避免视线穿入椅背。 */
     private static final float DEFAULT_LOOK_PITCH=8,MAX_LOOK_YAW=105,MAX_LOOK_PITCH=70;
     /** 每次滚动改变一格，4–24 格范围内仍交给原版碰撞裁剪。 */
@@ -48,7 +45,7 @@ public final class HeliView {
     public static double cockpitFov(){return cockpitFov;}
     private HeliView() {}
 
-    /** 登机切换后视第三人称，下机或断线恢复原视角。 */
+    /** 登机保留原透视，下机或断线恢复原视角。 */
     public static void tick(MinecraftClient client) {
         if(!client.options.getPerspective().isFirstPerson())cockpitInitialized=false;
         else{following=false;initialized=false;}
@@ -62,7 +59,7 @@ public final class HeliView {
         if (current != null) {
             cockpitFov=client.options.getFov().getValue();
             previous = client.options.getPerspective();
-            client.options.setPerspective(Perspective.THIRD_PERSON_BACK);
+            // 保留登机前透视，使第一人称能完整看到迈入和坐下；V/F5 仍可自由切换。
         } else previous = null;
     }
 
@@ -102,7 +99,8 @@ public final class HeliView {
      */
     public static Vec3d cockpitPosition(HelicopterEntity heli,Entity focus,float delta){
         // +Z 为机头时，面向机头的左侧是本地 +X；须与服务端座位位置使用相同符号。
-        Vector3f offset=new Vector3f(heli.isPilot(focus)?SEAT_OFFSET:-SEAT_OFFSET,EYE_HEIGHT,EYE_FORWARD);
+        Vec3d eye=org.DJB.no_24_heli.client.render.CabinPassengerRenderer.eye(heli,(net.minecraft.entity.LivingEntity)focus,delta);
+        Vector3f offset=new Vector3f((float)eye.x,(float)eye.y,(float)eye.z);
         offset.rotate(bodyRotation(heli,delta));
         return heli.getLerpedPos(delta).add(offset.x,offset.y,offset.z);
     }
@@ -119,8 +117,11 @@ public final class HeliView {
         lookYaw=MathHelper.clamp(lookYaw+MathHelper.wrapDegrees(currentYaw-oldLookYaw),-MAX_LOOK_YAW,MAX_LOOK_YAW);
         lookPitch=MathHelper.clamp(lookPitch+currentPitch-oldLookPitch,-MAX_LOOK_PITCH,MAX_LOOK_PITCH);
         oldLookYaw=currentYaw;oldLookPitch=currentPitch;
-        return bodyRotation(heli,delta).mul(new Quaternionf().rotationYXZ(
-                (float)Math.PI-(float)Math.toRadians(lookYaw),(float)Math.toRadians(-lookPitch),0));
+        return bodyRotation(heli,delta).rotateY((float)Math.toRadians(
+                org.DJB.no_24_heli.client.render.CabinPassengerRenderer.yaw(heli,(net.minecraft.entity.LivingEntity)focus,delta)))
+                .mul(new Quaternionf().rotationYXZ(
+                (float)Math.PI-(float)Math.toRadians(lookYaw),(float)Math.toRadians(-lookPitch-org.DJB.no_24_heli.client.render.CabinPassengerRenderer.nod(
+                        heli,(net.minecraft.entity.LivingEntity)focus,delta)),0));
     }
     public static float[] rotation(HelicopterEntity heli, float cameraYaw, float cameraPitch, boolean inverse) {
         if (!following) return new float[]{cameraYaw, cameraPitch};

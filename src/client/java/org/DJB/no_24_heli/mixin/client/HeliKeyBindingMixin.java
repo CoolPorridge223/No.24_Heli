@@ -20,6 +20,7 @@ public class HeliKeyBindingMixin {
     @Unique private static void no24$restore(){
         no24$restoreBinding("key.no_24_heli.follow");
         no24$restoreBinding("key.no_24_heli.parachute");
+        no24$restoreBinding("key.no_24_heli.cabin_door");
     }
     /** 按键在各自作用域由 Keyboard 回调消费，不能占据原版 F/中键的全局查找表。 */
     @Unique private static void no24$restoreBinding(String id){
@@ -30,6 +31,7 @@ public class HeliKeyBindingMixin {
         for(var binding:KEYS_BY_ID.values())if(binding!=follow
                 &&!binding.getTranslationKey().equals("key.no_24_heli.follow")
                 &&!binding.getTranslationKey().equals("key.no_24_heli.parachute")
+                &&!binding.getTranslationKey().equals("key.no_24_heli.cabin_door")
                 &&((HeliKeyBindingMixin)(Object)binding).boundKey.equals(key))
             KEY_TO_BINDINGS.put(key,binding);
     }

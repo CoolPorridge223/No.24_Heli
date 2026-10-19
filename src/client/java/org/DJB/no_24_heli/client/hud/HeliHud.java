@@ -118,7 +118,11 @@ public final class HeliHud {
             drawKeyHint(ctx,ParachuteClient.keyName(),"hud.no_24_heli.parachute_before","hud.no_24_heli.parachute_after");
         else if(mc.player.getVehicle() instanceof org.DJB.no_24_heli.entity.ParachuteEntity canopy&&canopy.needsPull())
             drawKeyHint(ctx,ParachuteClient.keyName(),"hud.no_24_heli.parachute_pull_before","hud.no_24_heli.parachute_pull_after");
-        if(mc.player.getVehicle() instanceof RopeSeatEntity rope&&rope.canBoardHelicopter(mc.player)){
+        var doorTarget=org.DJB.no_24_heli.client.input.CabinDoorClient.target();
+        boolean doorHint=doorTarget!=null&&!doorTarget.cabin.isOpen(org.DJB.no_24_heli.client.input.CabinDoorClient.side(doorTarget));
+        if(doorHint)drawKeyHint(ctx,org.DJB.no_24_heli.client.input.CabinDoorClient.keyName(),
+                "hud.no_24_heli.rope_board_before","hud.no_24_heli.door_open_after");
+        if(!doorHint&&mc.player.getVehicle() instanceof RopeSeatEntity rope&&rope.canBoardHelicopter(mc.player)){
             drawBoardHint(ctx);
         }
         if(!(mc.player.getVehicle() instanceof HelicopterEntity h))return;
@@ -146,6 +150,8 @@ public final class HeliHud {
         crewName(ctx,h,0,4,-162);
         text(ctx,"hud.no_24_heli.copilot",4,-150,0xff7ce3bc);
         crewName(ctx,h,1,4,-138);
+        text(ctx,"hud.no_24_heli.rear_left",92,-174,0xff7ce3bc);crewName(ctx,h,2,92,-162);
+        text(ctx,"hud.no_24_heli.rear_right",92,-150,0xff7ce3bc);crewName(ctx,h,3,92,-138);
         // 五段血条紧密拼接；每个部件仍独立扣血，总宽由 240 缩短到 150。
         double[] values={s.hull,s.rotor,s.tail,s.engine,s.tank};String[] keys={"hull","rotor","tail","engine","tank"};
         int barWidth=150,barX=(bw-barWidth)/2,segment=barWidth/5;
@@ -193,7 +199,7 @@ public final class HeliHud {
     }
     /** 姓名遵循真实座位顺序，空座给出明确文字。 */
     private static void crewName(DrawContext ctx,HelicopterEntity h,int seat,int x,int y){
-        Text name=seat<h.getPassengerList().size()?h.getPassengerList().get(seat).getName():Text.translatable("hud.no_24_heli.empty_seat");
+        Text name=h.cabin.occupant(seat)!=null?h.cabin.occupant(seat).getName():Text.translatable("hud.no_24_heli.empty_seat");
         ctx.drawText(MinecraftClient.getInstance().textRenderer,name,x,y,0xffe6f4ee,true);
     }
     /**
