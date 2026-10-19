@@ -300,8 +300,11 @@ public final class ParachuteCanopy {
         return nbt;
     }
 
-    /** 客户端快照以旧点作为插值起点；存档则恢复 Verlet 速度，拒绝非有限/错误长度数组。 */
-    public void read(NbtCompound nbt) {
+    /** 存档恢复权威位置及 Verlet 速度，拒绝非有限/错误长度数组。 */
+    public void read(NbtCompound nbt) { read(nbt, 1); }
+
+    /** 新快照从当前显示进度重定向，布面与柔绳使用同一混合比例，连续收包不会回跳。 */
+    public void read(NbtCompound nbt, float blend) {
         long[] values = nbt.getLongArray("Points"), velocity = nbt.getLongArray("Previous");
         boolean legacy = values.length == (LEGACY_SPAN + 1) * (LEGACY_CHORD + 1) * 3;
         if (values.length != points.length * 3 && !legacy) return;
@@ -311,13 +314,13 @@ public final class ParachuteCanopy {
             double x = i / (CHORD + 1) * sourceSpan / (double) SPAN;
             double z = i % (CHORD + 1) * sourceChord / (double) CHORD;
             Vec3d next = sample(values, sourceSpan, sourceChord, x, z);
-            frame[i] = ready ? point(i / (CHORD + 1), i % (CHORD + 1), 1) : next;
+            frame[i] = ready ? interpolate(i, blend) : next;
             points[i] = next;
             previous[i] = velocity.length == values.length ? sample(velocity, sourceSpan, sourceChord, x, z) : next;
             if (!Double.isFinite(previous[i].lengthSquared())) previous[i] = next;
         }
         ready = true;
-        suspension.read(nbt);
+        suspension.read(nbt, blend);
     }
 
     /** 旧快照按原网格双线性细分；位置和 Verlet 上一步使用相同权重，避免恢复时凭空加速。 */

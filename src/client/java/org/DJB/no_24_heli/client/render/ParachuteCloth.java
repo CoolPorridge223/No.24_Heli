@@ -25,6 +25,10 @@ final class ParachuteCloth {
     private final Vec3d[] nodes = new Vec3d[(SPAN + 1) * (CHORD + 1)];
     private final Vec3d[] previous = new Vec3d[nodes.length], frame = new Vec3d[nodes.length];
     private final Vec3d[] rest = new Vec3d[nodes.length];
+    /** 同帧共享的中心面、上下表面和法线；渲染与吊绳直接复用，避免逐面反复插值和叉乘。 */
+    private final Vec3d[] rendered = new Vec3d[nodes.length];
+    private final Vec3d[] upper = new Vec3d[nodes.length], lower = new Vec3d[nodes.length];
+    private final Vec3d[] upperNormals = new Vec3d[nodes.length], lowerNormals = new Vec3d[nodes.length];
     /** 上次可见 tick、充气和世界速度，用于帧率无关积分及转弯惯性形变。 */
     private int lastAge = -1;
     private Vec3d lastVelocity = Vec3d.ZERO;
@@ -49,7 +53,7 @@ final class ParachuteCloth {
      * 每 tick 以惯性、气流和充气压力积分；结构和对角约束限制伸长，不能只画正弦动画冒充布面。
      * net.minecraft.entity.Entity#getVelocity 提供同步气流变化，跨越不可见时段重置以免数值爆炸。
      */
-    void update(ParachuteEntity canopy) {
+    private void update(ParachuteEntity canopy) {
         loose = false;
         if (lastAge == canopy.age) return;
         double opening = canopy.inflation(1), ticks = canopy.openingTicks(1);
@@ -85,11 +89,34 @@ final class ParachuteCloth {
      * 九厘米底面安全距离与服务端共用。只读客户端方块形状，投影显示顶点，
      * 不改变服务端物理；细分点也参与接触，避免两个安全粗节点之间的面穿过台阶。
      */
-    void prepareLoose(ParachuteEntity canopy, float delta) {
+    private void prepareLoose(ParachuteEntity canopy, float delta) {
         loose = true; Vec3d origin = canopy.getLerpedPos(delta);
         for (int x = 0; x <= SPAN; x++) for (int z = 0; z <= CHORD; z++) {
             Vec3d world = canopy.loosePoint(x / (double) SPAN, z / (double) CHORD, delta).add(origin);
             nodes[index(x, z)] = ParachuteCanopy.surfacePoint(canopy, world).subtract(origin);
+        }
+    }
+
+    /**
+     * 同帧生成真实厚度的上下表面，再分别计算共享法线；吊绳仍取未加厚的物理吊点。
+     * 引用 net.minecraft.util.math.Vec3d 插值位置；仅客户端渲染线程，不回写权威节点。
+     */
+    void prepare(ParachuteEntity canopy, float delta) {
+        if (canopy.mode() != ParachuteEntity.ACTIVE) prepareLoose(canopy, delta); else update(canopy);
+        double opening = loose ? 0 : canopy.inflation(delta);
+        for (int x = 0; x <= SPAN; x++) for (int z = 0; z <= CHORD; z++) {
+            int i = index(x, z);
+            Vec3d point = loose ? nodes[i] : frame[i].lerp(nodes[i], delta);
+            double profile = Math.sin(z / (double) CHORD * Math.PI);
+            double thickness = loose ? .09 + .11 * profile : .04 + .32 * opening * profile;
+            rendered[i] = point;
+            upper[i] = loose ? point.add(0, thickness, 0) : point;
+            lower[i] = loose ? point : point.add(0, -thickness, 0);
+        }
+        for (int x = 0; x <= SPAN; x++) for (int z = 0; z <= CHORD; z++) {
+            int i = index(x, z);
+            upperNormals[i] = surfaceNormal(upper, x, z, 1);
+            lowerNormals[i] = surfaceNormal(lower, x, z, -1);
         }
     }
 
@@ -101,15 +128,21 @@ final class ParachuteCloth {
         nodes[a] = nodes[a].add(correction); nodes[b] = nodes[b].subtract(correction);
     }
 
-    /** net.minecraft.util.math.Vec3d#lerp 在两个模拟帧之间插值，供三角面、气室和吊绳共用。 */
-    Vec3d point(int x, int z, float delta) {
-        int i = index(x, z); return loose ? nodes[i] : frame[i].lerp(nodes[i], delta);
-    }
+    /** 当前帧未加厚的节点供气室和吊绳共用，保持与服务端吊点一致。 */
+    Vec3d point(int x, int z) { return rendered[index(x, z)]; }
 
-    /** 相邻细分点共享曲面切线法线，避免密网格仍被逐面光照画成一块块硬板。 */
-    Vec3d normal(int x, int z, float delta) {
-        Vec3d span = point(Math.min(SPAN, x + 1), z, delta).subtract(point(Math.max(0, x - 1), z, delta));
-        Vec3d chord = point(x, Math.min(CHORD, z + 1), delta).subtract(point(x, Math.max(0, z - 1), delta));
-        return chord.crossProduct(span).normalize();
+    /** 上下层使用真实顶点位置；失压布面只向上加厚，不把底层画进地面。 */
+    Vec3d surfacePoint(int x, int z, boolean underside) { return (underside ? lower : upper)[index(x, z)]; }
+
+    /** 上下层分别缓存外向法线，厚度沿弦长变化时不能简单取中心面法线的正负值。 */
+    Vec3d normal(int x, int z, boolean underside) { return (underside ? lowerNormals : upperNormals)[index(x, z)]; }
+
+    /** 相邻细分点共享切线；直接除以长度，避免 net.minecraft.util.math.Vec3d#normalize 清零微小叉积。 */
+    private static Vec3d surfaceNormal(Vec3d[] surface, int x, int z, double sign) {
+        Vec3d span = surface[index(Math.min(SPAN, x + 1), z)].subtract(surface[index(Math.max(0, x - 1), z)]);
+        Vec3d chord = surface[index(x, Math.min(CHORD, z + 1))].subtract(surface[index(x, Math.max(0, z - 1))]);
+        Vec3d normal = chord.crossProduct(span); double length = normal.length();
+        // 完全收拢的退化节点使用外向竖直法线，不向光影提交零向量。
+        return length > 1e-12 ? normal.multiply(sign / length) : new Vec3d(0, sign, 0);
     }
 }

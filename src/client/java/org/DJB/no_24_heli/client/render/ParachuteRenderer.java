@@ -18,9 +18,14 @@ import net.minecraft.client.model.ModelTransform;
 import net.minecraft.client.model.TexturedModelData;
 import net.minecraft.client.render.Frustum;
 import net.minecraft.client.render.OverlayTexture;
+import net.minecraft.client.render.OutlineVertexConsumerProvider;
 import net.minecraft.client.render.RenderLayer;
+import net.minecraft.client.render.RenderPhase;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
+import net.minecraft.client.render.VertexConsumers;
+import net.minecraft.client.render.VertexFormat;
+import net.minecraft.client.render.VertexFormats;
 import net.minecraft.client.render.entity.EntityRenderer;
 import net.minecraft.client.render.entity.EntityRendererFactory;
 import net.minecraft.client.util.math.MatrixStack;
@@ -40,14 +45,33 @@ import org.joml.Quaternionf;
 public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
     /** 每具伞独立的视觉布面，无实体强引用，避免退出世界后缓存残留。 */
     private final Map<ParachuteEntity, ParachuteCloth> cloth = new WeakHashMap<>();
-    /** 吊绳厚 0.0125 格，八根落地吊绳逐段使用服务端柔性节点，不能画成两根直杆。 */
+    /** 单根吊绳厚 0.0125 格，十二根落地绳逐段使用服务端柔性节点，主绳和拉手按比例加粗。 */
     private final ModelPart cord;
     /** 织物资源为细格防撕裂布，无自发光，接受环境和光影光照。 */
     private static final Identifier FABRIC = No_24_heli.id("textures/entity/parachute_fabric.png");
+    /**
+     * 织物显式提交三角面，保留平滑法线及光影切线；上下层封闭后统一剔除背面。
+     * net.minecraft.client.render.RenderLayer 沿用原版实体裁切程序、光照、覆盖层和描边。
+     */
+    private static final RenderLayer FABRIC_LAYER = RenderLayer.of("no_24_heli_parachute_fabric",
+            VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL, VertexFormat.DrawMode.TRIANGLES,
+            RenderLayer.DEFAULT_BUFFER_SIZE, true, false, RenderLayer.MultiPhaseParameters.builder()
+                    .program(RenderPhase.ENTITY_CUTOUT_PROGRAM)
+                    .texture(new RenderPhase.Texture(FABRIC, false, false))
+                    .lightmap(RenderPhase.ENABLE_LIGHTMAP).overlay(RenderPhase.ENABLE_OVERLAY_COLOR).build(false));
+    /** 原版自动描边固定用四边形，织物需匹配三角形拓扑，避免发光实体描边错连顶点。 */
+    private static final RenderLayer FABRIC_OUTLINE_LAYER = RenderLayer.of("no_24_heli_parachute_outline",
+            VertexFormats.POSITION_TEXTURE_COLOR, VertexFormat.DrawMode.TRIANGLES, RenderLayer.DEFAULT_BUFFER_SIZE,
+            RenderLayer.MultiPhaseParameters.builder().program(RenderPhase.OUTLINE_PROGRAM)
+                    .texture(new RenderPhase.Texture(FABRIC, false, false)).depthTest(RenderPhase.ALWAYS_DEPTH_TEST)
+                    .target(RenderPhase.OUTLINE_TARGET).build(RenderLayer.OutlineMode.IS_OUTLINE));
     /** 细分翻倍后织纹仍横向重复六次、弦向两次，保持原来的防撕裂布纹尺寸。 */
     private static final float SPAN_UV = 6f / ParachuteCloth.SPAN, CHORD_UV = 2f / ParachuteCloth.CHORD;
     /** 左右翼尖统一为紫色，橙色主翼和米白中心条保持原宽度。 */
     private static final int TIP_COLOR = 0xff8547b8;
+    /** 操纵柄使用暖黄色，区别于承重绳；半宽 15.5cm，让握柄两端露在原版方块手掌之外。 */
+    private static final int HANDLE_COLOR = 0xffefb847;
+    private static final double HANDLE_HALF_WIDTH = .155;
 
     /** net.minecraft.client.model.ModelPart 构建吊绳棱柱，展开翼面由动态节点构建。 */
     public ParachuteRenderer(EntityRendererFactory.Context context) {
@@ -67,33 +91,27 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
             VertexConsumerProvider consumers, int light) {
         boolean loose = entity.mode() != ParachuteEntity.ACTIVE;
         ParachuteCloth mesh = cloth.computeIfAbsent(entity, ignored -> new ParachuteCloth());
-        if (loose) mesh.prepareLoose(entity, delta); else mesh.update(entity);
+        mesh.prepare(entity, delta);
         double opening = loose ? 0 : entity.inflation(delta);
         matrices.push();
         if (!loose) {
             matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(-entity.canopyYaw(delta)));
             ParachutePose.apply(matrices, entity, delta, false);
         }
-        // 失压翼已有完整顶层、底层和封边，剔除内侧背面，避免折层内壁反复覆盖造成暗块。
-        VertexConsumer buffer = consumers.getBuffer(loose
-                ? RenderLayer.getEntityCutout(FABRIC) : RenderLayer.getEntityCutoutNoCull(FABRIC));
+        VertexConsumer buffer = consumers.getBuffer(FABRIC_LAYER);
+        if (consumers instanceof OutlineVertexConsumerProvider)
+            buffer = VertexConsumers.union(consumers.getBuffer(FABRIC_OUTLINE_LAYER), buffer);
         for (int x = 0; x < ParachuteCloth.SPAN; x++) for (int z = 0; z < ParachuteCloth.CHORD; z++) {
             if (!hasCell(entity, x, z)) continue;
-            Vec3d a = mesh.point(x, z, delta), b = mesh.point(x + 1, z, delta);
-            Vec3d c = mesh.point(x + 1, z + 1, delta), d = mesh.point(x, z + 1, delta);
-            double front = thickness(loose, opening, z), back = thickness(loose, opening, z + 1);
-            // 落地节点作为底层，所有厚度向上增加，不能把下层画进地面；空中节点仍是上层。
-            Vec3d lowA = loose ? a : a.add(0, -front, 0), lowB = loose ? b : b.add(0, -front, 0);
-            Vec3d lowC = loose ? c : c.add(0, -back, 0), lowD = loose ? d : d.add(0, -back, 0);
-            if (loose) {
-                a = a.add(0, front, 0); b = b.add(0, front, 0);
-                c = c.add(0, back, 0); d = d.add(0, back, 0);
-            }
+            Vec3d a = mesh.surfacePoint(x, z, false), b = mesh.surfacePoint(x + 1, z, false);
+            Vec3d c = mesh.surfacePoint(x + 1, z + 1, false), d = mesh.surfacePoint(x, z + 1, false);
+            Vec3d lowA = mesh.surfacePoint(x, z, true), lowB = mesh.surfacePoint(x + 1, z, true);
+            Vec3d lowC = mesh.surfacePoint(x + 1, z + 1, true), lowD = mesh.surfacePoint(x, z + 1, true);
             int stripe = x * 24 / ParachuteCloth.SPAN;
             int color = stripe < 3 || stripe >= 21 ? TIP_COLOR : stripe >= 10 && stripe < 14 ? 0xfff2ead3 : 0xffe99539;
             // 世界局部 +Y 朝上；顶底绕序相反，法线必须朝向布面外侧以接受正确光照。
-            fabricSurface(matrices, buffer, mesh, a, b, c, d, false, delta, color, light, x, z);
-            fabricSurface(matrices, buffer, mesh, lowA, lowB, lowC, lowD, true, delta, 0xffe4e2d6, light, x, z);
+            fabricSurface(matrices, buffer, mesh, a, b, c, d, false, color, light, x, z);
+            fabricSurface(matrices, buffer, mesh, lowA, lowB, lowC, lowD, true, 0xffe4e2d6, light, x, z);
             // 四周和破口都封边，斜视时仍有实体厚度，不是两张互相悬空的面。
             if (!hasCell(entity, x, z - 1)) surface(matrices, buffer, a, b, lowB, lowA, color, light, x, z);
             if (!hasCell(entity, x + 1, z)) surface(matrices, buffer, b, c, lowC, lowB, color, light, x, z);
@@ -102,30 +120,55 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
         }
         int chamber = ParachuteCloth.SPAN / 12;
         for (int x = 0; x <= ParachuteCloth.SPAN; x += chamber) {
-            Vec3d leading = mesh.point(x, ParachuteCloth.CHORD, delta);
+            Vec3d leading = mesh.point(x, ParachuteCloth.CHORD);
             // 前缘暗色进气口和侧向肋片形成冲压翼气室，而非一张没有厚度的板。
             if (!loose && x < ParachuteCloth.SPAN) {
-                Vec3d next = mesh.point(x + chamber, ParachuteCloth.CHORD, delta);
+                Vec3d next = mesh.point(x + chamber, ParachuteCloth.CHORD);
                 surface(matrices, buffer, leading.add(0, -.13 * opening, -.04),
                         next.add(0, -.13 * opening, -.04), next, leading, 0xff5d5341, light, x, 0);
             }
-            if (!loose && x % (ParachuteCloth.SPAN / 6) == 0) {
-                for (int z : new int[]{ParachuteCloth.CHORD / 8, ParachuteCloth.CHORD * 3 / 4}) {
-                    Vec3d harness = new Vec3d(x < ParachuteCloth.SPAN / 2 ? -.25 : .25,
-                            1.25, z == ParachuteCloth.CHORD / 8 ? -.12 : .12);
-                    drawCord(matrices, buffer, harness, mesh.point(x, z, delta), light);
-                }
-            }
         }
+        // ModelPart 提交四边形；整张布绘制完后再切换图层，不能混入三角形缓冲。
+        VertexConsumer cordBuffer = consumers.getBuffer(RenderLayer.getEntityCutout(FABRIC));
+        if (!loose) drawFlightRig(entity, mesh, matrices, cordBuffer, delta, light);
         if (entity.mode() == ParachuteEntity.TRAILING && entity.hasLines())
-            drawTrailingLines(entity, mesh, matrices, buffer, delta, light);
+            drawTrailingLines(entity, mesh, matrices, cordBuffer, delta, light);
+        if (!loose) ParachuteHandsRenderer.render(entity, delta, matrices, consumers, light);
         matrices.pop(); super.render(entity, yaw, delta, matrices, consumers, light);
     }
 
-    /** 空中气室最厚约 0.36 格；落地仍保留 0.09–0.20 格的软厚度，不因失压变成零厚度。 */
-    private static double thickness(boolean loose, double opening, int z) {
-        double profile = Math.sin(z / (double) ParachuteCloth.CHORD * Math.PI);
-        return loose ? .09 + .11 * profile : .04 + .32 * opening * profile;
+    /**
+     * 每侧三组双绳先汇合，再由粗主绳绕肩进入背包；操纵柄由汇合点下垂，独立于承力主绳。
+     * net.minecraft.client.model.ModelPart 沿实际节点绘制，所有节点共用外层人伞倾斜矩阵。
+     */
+    private void drawFlightRig(ParachuteEntity entity, ParachuteCloth mesh, MatrixStack matrices,
+            VertexConsumer buffer, float delta, int light) {
+        for (boolean left : new boolean[]{false, true}) {
+            double side = left ? 1 : -1;
+            Vec3d bundle = ParachutePose.bundle(entity, left);
+            for (int group = 0; group < ParachuteSuspension.GROUPS_PER_SIDE; group++) {
+                // 三个短分束接头相距 4.5cm，让每组前后两根吊绳在汇入主绳之前仍清晰可辨。
+                Vec3d junction = bundle.add((group - 1) * .045, .065, 0);
+                drawCord(matrices, buffer, bundle, junction, light, 1.4f, 0xff40464b);
+                for (int branch = 0; branch < ParachuteSuspension.LINES_PER_GROUP; branch++) {
+                    int line = (left ? ParachuteSuspension.LINES / 2 : 0)
+                            + group * ParachuteSuspension.LINES_PER_GROUP + branch;
+                    int x = ParachuteSuspension.attachmentX(line) * ParachuteCloth.SPAN / ParachuteCanopy.SPAN;
+                    int z = ParachuteSuspension.attachmentZ(line) * ParachuteCloth.CHORD / ParachuteCanopy.CHORD;
+                    drawCord(matrices, buffer, junction, mesh.point(x, z), light);
+                }
+            }
+            // 主绳不经过手掌，沿肩部外侧接入背包内部，操纵时不能跟着手柄上下拉动整束承力绳。
+            Vec3d shoulder = new Vec3d(side * .25, 1.42, -.02);
+            drawCord(matrices, buffer, bundle, shoulder, light, 3, 0xff34383c);
+            drawCord(matrices, buffer, shoulder, ParachuteSuspension.packAnchor(left), light, 3, 0xff34383c);
+            Vec3d grip = ParachutePose.grip(entity, left, delta);
+            Vec3d a = grip.add(-HANDLE_HALF_WIDTH, 0, 0), b = grip.add(HANDLE_HALF_WIDTH, 0, 0);
+            // 两边下垂带与横向握杆组成闭合三角拉手，掌心位于握杆中央。
+            drawCord(matrices, buffer, bundle, a, light, 1.25f, HANDLE_COLOR);
+            drawCord(matrices, buffer, bundle, b, light, 1.25f, HANDLE_COLOR);
+            drawCord(matrices, buffer, a, b, light, 3.5f, HANDLE_COLOR);
+        }
     }
 
     /** 统一判断外边界与破洞，让上下表面、封边共享同一个裁切形状。 */
@@ -143,7 +186,7 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
             for (int node = 1; node <= ParachuteSuspension.SEGMENTS; node++) {
                 Vec3d next = node == ParachuteSuspension.SEGMENTS
                         ? mesh.point(ParachuteSuspension.attachmentX(line) * ParachuteCloth.SPAN / ParachuteCanopy.SPAN,
-                                ParachuteSuspension.attachmentZ(line) * ParachuteCloth.CHORD / ParachuteCanopy.CHORD, delta)
+                                ParachuteSuspension.attachmentZ(line) * ParachuteCloth.CHORD / ParachuteCanopy.CHORD)
                         : ParachuteCanopy.surfacePoint(entity,
                                 entity.linePoint(line, node, delta).add(origin), .025).subtract(origin);
                 drawCord(matrices, buffer, previous, next, light); previous = next;
@@ -158,22 +201,24 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
                 || (x >= 16 && x <= 19 && z >= (x == 19 ? 2 : 1) && z <= (x == 16 ? 3 : 4));
     }
 
-    /** 布面顶底层按相邻节点共享法线；纹理坐标沿实际翼展/弦长连续，平滑弧度和织纹同时保留。 */
+    /** 上下层固定使用 a-c 对角线且绕序相反，避免扭曲四边形因拆分不同而互相穿插。 */
     private static void fabricSurface(MatrixStack matrices, VertexConsumer buffer, ParachuteCloth mesh,
-            Vec3d a, Vec3d b, Vec3d c, Vec3d d, boolean underside, float delta, int color, int light, int x, int z) {
-        double sign = underside ? -1 : 1;
-        Vec3d na = mesh.normal(x, z, delta).multiply(sign), nb = mesh.normal(x + 1, z, delta).multiply(sign);
-        Vec3d nc = mesh.normal(x + 1, z + 1, delta).multiply(sign), nd = mesh.normal(x, z + 1, delta).multiply(sign);
+            Vec3d a, Vec3d b, Vec3d c, Vec3d d, boolean underside, int color, int light, int x, int z) {
+        Vec3d na = mesh.normal(x, z, underside), nb = mesh.normal(x + 1, z, underside);
+        Vec3d nc = mesh.normal(x + 1, z + 1, underside), nd = mesh.normal(x, z + 1, underside);
+        vertex(matrices, buffer, a, na, color, light, x * SPAN_UV, z * CHORD_UV);
         if (underside) {
-            vertex(matrices, buffer, a, na, color, light, x * SPAN_UV, z * CHORD_UV);
             vertex(matrices, buffer, b, nb, color, light, (x + 1) * SPAN_UV, z * CHORD_UV);
+            vertex(matrices, buffer, c, nc, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
+            vertex(matrices, buffer, a, na, color, light, x * SPAN_UV, z * CHORD_UV);
             vertex(matrices, buffer, c, nc, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
             vertex(matrices, buffer, d, nd, color, light, x * SPAN_UV, (z + 1) * CHORD_UV);
         } else {
             vertex(matrices, buffer, d, nd, color, light, x * SPAN_UV, (z + 1) * CHORD_UV);
             vertex(matrices, buffer, c, nc, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
-            vertex(matrices, buffer, b, nb, color, light, (x + 1) * SPAN_UV, z * CHORD_UV);
             vertex(matrices, buffer, a, na, color, light, x * SPAN_UV, z * CHORD_UV);
+            vertex(matrices, buffer, c, nc, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
+            vertex(matrices, buffer, b, nb, color, light, (x + 1) * SPAN_UV, z * CHORD_UV);
         }
     }
 
@@ -183,6 +228,8 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
         Vec3d normal = b.subtract(a).crossProduct(d.subtract(a)).normalize();
         vertex(matrices, buffer, a, normal, color, light, x * SPAN_UV, z * CHORD_UV);
         vertex(matrices, buffer, b, normal, color, light, (x + 1) * SPAN_UV, z * CHORD_UV);
+        vertex(matrices, buffer, c, normal, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
+        vertex(matrices, buffer, a, normal, color, light, x * SPAN_UV, z * CHORD_UV);
         vertex(matrices, buffer, c, normal, color, light, (x + 1) * SPAN_UV, (z + 1) * CHORD_UV);
         vertex(matrices, buffer, d, normal, color, light, x * SPAN_UV, (z + 1) * CHORD_UV);
     }
@@ -197,12 +244,18 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
 
     /** net.minecraft.client.model.ModelPart 按真实吊点向量定向伸长，吊绳末端跟随同一布面。 */
     private void drawCord(MatrixStack matrices, VertexConsumer buffer, Vec3d start, Vec3d end, int light) {
+        drawCord(matrices, buffer, start, end, light, 1, 0xff40464b);
+    }
+
+    /** 同一绳截面按宽度区分细吊绳、承力主绳与操纵柄；net.minecraft.client.model.ModelPart 保持端点精确。 */
+    private void drawCord(MatrixStack matrices, VertexConsumer buffer, Vec3d start, Vec3d end,
+            int light, float width, int color) {
         Vec3d offset = end.subtract(start); float length = (float) offset.length();
         if (length < .001f) return;
         matrices.push(); matrices.translate(start.x, start.y, start.z);
         matrices.multiply(new Quaternionf().rotationTo(0, 1, 0,
                 (float) (offset.x / length), (float) (offset.y / length), (float) (offset.z / length)));
-        matrices.scale(1, length, 1); cord.render(matrices, buffer, light, OverlayTexture.DEFAULT_UV, 0xff40464b);
+        matrices.scale(width, length, width); cord.render(matrices, buffer, light, OverlayTexture.DEFAULT_UV, color);
         matrices.pop();
     }
 

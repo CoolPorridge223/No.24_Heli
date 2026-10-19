@@ -2,7 +2,9 @@
 package org.DJB.no_24_heli.mixin.client;
 
 import org.DJB.no_24_heli.client.camera.HeliView;
+import org.DJB.no_24_heli.client.render.ParachutePose;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.entity.ParachuteEntity;
 
 
 import net.minecraft.client.render.Camera;
@@ -62,8 +64,10 @@ public abstract class HeliCameraMixin {
     @Inject(method = "update", at = @At("TAIL"))
     private void helicopterCamera(BlockView area, Entity focus, boolean thirdPerson, boolean inverse, float delta, CallbackInfo ci) {
         // 新滑翔伞的第三人称包含头顶翼面，保留原版遮挡裁剪；不改变直升机视角设置。
-        if(thirdPerson&&focus.getVehicle() instanceof org.DJB.no_24_heli.entity.ParachuteEntity){
-            setPos(focus.getCameraPosVec(delta).add(0,1,0));moveBy(-clipToSpace(8),0,0);return;
+        if (focus.getVehicle() instanceof ParachuteEntity canopy) {
+            if (thirdPerson) { setPos(focus.getCameraPosVec(delta).add(0, 1, 0)); moveBy(-clipToSpace(8), 0, 0); }
+            else setPos(ParachutePose.eyePosition(canopy, focus, delta));
+            return;
         }
         if (!(focus.getVehicle() instanceof HelicopterEntity heli)) return;
         if(!thirdPerson){

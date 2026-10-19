@@ -12,6 +12,7 @@
     {"name":"DepthJitter","type":"float","count":2,"values":[0,0]},
     {"name":"LightOrigin","type":"float","count":3,"values":[0,0,0]},
     {"name":"LightDirection","type":"float","count":3,"values":[0,-1,0]},
+    {"name":"LightConeOffset","type":"float","count":1,"values":[0]},
     {"name":"LightMode","type":"int","count":1,"values":[0]},
     {"name":"LampColor","type":"float","count":4,"values":[1,1,1,1]},
     {"name":"FogStart","type":"float","count":1,"values":[0]},

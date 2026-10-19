@@ -64,17 +64,23 @@ import org.lwjgl.opengl.GL30C;
 public final class SearchlightRenderer {
     /** 球罩顶端低于机腹，单位格；球罩、活动镜片与光束共用此机体局部支点，避免移动灯头后光束错位。 */
     static final Vec3d PIVOT=new Vec3d(0,.31,1.24);
+    /** 镜片和光束共用圆形口径、中心和厚度；单位格，发光面位于镜片正面外四毫米。 */
+    static final double LENS_RADIUS=.082,LENS_CENTER=.205,LENS_DEPTH=.006;
+    private static final double EMITTER_OFFSET=LENS_CENTER+LENS_DEPTH+.004;
     /** 最大射程 64 格，发光半角十二度，采样额外留两度缓冲；只处理相机 96 格内的灯。 */
     static final double RANGE=64,SAMPLE_TANGENT=Math.tan(Math.toRadians(14));
+    /** 虚拟锥尖退到灯面后方，使十二度外缘在真实发光面处恰好具有镜片半径；仅用于投影。 */
+    private static final double CONE_OFFSET=LENS_RADIUS/Math.tan(Math.toRadians(12));
+    /** 十四度采样锥在灯面处的保守半径；筛选几何和阴影投影必须覆盖相同的圆台。 */
+    static final double SAMPLE_APERTURE=CONE_OFFSET*SAMPLE_TANGENT;
     /** 仅处理相机 96 格内的灯；与动态模型共用的光锥参数保持上面的包可见常量。 */
     private static final double VIEW_DISTANCE_SQUARED=96*96;
     /** 地形收集在光锥外预留两格；位移与转向造成的射程末端偏移合计不能超过此余量。 */
     private static final double MESH_PADDING=2;
     /** 方块顶点八整数；照明几何只标记表面，不偏移深度或写入光影阴影图。 */
     private static final int BLOCK_STRIDE=8,BUILD_CAPACITY=256*1024;
-    /** 每灯 1024² 透视深度；近裁剪 0.05 格，覆盖完整 64 格射程。 */
+    /** 每灯 1024² 透视深度；近裁剪落在真实灯面，覆盖灯面前方完整 64 格射程。 */
     private static final int SHADOW_SIZE=1024;
-    private static final float SHADOW_NEAR=.05f;
     /** 后台地形收集共享每帧 2 ms；首次点亮或越出网格余量时当帧完成，不能因预算熄灯。 */
     private static final long BUILD_BUDGET_NS=2_000_000;
     /** 当前主视图的收集截止时间和轮转起点，只由渲染线程访问。 */
@@ -221,16 +227,17 @@ public final class SearchlightRenderer {
         ChunkSection section;
         int x,y,z;
 
-        /** 功能：用灯头位置和光锥末端圆盘构建带 MESH_PADDING 余量的包围盒，允许缓存期间的轻微运动。 */
+        /** 功能：用灯面与光束末端两个圆盘构建带 MESH_PADDING 余量的包围盒，允许缓存期间的轻微运动。 */
         MeshBuild(Vec3d origin,Vec3d source,Vec3d direction){
             this.origin=origin;this.source=source;this.direction=direction;
-            Vec3d end=source.add(direction.multiply(RANGE));double radius=RANGE*SAMPLE_TANGENT;
+            Vec3d end=source.add(direction.multiply(RANGE));double radius=SAMPLE_APERTURE+RANGE*SAMPLE_TANGENT;
             double rx=radius*Math.sqrt(Math.max(0,1-direction.x*direction.x));
             double ry=radius*Math.sqrt(Math.max(0,1-direction.y*direction.y));
             double rz=radius*Math.sqrt(Math.max(0,1-direction.z*direction.z));
-            minX=MathHelper.floor(Math.min(source.x,end.x-rx)-MESH_PADDING);maxX=MathHelper.floor(Math.max(source.x,end.x+rx)+MESH_PADDING);
-            minY=MathHelper.floor(Math.min(source.y,end.y-ry)-MESH_PADDING);maxY=MathHelper.floor(Math.max(source.y,end.y+ry)+MESH_PADDING);
-            minZ=MathHelper.floor(Math.min(source.z,end.z-rz)-MESH_PADDING);maxZ=MathHelper.floor(Math.max(source.z,end.z+rz)+MESH_PADDING);
+            double startScale=SAMPLE_APERTURE/radius;
+            minX=MathHelper.floor(Math.min(source.x-rx*startScale,end.x-rx)-MESH_PADDING);maxX=MathHelper.floor(Math.max(source.x+rx*startScale,end.x+rx)+MESH_PADDING);
+            minY=MathHelper.floor(Math.min(source.y-ry*startScale,end.y-ry)-MESH_PADDING);maxY=MathHelper.floor(Math.max(source.y+ry*startScale,end.y+ry)+MESH_PADDING);
+            minZ=MathHelper.floor(Math.min(source.z-rz*startScale,end.z-rz)-MESH_PADDING);maxZ=MathHelper.floor(Math.max(source.z+rz*startScale,end.z+rz)+MESH_PADDING);
             x=minX;y=minY;z=minZ;
         }
 
@@ -243,7 +250,7 @@ public final class SearchlightRenderer {
                 else{
                     double dx=x+.5-source.x,dy=y+.5-source.y,dz=z+.5-source.z;
                     double along=dx*direction.x+dy*direction.y+dz*direction.z;
-                    double radius=Math.max(0,along)*SAMPLE_TANGENT+MESH_PADDING;
+                    double radius=SAMPLE_APERTURE+Math.max(0,along)*SAMPLE_TANGENT+MESH_PADDING;
                     if(along>=-MESH_PADDING&&along<=RANGE+MESH_PADDING&&dx*dx+dy*dy+dz*dz-along*along<=radius*radius){
                         BlockState state=section.getBlockState(x&15,y&15,z&15);
                         if(state.getRenderType()==BlockRenderType.MODEL)bakeBlock(heli,origin,new BlockPos(x,y,z),state,random,vertices);
@@ -441,8 +448,8 @@ public final class SearchlightRenderer {
         Quaternionf body=HeliView.bodyRotation(heli,delta),aim=new Quaternionf(body).mul(gimbal(heli,delta));
         Vector3f forward=new Vector3f(0,0,1).rotate(aim),pivot=new Vector3f((float)PIVOT.x,(float)PIVOT.y,(float)PIVOT.z).rotate(body);
         Vec3d direction=new Vec3d(forward.x,forward.y,forward.z).normalize();
-        Vec3d source=origin.add(pivot.x,pivot.y,pivot.z).add(direction.multiply(.215));
-        if(frustum!=null&&!frustum.isVisible(new Box(source,source.add(direction.multiply(RANGE))).expand(RANGE*SAMPLE_TANGENT)))return;
+        Vec3d source=origin.add(pivot.x,pivot.y,pivot.z).add(direction.multiply(EMITTER_OFFSET));
+        if(frustum!=null&&!frustum.isVisible(new Box(source,source.add(direction.multiply(RANGE))).expand(SAMPLE_APERTURE+RANGE*SAMPLE_TANGENT)))return;
         long tick=heli.getWorld().getTime();LightCache cache=CACHE.computeIfAbsent(heli,key->new LightCache());
         Projection projection=cache.projection;
         boolean urgent=projection==null||!covers(source,direction,projection.source,projection.direction);
@@ -480,6 +487,7 @@ public final class SearchlightRenderer {
         shader.getUniform("LightMatrix").set(projection.shadowMatrix);
         shader.getUniform("LightOrigin").set((float)localSource.x,(float)localSource.y,(float)localSource.z);
         shader.getUniform("LightDirection").set((float)direction.x,(float)direction.y,(float)direction.z);
+        shader.getUniform("LightConeOffset").set((float)CONE_OFFSET);
         shader.bind();
         if(!projection.vertices.isEmpty()){projection.buffer.bind();projection.buffer.draw();}
         if(dynamic){
@@ -497,12 +505,12 @@ public final class SearchlightRenderer {
      * 排查：转向时熄灯先查是否跳过紧急构建；不能仅删除覆盖检查后复用缺少遮挡物的网格。
      */
     private static boolean covers(Vec3d source,Vec3d direction,Vec3d cachedSource,Vec3d cachedDirection){
-        double shift=source.distanceTo(cachedSource)+RANGE*Math.sqrt(Math.max(0,2-2*direction.dotProduct(cachedDirection)));
+        double shift=source.distanceTo(cachedSource)+(RANGE+CONE_OFFSET)*Math.sqrt(Math.max(0,2-2*direction.dotProduct(cachedDirection)));
         return shift<=MESH_PADDING;
     }
 
     /**
-     * 功能：从灯头实际位置沿云台方向绘制透视深度；不使用太阳方向或竖直投影。
+     * 功能：从灯面后方的虚拟锥尖沿云台方向绘制透视深度，近裁剪排除真实灯面后方的遮挡物。
      * 引用 net.minecraft.client.gl.SimpleFramebuffer 保存独立阴影；共用地表及动态实体模型，按材质透明度裁切。
      * 端侧：渲染线程；结束时恢复世界帧缓冲、视口和合成状态，模式 4 不读取自身深度附件。
      */
@@ -513,13 +521,13 @@ public final class SearchlightRenderer {
         int[] viewport=new int[4];GL11C.glGetIntegerv(GL11C.GL_VIEWPORT,viewport);
         try{
             if(projection.shadow==null)projection.shadow=new SimpleFramebuffer(SHADOW_SIZE,SHADOW_SIZE,true,MinecraftClient.IS_SYSTEM_MAC);
-            Vec3d local=source.subtract(projection.origin);
+            Vec3d local=source.subtract(projection.origin).subtract(direction.multiply(CONE_OFFSET));
             // 灯头接近竖直时切换参考上方向，避免 lookAt 的叉积退化。
             Vec3d up=Math.abs(direction.y)>.98?new Vec3d(0,0,1):new Vec3d(0,1,0);
             Matrix4f lightView=new Matrix4f().lookAt((float)local.x,(float)local.y,(float)local.z,
                     (float)(local.x+direction.x),(float)(local.y+direction.y),(float)(local.z+direction.z),
                     (float)up.x,(float)up.y,(float)up.z);
-            Matrix4f lightProjection=new Matrix4f().perspective((float)Math.toRadians(28),1,SHADOW_NEAR,(float)RANGE);
+            Matrix4f lightProjection=new Matrix4f().perspective((float)Math.toRadians(28),1,(float)CONE_OFFSET,(float)(RANGE+CONE_OFFSET));
             projection.shadowMatrix=new Matrix4f(lightProjection).mul(lightView);
             projection.shadow.beginWrite(true);
             RenderSystem.disableBlend();RenderSystem.enableDepthTest();RenderSystem.depthFunc(GL11C.GL_LEQUAL);

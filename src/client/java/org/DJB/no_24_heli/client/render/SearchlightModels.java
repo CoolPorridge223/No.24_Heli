@@ -115,7 +115,7 @@ final class SearchlightModels implements VertexConsumerProvider,AutoCloseable {
             }
             // 六格余量容纳直升机尾梁和旋翼，实体随后按实际包围球与光锥相交筛选。
             Box lightBounds=new Box(source,source.add(direction.multiply(SearchlightRenderer.RANGE)))
-                    .expand(SearchlightRenderer.RANGE*SearchlightRenderer.SAMPLE_TANGENT+HELICOPTER_MARGIN);
+                    .expand(SearchlightRenderer.SAMPLE_APERTURE+SearchlightRenderer.RANGE*SearchlightRenderer.SAMPLE_TANGENT+HELICOPTER_MARGIN);
             for(Entity entity:world.getOtherEntities(heli,lightBounds)){
                 if(entity.isRemoved()||entity.isInvisible()||!intersects(entity,source,direction))continue;
                 var renderer=client.getEntityRenderDispatcher().getRenderer(entity);
@@ -149,14 +149,14 @@ final class SearchlightModels implements VertexConsumerProvider,AutoCloseable {
     }
 
     /**
-     * 功能：保守检查实体包围球与有限光锥是否相交；引用 net.minecraft.util.math.Box 扩展飞机外露部件。
+     * 功能：保守检查实体包围球与圆形灯面起始的有限圆台光束是否相交；引用 net.minecraft.util.math.Box 扩展飞机外露部件。
      * 端侧：客户端渲染线程；只筛选候选，实际受光与遮挡仍由模型片元决定，不能用包围盒代替实体几何。
      */
     private static boolean intersects(Entity entity,Vec3d source,Vec3d direction){
         Box bounds=entity instanceof HelicopterEntity?entity.getBoundingBox().expand(HELICOPTER_MARGIN):entity.getBoundingBox();
         double radius=new Vec3d(bounds.getLengthX(),bounds.getLengthY(),bounds.getLengthZ()).length()*.5;
         Vec3d relative=bounds.getCenter().subtract(source);double along=relative.dotProduct(direction);
-        double coneRadius=Math.max(0,along)*SearchlightRenderer.SAMPLE_TANGENT
+        double coneRadius=SearchlightRenderer.SAMPLE_APERTURE+Math.max(0,along)*SearchlightRenderer.SAMPLE_TANGENT
                 +radius*Math.sqrt(1+SearchlightRenderer.SAMPLE_TANGENT*SearchlightRenderer.SAMPLE_TANGENT);
         return along+radius>=0&&along-radius<=SearchlightRenderer.RANGE
                 &&relative.lengthSquared()-along*along<=coneRadius*coneRadius;

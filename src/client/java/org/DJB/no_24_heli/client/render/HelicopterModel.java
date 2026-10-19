@@ -125,7 +125,8 @@ public final class HelicopterModel {
                 lightPivot.add(0, .17, 0), .065, .055, METAL);
         ellipsoid(shell, lightPivot, new Vec3d(.17, .19, .19), WHITE);
         ellipsoid(searchlight,new Vec3d(0,0,.177),new Vec3d(.115,.115,.03),DARK);
-        ellipsoid(searchlightLens,new Vec3d(0,0,.205),new Vec3d(.082,.082,.006),WHITE);
+        ellipsoid(searchlightLens,new Vec3d(0,0,SearchlightRenderer.LENS_CENTER),
+                new Vec3d(SearchlightRenderer.LENS_RADIUS,SearchlightRenderer.LENS_RADIUS,SearchlightRenderer.LENS_DEPTH),WHITE);
         for(double side:new double[]{-1,1})
             ellipsoid(navigationLights,new Vec3d(side*.47,2.42,-.35),new Vec3d(.04,.03,.045),WHITE);
         ellipsoid(navigationLights,new Vec3d(0,3.025,-5.55),new Vec3d(.03,.025,.04),WHITE);

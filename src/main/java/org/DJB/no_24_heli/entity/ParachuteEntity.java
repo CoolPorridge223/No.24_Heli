@@ -72,8 +72,11 @@ public final class ParachuteEntity extends Entity {
     private int emptyTicks, detachedTicks, flyingTicks;
     /** 客户端追踪插值；气动和故障只由服务端决定。 */
     private int lerpTicks, previousOpening;
-    /** 最近布面快照的客户端年龄，用于跨两 tick 插值，避免每帧计时归零造成回跳。 */
-    private int clothSnapshotAge;
+    /** 快照过渡的时间常数为一客户端 tick；连续追踪目标，包间隔波动时也不突然停住。 */
+    private static final double CLOTH_SMOOTHING_TICKS = 1;
+    /** 客户端最近显示时间与混合比例；新包从该显示位置继续，不能回退到上一权威快照。 */
+    private double clothSnapshotTime, clothRenderTime;
+    private float clothBlend = 1;
     private double lerpX, lerpY, lerpZ;
     private float lerpYaw, previousBank, previousCanopyPitch;
 
@@ -271,7 +274,8 @@ public final class ParachuteEntity extends Entity {
     @Override public void onTrackedDataSet(TrackedData<?> data) {
         super.onTrackedDataSet(data);
         if (CLOTH.equals(data) && getWorld().isClient) {
-            cloth.read(dataTracker.get(CLOTH)); clothSnapshotAge = age;
+            cloth.read(dataTracker.get(CLOTH), clothBlend);
+            clothSnapshotTime = Math.max(age, clothRenderTime); clothBlend = 0;
         }
     }
     /** 原版追踪位置插值，布面世界坐标单独插值。 */
@@ -292,15 +296,23 @@ public final class ParachuteEntity extends Entity {
     public boolean needsPull() { return mode() == ACTIVE && failure() == JAMMED; }
     /** 按归一化翼展/弦长采样世界曲面，减去实体插值原点，避免显示细分密度耦合到实体。 */
     public Vec3d loosePoint(double x, double z, float delta) {
-        float blend = getWorld().isClient ? MathHelper.clamp((age - clothSnapshotAge + delta) / 2, 0, 1) : 1;
-        return cloth.point(x * ParachuteCanopy.SPAN, z * ParachuteCanopy.CHORD, blend)
+        return cloth.point(x * ParachuteCanopy.SPAN, z * ParachuteCanopy.CHORD, clothBlend(delta))
                 .subtract(getLerpedPos(delta));
     }
-    /** 柔绳中间节点的同帧插值；第一节点用当前人物胸口，消除网络延迟造成的绳端脱开。 */
+    /** 柔绳中间节点的同帧插值；第一节点取当前背包穿绳点，消除网络延迟造成的绳端脱开。 */
     public Vec3d linePoint(int line, int node, float delta) {
-        if (node == 0) return org.DJB.no_24_heli.flight.ParachuteSuspension.anchor(harness(delta), line);
-        float blend = getWorld().isClient ? MathHelper.clamp((age - clothSnapshotAge + delta) / 2, 0, 1) : 1;
-        return cloth.linePoint(line, node, blend).subtract(getLerpedPos(delta));
+        if (node == 0) return org.DJB.no_24_heli.flight.ParachuteSuspension.anchor(harness(delta), line, harnessYaw(delta));
+        return cloth.linePoint(line, node, clothBlend(delta)).subtract(getLerpedPos(delta));
+    }
+    /**
+     * 布面和柔绳共享连续衰减的显示时间；net.minecraft.entity.Entity#age 加帧内 delta 与帧率无关。
+     * 仅客户端记录显示进度，服务端始终读取权威终点；不外推，避免越过碰撞面。
+     */
+    private float clothBlend(float delta) {
+        if (!getWorld().isClient) return 1;
+        clothRenderTime = age + (double) delta;
+        clothBlend = (float) (1 - Math.exp(-Math.max(0, clothRenderTime - clothSnapshotTime) / CLOTH_SMOOTHING_TICKS));
+        return clothBlend;
     }
     /** 存档升级产生的短暂缺省绳网不能当成世界原点坐标绘制。 */
     public boolean hasLines() { return cloth.hasLines(); }
@@ -308,6 +320,11 @@ public final class ParachuteEntity extends Entity {
     public Vec3d harness(float delta) {
         Entity player = getWorld().getEntityById(dataTracker.get(OWNER));
         return player == null ? Vec3d.ZERO : player.getLerpedPos(delta).add(0, 1.25, 0).subtract(getLerpedPos(delta));
+    }
+    /** net.minecraft.entity.LivingEntity 的身体航向让落地绳根跟随背包，不能只跟随玩家观察方向。 */
+    public float harnessYaw(float delta) {
+        Entity player = getWorld().getEntityById(dataTracker.get(OWNER));
+        return player instanceof LivingEntity owner ? MathHelper.lerpAngleDegrees(delta, owner.prevBodyYaw, owner.bodyYaw) : getYaw();
     }
     /** 开伞动画不会在卡伞状态自行越过服务端进度。 */
     public double openingTicks(float delta) {

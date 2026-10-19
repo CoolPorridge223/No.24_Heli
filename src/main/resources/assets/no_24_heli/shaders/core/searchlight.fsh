@@ -13,6 +13,7 @@ uniform float DepthScale;
 uniform vec2 DepthJitter;
 uniform vec3 LightOrigin;
 uniform vec3 LightDirection;
+uniform float LightConeOffset;
 uniform int LightMode;
 uniform vec4 LampColor;
 uniform float FogStart;
@@ -76,9 +77,12 @@ void main() {
     }
     if (depth >= 1.0 || abs(viewPosition.z - savedZ) > tolerance) discard;
     vec3 relative = localPosition - LightOrigin;
+    // 锥尖后移使灯面截面与镜片同大；真实灯面后方不发光，阴影近裁剪也落在该平面。
+    if (dot(relative, LightDirection) < 0.0) discard;
     float distanceToLight = length(relative);
-    float cone = dot(relative / max(distanceToLight, 0.001), LightDirection);
-    float incidence = max(dot(normalize(surfaceNormal), -relative / max(distanceToLight, 0.001)), 0.0);
+    vec3 ray = normalize(relative + LightDirection * LightConeOffset);
+    float cone = dot(ray, LightDirection);
+    float incidence = max(dot(normalize(surfaceNormal), -ray), 0.0);
     float visibility = lightVisibility();
     float strength = smoothstep(0.9781476, 0.9975641, cone)
         * max(0.0, 1.0 - distanceToLight * distanceToLight / 4096.0) * fogVisibility * sqrt(incidence) * visibility;
