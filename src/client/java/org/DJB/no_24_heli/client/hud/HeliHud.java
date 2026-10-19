@@ -167,6 +167,7 @@ public final class HeliHud {
         m.pop();
         m.pop();
         int warningY=10;
+        if(s.landingBlocked){warn(ctx,"landing_blocked",warningY);warningY+=11;}
         if(s.tail<20){warn(ctx,"tail",warningY);warningY+=11;}
         if(s.rotor<50){warn(ctx,"rotor",warningY);warningY+=11;}
         if(s.fuel<80){warn(ctx,"fuel",warningY);warningY+=11;}

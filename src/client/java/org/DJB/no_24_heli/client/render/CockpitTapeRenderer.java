@@ -41,7 +41,7 @@ public final class CockpitTapeRenderer {
      */
     public void draw(MatrixStack m, VertexConsumer b, double x, double top, double width, double height,
             boolean speed, double value, int light) {
-        m.push(); m.translate(x, top, .014); m.scale((float) (width / WIDTH), (float) (-height / HEIGHT), 1);
+        m.push(); m.translate(x, top, CockpitDashboardRenderer.FACE_Z + .0005); m.scale((float) (width / WIDTH), (float) (-height / HEIGHT), 1);
         Clip all = new Clip(0, 0, WIDTH, HEIGHT);
         rect(m, b, 0, 0, WIDTH, HEIGHT, 0, BORDER, all, light);
         rect(m, b, 1, 1, WIDTH - 1, HEIGHT - 1, .0002, BACKGROUND, all, light);

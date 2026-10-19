@@ -121,7 +121,7 @@ public class HelicopterEntity extends Entity {
     }
     /** 难度切换只重设辅助默认状态，保留当前速度、燃油、损伤与总距。 */
     public void applyDifficulty(HeliConfig.Difficulty mode){
-        stopAutopilot();flight.autoPhase=0;
+        stopAutopilot();flight.cancelAutoFlight();
         boolean hardcore=mode!=HeliConfig.Difficulty.CASUAL;
         flight.difficultyMode=mode.ordinal();flight.hardcoreMode=hardcore;flight.trim=!hardcore;flight.altitudeHold=!hardcore;flight.cruise=false;
         flight.targetAltitude=getY();flight.targetSpeed=Math.hypot(flight.vx,flight.vz);
@@ -144,7 +144,7 @@ public class HelicopterEntity extends Entity {
     /** 任何离座途径都清除旧确认窗口；驾驶员离座时立即停止导航，副驾驶离座不干扰驾驶。 */
     @Override protected void removePassenger(Entity passenger){
         boolean pilot=isPilot(passenger);super.removePassenger(passenger);
-        exitWarnings.remove(passenger.getUuid());if(pilot){stopAutopilot();flight.autoPhase=0;}
+        exitWarnings.remove(passenger.getUuid());if(pilot){stopAutopilot();flight.cancelAutoFlight();}
         if(passenger.getUuid().equals(ropeCopilot))ropeCopilot=null;
     }
     @Override public LivingEntity getControllingPassenger(){return null;}
@@ -172,7 +172,7 @@ public class HelicopterEntity extends Entity {
         // 原始输入在写入自动驾驶指令之前判断；任何有效手动轴或辅助切换均交还控制权。
         boolean manual=Math.abs(p.pitch())>.02||Math.abs(p.roll())>.02||Math.abs(p.pedal())>.02||Math.abs(p.collective())>.02;
         if((flight.autopilot||flight.autoPhase!=0)&&(manual||(p.actions()&(ControlPayload.ENGINE|ControlPayload.ALTITUDE|ControlPayload.TRIM|ControlPayload.CRUISE))!=0)){
-            stopAutopilot();flight.autoPhase=0;message(player,"pilot_takeover");
+            stopAutopilot();flight.cancelAutoFlight();flight.targetAltitude=getY();message(player,"pilot_takeover");
         }
         // 所有辅助请求都在服务端挡住；按钮变灰只是提示，不能作为权限边界。
         int assisted=ControlPayload.ALTITUDE|ControlPayload.TRIM|ControlPayload.CRUISE|ControlPayload.AUTOPILOT|ControlPayload.AUTO_FLIGHT;
@@ -180,11 +180,11 @@ public class HelicopterEntity extends Entity {
         if((p.actions()&ControlPayload.AUTO_FLIGHT)!=0&&tick-lastActions>=5){lastActions=tick;toggleAutoFlight(player);return;}
         if((p.actions()&ControlPayload.AUTOPILOT)!=0&&tick-lastActions>=5){
             lastActions=tick;
-            if(flight.autopilot){stopAutopilot();flight.autoPhase=0;message(player,"pilot_takeover");}
+            if(flight.autopilot){stopAutopilot();flight.cancelAutoFlight();message(player,"pilot_takeover");}
             else if(heightAboveGround()<10){message(player,"autopilot_low");}
             else if(!manual&&flight.waypoint&&flight.running&&flight.armed&&!isOnGround()&&!isTouchingWater()){
                 flight.priorTrim=flight.trim;flight.priorAltitude=flight.altitudeHold;flight.priorCruise=flight.cruise;
-                navigation.reset();flight.autoPhase=0;flight.autopilot=true;flight.navAligned=false;flight.targetAltitude=getY();message(player,"autopilot_on");
+                navigation.reset();flight.cancelAutoFlight();flight.autopilot=true;flight.navAligned=false;flight.targetAltitude=getY();message(player,"autopilot_on");
             }else message(player,"autopilot_unavailable");
         }
         // 连续轴量每 tick 接收一次，离散按键另行限流，避免同 tick 的中性包吞掉开关动作。
@@ -300,13 +300,24 @@ public class HelicopterEntity extends Entity {
         airborneTicks=grounded?0:Math.min(3,airborneTicks+1);
         entityContactsEnabled=(airborneTicks>=3||flight.rpm>.05)&&!flight.wreck;
         // 起降阶段每tick复核动力、驾驶员和模式；不会因为客户端断线而保留无人起飞任务。
+        boolean takeoffObstructed=false;
         if(flight.autoPhase!=0){
-            if(!(pilot() instanceof PlayerEntity)||flight.hardcoreMode||!flight.running||flight.engine<=0||flight.rotor<40||flight.fuel<=0||flight.wreck||isTouchingWater())flight.autoPhase=0;
-            // 支撑探测会提前约 0.08 格判定近地；必须等碰撞系统确认真正接地后才结束降落并关机。
-            else if(flight.autoPhase==3&&isOnGround()){
-                flight.autoPhase=0;flight.running=false;flight.collective=0;flight.altitudeHold=false;flight.clearInputs();
-                if(pilot() instanceof PlayerEntity p)message(p,"auto_landed");
-            }else AutoFlightController.step(flight,getX(),getY(),getZ(),grounded);
+            if(!(pilot() instanceof PlayerEntity)||flight.hardcoreMode||!flight.running||flight.engine<=0||flight.rotor<40||flight.fuel<=0||flight.wreck||isTouchingWater())flight.cancelAutoFlight();
+            else if((flight.autoPhase==1||flight.autoPhase==2)&&!HelicopterCollision.verticalClearance(this,
+                    Math.max(0,flight.autoY-getY()))){
+                // 剩余整段爬升净空失效就结束任务，捕获当前位置并制止上冲；不在低顶下继续尝试爬升。
+                takeoffObstructed=true;flight.cancelAutoFlight();flight.clearInputs();flight.altitudeAdjusting=false;
+                flight.targetAltitude=getY();flight.vy=Math.min(0,flight.vy);
+                if(pilot() instanceof PlayerEntity p)message(p,"auto_takeoff_blocked");
+            }
+            else{
+                updateLandingObstruction();
+                // 支撑探测会提前约 0.08 格判定近地；只在通道畅通且碰撞系统确认真正接地后结束降落并关机。
+                if(flight.autoPhase==3&&!flight.landingBlocked&&isOnGround()){
+                    flight.cancelAutoFlight();flight.running=false;flight.collective=0;flight.altitudeHold=false;flight.clearInputs();
+                    if(pilot() instanceof PlayerEntity p)message(p,"auto_landed");
+                }else AutoFlightController.step(flight,getX(),getY(),getZ(),grounded);
+            }
         }
         if(flight.autopilot){
             if(!(pilot() instanceof PlayerEntity)||grounded||!flight.running||flight.engine<=0||flight.fuel<=0||flight.wreck)stopAutopilot();
@@ -318,6 +329,9 @@ public class HelicopterEntity extends Entity {
         // 自动飞行也驱动双杆；手动输入已在收包时保存，接地物理不能清掉其他乘员看到的杆量。
         if(flight.autopilot||flight.autoPhase!=0){flight.stickPitch=flight.cyclicPitch;flight.stickRoll=flight.cyclicRoll;}
         FlightPhysics.step(flight,physicsConfig,grounded,rain,getY(),getWorld().getTime());
+        if(takeoffObstructed)flight.vy=Math.min(0,flight.vy);
+        // 暂停当 tick 就阻止剩余下降惯性及总距渐变带来的下沉；位置仍经 Entity.move 和正常碰撞处理。
+        if(flight.landingBlocked)flight.vy=Math.max(0,flight.vy);
         flight.takeoffPowerLow=!flight.wreck&&grounded&&flight.fuel>0&&flight.engine>0
                 &&!FlightPhysics.hasTakeoffPower(flight,rain);
         if(!flight.wreck&&flight.hull<=0)destroy(false);
@@ -537,6 +551,7 @@ public class HelicopterEntity extends Entity {
         n.putBoolean("Searchlight",flight.searchlight&&!flight.wreck);
         n.putFloat("SearchlightYaw",flight.searchlightYaw);n.putFloat("SearchlightPitch",flight.searchlightPitch);
         n.putInt("DifficultyMode",flight.difficultyMode);n.putInt("AutoPhase",flight.autoPhase);
+        n.putBoolean("LandingBlocked",flight.landingBlocked);
         n.putBoolean("TakeoffPowerLow",flight.takeoffPowerLow);
         n.putInt("RadioTrack",flight.radioTrack);n.putInt("RadioRevision",flight.radioRevision);n.putLong("RadioStarted",flight.radioStartedTick);
         n.putBoolean("Waypoint",flight.waypoint);n.putDouble("WaypointX",flight.waypointX);n.putDouble("WaypointZ",flight.waypointZ);
@@ -560,6 +575,7 @@ public class HelicopterEntity extends Entity {
         flight.searchlightPitch=(float)number(n,"SearchlightPitch",-65,-85,-15);
         flight.difficultyMode=n.contains("DifficultyMode")?Math.clamp(n.getInt("DifficultyMode"),0,2):HeliConfig.INSTANCE.difficulty.ordinal();
         flight.autoPhase=Math.clamp(n.getInt("AutoPhase"),0,3);
+        flight.landingBlocked=flight.autoPhase==3&&n.getBoolean("LandingBlocked");
         flight.takeoffPowerLow=n.getBoolean("TakeoffPowerLow");
         flight.radioTrack=n.contains("RadioTrack")?Math.clamp(n.getInt("RadioTrack"),-1,7):-1;
         flight.radioRevision=n.getInt("RadioRevision");flight.radioStartedTick=n.getLong("RadioStarted");
@@ -573,18 +589,18 @@ public class HelicopterEntity extends Entity {
         ropeCopilot=n.containsUuid("RopeCopilot")?n.getUuid("RopeCopilot"):null;flight.running=n.getBoolean("Running");flight.armed=n.getBoolean("Armed");flight.altitudeHold=n.getBoolean("Altitude");flight.trim=n.contains("Trim")?n.getBoolean("Trim"):!flight.hardcoreMode;flight.cruise=n.getBoolean("Cruise");flight.gear=!n.contains("Gear")||n.getBoolean("Gear");flight.wreck=n.getBoolean("Wreck");flight.rope=n.getBoolean("Rope");flight.paint=Math.clamp(n.contains("Paint")?n.getInt("Paint"):FlightState.POLICE_PAINT,0,FlightState.POLICE_PAINT);ropeLength=Math.clamp(n.getInt("RopeLength"),0,24);
     }
     /**
-     * K为可撤销的起降任务：地面开始十格起飞，空中尝试垂直降落，再按一次取消。
+     * K为可撤销的起降任务：地面开始二十格起飞，空中尝试垂直降落，再按一次取消。
      * 降落前对机体中心和四角分别向下探测，拒绝水面、悬崖边以及高低不平的支撑面；
-     * 起飞使用真实分部盒检查整条升空通道，避免宽相位空角误挡或转动桨盘撞顶。
+     * 起飞使用真实分部盒检查整条升空通道；降落的实体通道在启动时和下降期间持续复核，占用只暂停任务。
      */
     private void toggleAutoFlight(PlayerEntity player){
-        if(flight.autoPhase!=0){flight.autoPhase=0;flight.clearInputs();flight.targetAltitude=getY();message(player,"pilot_takeover");return;}
+        if(flight.autoPhase!=0){flight.cancelAutoFlight();flight.clearInputs();flight.targetAltitude=getY();message(player,"pilot_takeover");return;}
         if(flight.hardcoreMode){message(player,"auto_mode_disabled");return;}
         if(flight.fuel<=0||flight.engine<30||isTouchingWater()){message(player,"auto_unsafe");return;}
         if(flight.rotor<70){message(player,"auto_rotor_damaged");return;}
-        boolean ground=isOnGround()||hasBlockSupport();double target=getY()+10;
+        boolean ground=isOnGround()||hasBlockSupport();double target=getY()+AutoFlightController.TAKEOFF_HEIGHT;
         if(ground&&!FlightPhysics.hasTakeoffPower(flight,isRotorInRain())){message(player,"takeoff_power_low");return;}
-        if(ground){if(!HelicopterCollision.verticalClearance(this,10)){message(player,"auto_unsafe");return;}}
+        if(ground){if(!HelicopterCollision.verticalClearance(this,AutoFlightController.TAKEOFF_HEIGHT)){message(player,"auto_takeoff_blocked");return;}}
         else{
             Double surface=null;
             for(double[] offset:new double[][]{{0,0},{-1.5,-1.5},{1.5,-1.5},{-1.5,1.5},{1.5,1.5}}){
@@ -598,7 +614,21 @@ public class HelicopterEntity extends Entity {
         stopAutopilot();flight.autoPhase=ground?1:3;flight.autoX=getX();flight.autoZ=getZ();flight.autoY=target;
         // 起飞接管沿用当前总距，预转期间和离地后均由高度控制渐变调整。
         flight.running=true;flight.gear=true;flight.clearInputs();flight.altitudeAdjusting=false;
+        updateLandingObstruction();
         message(player,ground?"auto_takeoff":"auto_landing");
+    }
+
+    /**
+     * 功能：自动降落每 tick 复核实体占用，首次受阻捕获暂停高度；实体离开后恢复原 autoY 目标。
+     * 引用 MC API：net.minecraft.entity.Entity#getY 获取本机高度；实体查询交给 HelicopterCollision。
+     * 端侧/线程：服务端主线程；参数/返回：无；副作用：更新同步警告、暂停高度并制止向下速度。
+     * 排查：不能覆盖 autoY，否则通道清空后会停在半空；取消任务统一清除 landingBlocked，防止灯和语音残留。
+     */
+    private void updateLandingObstruction(){
+        boolean blocked=flight.autoPhase==3&&HelicopterCollision.landingObstructed(this,flight.autoY);
+        if(blocked&&!flight.landingBlocked)flight.targetAltitude=getY();
+        flight.landingBlocked=blocked;
+        if(blocked)flight.vy=Math.max(0,flight.vy);
     }
 
     /** 驾驶与副驾驶都可选曲；服务器只接受固定八槽，并以5tick冷却避免恶意反复切歌。 */
@@ -655,7 +685,7 @@ public class HelicopterEntity extends Entity {
         if(!p.clear()&&getWorld() instanceof net.minecraft.server.world.ServerWorld sw
                 &&(AirspaceState.get(sw).zones().stream().anyMatch(z->z.contains(p.x(),p.z()))
                     ||HelipadBlock.isRestrictedTarget(sw,p.x(),p.z()))){message(player,"waypoint_restricted");return;}
-        stopAutopilot();navigation.reset();flight.autoPhase=0;flight.waypoint=!p.clear();flight.waypointX=p.x();flight.waypointZ=p.z();
+        stopAutopilot();navigation.reset();flight.cancelAutoFlight();flight.waypoint=!p.clear();flight.waypointX=p.x();flight.waypointZ=p.z();
         message(player,p.clear()?"waypoint_clear":"waypoint_set");dataTracker.set(STATUS,saveFlight());
     }
     /** 第二次独立按下必须发生在 60 tick 内；按住 Shift 不会连续确认。服务器最终裁决。 */
@@ -673,7 +703,7 @@ public class HelicopterEntity extends Entity {
     }
     @Override protected void writeCustomDataToNbt(NbtCompound n){n.put("Flight",saveFlight());var items=net.minecraft.util.collection.DefaultedList.ofSize(19,ItemStack.EMPTY);for(int i=0;i<19;i++)items.set(i,cargo.getStack(i));Inventories.writeNbt(n,items,getRegistryManager());}
     @Override protected void readCustomDataFromNbt(NbtCompound n){loadFlight(n.getCompound("Flight"));var items=net.minecraft.util.collection.DefaultedList.ofSize(19,ItemStack.EMPTY);Inventories.readNbt(n,items,getRegistryManager());for(int i=0;i<19;i++)cargo.setStack(i,items.get(i));// 飞行任务不跨重载恢复，电台也默认静音；导航点和机体数据仍保留。
-        flight.autoPhase=0;flight.radioTrack=-1;flight.autopilot=false;flight.restricted=false;
+        flight.cancelAutoFlight();flight.radioTrack=-1;flight.autopilot=false;flight.restricted=false;
         if(n.getCompound("Flight").getInt("Version")<4)flight.cruise=false;
         flight.clearInputs();flight.rope=false;ropeLength=0;dataTracker.set(STATUS,saveFlight());}
 }

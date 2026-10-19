@@ -59,7 +59,8 @@ void main() {
     float depth = texture(SceneDepth, screen * DepthScale + DepthJitter).r;
     vec4 savedPosition = InverseProjection * vec4(screen * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
     float savedZ = savedPosition.z / savedPosition.w;
-    float tolerance = max(LightMode == 2 || LightMode == 3 ? 0.005 : 0.08, fwidth(viewPosition.z) * 1.5 / DepthScale);
+    // 背光字形只保留半毫米基础容差，不能漏过紧贴表面的指针而呈现悬浮文字。
+    float tolerance = max(LightMode == 2 || LightMode == 3 ? 0.0005 : 0.08, fwidth(viewPosition.z) * 1.5 / DepthScale);
     if (viewPosition.z < savedZ - tolerance) discard;
     float fogVisibility = 1.0 - smoothstep(FogStart, max(FogStart + 0.001, FogEnd), vertexDistance);
     if (LightMode == 2 || LightMode == 3) {

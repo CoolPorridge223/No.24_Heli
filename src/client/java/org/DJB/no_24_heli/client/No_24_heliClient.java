@@ -3,10 +3,10 @@ package org.DJB.no_24_heli.client;
 
 import org.DJB.no_24_heli.No_24_heli;
 import org.DJB.no_24_heli.client.audio.RadioLibrary;
+import org.DJB.no_24_heli.client.audio.FlightVoiceManager;
 import org.DJB.no_24_heli.client.audio.RadioManager;
 import org.DJB.no_24_heli.client.audio.RotorSound;
 import org.DJB.no_24_heli.client.camera.HeliView;
-import org.DJB.no_24_heli.client.hud.GroundProximityWarning;
 import org.DJB.no_24_heli.client.hud.HeliHud;
 import org.DJB.no_24_heli.client.hud.HeliRadar;
 import org.DJB.no_24_heli.client.input.ParachuteClient;
@@ -161,7 +161,7 @@ public class No_24_heliClient implements ClientModInitializer {
             }
         });
         ClientTickEvents.END_CLIENT_TICK.register(client->{
-            migrateTrimKey(client);migrateViewKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);GroundProximityWarning.tick(client);
+            migrateTrimKey(client);migrateViewKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);FlightVoiceManager.tick(client);
             while(VIEW.wasPressed()){
                 if(client.currentScreen==null&&client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity)
                     HeliView.togglePerspective(client);

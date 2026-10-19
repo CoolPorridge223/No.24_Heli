@@ -40,7 +40,7 @@ public final class FlightPhysics {
     /** 雨和风由世界提供；落地判定与碰撞由实体在积分之后处理。 */
     public static void step(FlightState s, HeliConfig c, boolean grounded, boolean rain, double altitude, long tick) {
         // 约束在物理入口再次执行；即使旧存档或伪造数据包留下辅助标志，也不能绕过此模式。
-        if(c.unassisted()){s.trim=false;s.altitudeHold=false;s.cruise=false;s.autopilot=false;s.autoPhase=0;}
+        if(c.unassisted()){s.trim=false;s.altitudeHold=false;s.cruise=false;s.autopilot=false;s.cancelAutoFlight();}
         if (s.wreck) {
             s.rpm = approach(s.rpm, 0, .012);
             // 残骸保留空中坠落惯性，接地后静止；不进入完好飞机的飞控和辅助逻辑。

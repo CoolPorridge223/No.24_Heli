@@ -17,7 +17,7 @@ import org.DJB.no_24_heli.data.PilotEquipment;
 public final class ModItems {
     /** 头部槽位耳麦与一体化墨镜，单件堆叠，不增加防御值。 */
     public static final Item PILOT_HEADSET = new PilotEquipmentItem(PilotEquipment.HEADSET);
-    /** 与耳麦独立的飞行员目镜，日间减光、夜间夜视仅影响佩戴者画面。 */
+    /** 与耳麦独立的飞行员目镜，第一及第三人称夜视仅影响佩戴者画面，不改变日间亮度。 */
     public static final Item PILOT_GOGGLES = new PilotEquipmentItem(PilotEquipment.GOGGLES);
 
     /** 注册表工具不需要实例。 */

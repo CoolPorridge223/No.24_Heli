@@ -32,9 +32,12 @@ import org.DJB.no_24_heli.entity.HelicopterEntity;
  */
 @Environment(EnvType.CLIENT)
 public final class CockpitDashboardRenderer {
-    /** 表盘圆周 48 段；层深单位格，文字位于刻线前、指针后，针层间隔覆盖背光文字深度容差。 */
+    /** 表盘圆周 48 段，保持现有轮廓精度。 */
     private static final int SEGMENTS = 48;
-    private static final double FACE_Z = .012, INK_Z = .014, TEXT_Z = .015, NEEDLE_Z = .035;
+    /** 表面距主面板两毫米，方框表也读取同一基准，避免不同仪表悬在不同深度。 */
+    static final double FACE_Z = .002;
+    /** 刻线和文字位于面板前三毫米内，指针基准六毫米；文字仍位于刻线前、指针后。 */
+    private static final double INK_Z = .0025, TEXT_Z = .003, NEEDLE_Z = .006;
     /** 环境光下的外壳、表盘、文字及告警色；屏幕使用同一纯白实体底纹。 */
     private static final int CASE = 0xff343e47, BLACK = 0xff10191c, INK = 0xffd8eadc;
     private static final int GREEN = 0xff7ce3bc, AMBER = 0xffffd66b, RED = 0xffff6655;
@@ -119,7 +122,7 @@ public final class CockpitDashboardRenderer {
      */
     private void dial(MatrixStack m, VertexConsumer b, double cx, double cy, double r,
             String key, double value, double min, double max, String unit, int light) {
-        disk(m, b, cx, cy, r, FACE_Z - .004, 0xff89979a, light);
+        disk(m, b, cx, cy, r, FACE_Z - .001, 0xff89979a, light);
         disk(m, b, cx, cy, r - .008, FACE_Z, BLACK, light);
         for (int i = 0; i <= 20; i++) {
             double angle = Math.toRadians(-225 + i * 13.5);
@@ -147,7 +150,7 @@ public final class CockpitDashboardRenderer {
      */
     private void attitude(MatrixStack m, VertexConsumer b, double x, double y, double r,
             double pitch, double roll, int light) {
-        disk(m, b, x, y, r, FACE_Z - .004, 0xff89979a, light);
+        disk(m, b, x, y, r, FACE_Z - .001, 0xff89979a, light);
         // 沿圆内的水平细条裁切天地色，不用矩形背景穿出表圈。
         m.push(); m.translate(x, y, FACE_Z); m.multiply(RotationAxis.POSITIVE_Z.rotationDegrees((float) -roll));
         for (int row = -32; row < 32; row++) {
@@ -172,7 +175,7 @@ public final class CockpitDashboardRenderer {
      */
     private void radar(HelicopterEntity h, float delta, MatrixStack m, VertexConsumer b,
             double cx, double cy, double r, int light) {
-        disk(m, b, cx, cy, r + .008, FACE_Z - .004, 0xff89979a, light);
+        disk(m, b, cx, cy, r + .008, FACE_Z - .001, 0xff89979a, light);
         disk(m, b, cx, cy, r, FACE_Z, BLACK, light);
         for (int i = 0; i < SEGMENTS; i++) {
             double a = i * Math.PI * 2 / SEGMENTS, next = (i + 1) * Math.PI * 2 / SEGMENTS;
@@ -254,7 +257,7 @@ public final class CockpitDashboardRenderer {
     }
 
     /**
-     * 功能：在右侧双框排列十种异常与九种控制图标；引用 MC API：net.minecraft.util.math.Vec3d 绘制实体指示器。
+     * 功能：在右侧双框排列十一种异常与九种控制图标；引用 MC API：net.minecraft.util.math.Vec3d 绘制实体指示器。
      * 端侧：渲染线程；参数：h/m/b/light 为飞机及环境；返回：无；副作用：提交状态图标。
      * 排查：异常发生才点亮红/琥珀灯，控制启用显示绿色；近地警告只读取当前乘坐飞机。
      */
@@ -263,16 +266,17 @@ public final class CockpitDashboardRenderer {
         var player = MinecraftClient.getInstance().player;
         boolean sink = player != null && player.getVehicle() == h && GroundProximityWarning.warning();
         boolean[] faults = {s.engine < 20, s.rotor < 50, s.tail < 20, s.fuel < 80, s.hull < 35, s.tank < 35,
-                !s.running && !h.isOnGround() && s.armed, s.running && !s.armed, s.restricted, sink};
-        String[] warningKeys = {"engine", "rotor", "tail", "fuel", "hull", "tank", "autorotation", "spooling", "restricted", "sink"};
-        roundedPanel(m, b, .26, -.17, .80, .015, .006, 0xff586775, light);
+                !s.running && !h.isOnGround() && s.armed, s.running && !s.armed, s.restricted, sink, s.landingBlocked};
+        String[] warningKeys = {"engine", "rotor", "tail", "fuel", "hull", "tank", "autorotation", "spooling", "restricted", "sink", "landing_blocked"};
+        roundedPanel(m, b, .26, -.17, .80, .015, FACE_Z - .001, 0xff586775, light);
         rectangle(m, b, .27, -.16, .79, .005, FACE_Z, BLACK, light);
-        for (int i = 0; i < faults.length; i++) icon(m, b, warningKeys[i], .32 + i % 5 * .105,
-                -.035 - i / 5 * .075, .051, faults[i], i == 7 ? AMBER : RED, light);
+        // 上框改为两排六列容纳独立的降落占用灯，保持原框尺寸及下方控制灯的位置。
+        for (int i = 0; i < faults.length; i++) icon(m, b, warningKeys[i], .315 + i % 6 * .086,
+                -.035 - i / 6 * .075, .044, faults[i], i == 7 ? AMBER : RED, light);
         boolean[] enabled = {s.altitudeHold, s.trim, s.cruise, s.gear, s.autopilot, s.autoPhase == 1 || s.autoPhase == 2,
                 s.autoPhase == 3, s.waypoint,s.searchlight&&!s.wreck};
         String[] controlKeys = {"altitude", "trim", "cruise", "gear", "autopilot", "takeoff", "landing", "waypoint","searchlight"};
-        roundedPanel(m, b, .26, -.31, .80, -.185, .006, 0xff586775, light);
+        roundedPanel(m, b, .26, -.31, .80, -.185, FACE_Z - .001, 0xff586775, light);
         rectangle(m, b, .27, -.302, .79, -.193, FACE_Z, BLACK, light);
         for (int i = 0; i < enabled.length; i++) icon(m, b, controlKeys[i], .32 + i % 5 * .105,
                 -.217 - i / 5 * .057, .038, enabled[i], GREEN, light);
@@ -343,6 +347,12 @@ public final class CockpitDashboardRenderer {
             case "sink" -> {
                 stroke(m, b, -.95, -.8, 0, .9, color, light); stroke(m, b, 0, .9, .95, -.8, color, light);
                 stroke(m, b, .95, -.8, -.95, -.8, color, light); arrow(m, b, 0, .35, 0, -.45, color, light);
+            }
+            case "landing_blocked" -> {
+                arrow(m, b, 0, .95, 0, .05, color, light);
+                stroke(m, b, -.9, -.15, .9, -.15, color, light);
+                stroke(m, b, -.45, -.4, .45, -.4, color, light); stroke(m, b, .45, -.4, .45, -.9, color, light);
+                stroke(m, b, .45, -.9, -.45, -.9, color, light); stroke(m, b, -.45, -.9, -.45, -.4, color, light);
             }
         }
     }
@@ -454,17 +464,17 @@ public final class CockpitDashboardRenderer {
     }
 
     /**
-     * 功能：在几何结束后提交文字批次；启动文字复用灯光合成深度，避免光影再次压暗满亮度字体。
-     * 引用 MC API：net.minecraft.client.font.TextRenderer#draw 在停机时保留普通深度字体层。
+     * 功能：在几何结束后提交文字批次；先写入实际字形深度，启动时再补背光，避免仅靠背景面深度裁切字形。
+     * 引用 MC API：net.minecraft.client.font.TextRenderer#draw 始终使用普通深度字体层，背光沿用同一矩阵。
      * 端侧/线程：渲染线程；参数：vertices 为消费者提供者；返回：无；副作用：提交并清空单帧字体缓存。
      * 排查：Not building 错误查是否在几何中途请求字体图层，不能复用已被刷新过的消费者。
      */
     private void flushText(VertexConsumerProvider vertices,boolean powered) {
         var font = MinecraftClient.getInstance().textRenderer;
         for (Label label : labels) {
-            if(powered)SearchlightRenderer.queueText(label.value,label.x,label.y,label.color,label.matrix);
-            else font.draw(label.value, label.x, label.y, label.color, false, label.matrix,
+            font.draw(label.value, label.x, label.y, label.color, false, label.matrix,
                     vertices, TextRenderer.TextLayerType.NORMAL, 0, label.light);
+            if(powered)SearchlightRenderer.queueText(label.value,label.x,label.y,label.color,label.matrix);
         }
         labels.clear();
     }

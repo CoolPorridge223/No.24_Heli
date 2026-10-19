@@ -25,6 +25,8 @@ public final class HelicopterCollision {
     private static final double EPSILON = 1.0e-5;
     /** 静态净空容差大于移动接触误差，单位格；贴地停稳后的微小舍入差不能阻止起飞。 */
     private static final double CLEARANCE_EPSILON = EPSILON * 4;
+    /** 降落实体净空每侧保留半格，给途中走入的实体留出余量；单位格，不参与普通碰撞。 */
+    private static final double LANDING_ENTITY_MARGIN = .5;
     /** 机体角度每半度采样一次，尾端相邻采样位移小于六厘米，避免原地转向跳过薄障碍。 */
     private static final double ROTATION_STEP = .5;
     /** 原版世界轴，用于有向盒与轴对齐方块之间的十五轴分离检测。 */
@@ -356,10 +358,54 @@ public final class HelicopterCollision {
                     && block.maxY <= part.center.y + CLEARANCE_EPSILON;
             if ((part.intersects(block) && !leavingSupport) || part.sweep(block, movement) < 1) return false;
         }
-        for (HelicopterEntity other : candidates(heli.getWorld(), heli, area))
-            for (Shape part : parts) for (Shape target : shapes(other))
-                if (part.intersects(target) || part.sweep(target, movement) < 1) return false;
+        for (Entity other : heli.getWorld().getOtherEntities(heli, area.expand(QUERY_RADIUS),
+                other -> isFlightEntity(heli, other))) {
+            if (other instanceof HelicopterEntity aircraft) {
+                for (Shape part : parts) for (Shape target : shapes(aircraft))
+                    if (part.intersects(target) || part.sweep(target, movement) < 1) return false;
+            } else for (Shape part : parts)
+                if (part.intersects(other.getBoundingBox()) || part.sweep(other.getBoundingBox(), movement) < 1) return false;
+        }
         return true;
+    }
+
+    /**
+     * 功能：起降通道共用的外部实体筛选；引用 net.minecraft.entity.Entity#getRootVehicle 识别本机绳索乘员。
+     * 端侧：服务端主线程；参数：heli 为本机，other 为候选；返回：是否需检查；副作用：无。
+     * 排查：不能忽略所有玩家或所有绳索，只排除旁观者、已移除实体及本机乘员和本机绳索系统。
+     */
+    private static boolean isFlightEntity(HelicopterEntity heli, Entity other) {
+        return !other.isRemoved() && !other.isSpectator() && !heli.isConnectedThroughVehicle(other)
+                && !(other.getRootVehicle() instanceof RopeSeatEntity rope && rope.helicopter() == heli);
+    }
+
+    /**
+     * 功能：持续检查自动降落至目标高度的实体通道，包含已经重叠和途中进入的实体。
+     * 引用 MC API：net.minecraft.world.World#getOtherEntities 查询候选；net.minecraft.util.math.Vec3d 表示下降扫掠。
+     * 端侧/线程：服务端主线程；参数：heli 为本机，targetY 为原降落目标；返回：是否应暂停下降。
+     * 副作用：无；排查：不使用 canHit/isCollidable 过滤，玩家、生物、物品和停转飞机均需检测；
+     * 仅排除旁观者、移除实体、本机乘员和本机绳索系统；其他飞机按真实分部盒检查，避免大盒空角误报。
+     */
+    public static boolean landingObstructed(HelicopterEntity heli, double targetY) {
+        Vec3d movement = new Vec3d(0, Math.min(0, targetY - heli.getY()), 0);
+        List<Shape> parts = new ArrayList<>();
+        for (Shape part : shapes(heli, pose(heli), heli.getPos(), true)) {
+            Vec3d half = part.half.add(LANDING_ENTITY_MARGIN, LANDING_ENTITY_MARGIN, LANDING_ENTITY_MARGIN);
+            add(parts, part.part, new Box(half.negate(), half), part.center, part.rotation);
+        }
+        Box area = bounds(parts).stretch(movement);
+        for (Entity other : heli.getWorld().getOtherEntities(heli, area.expand(QUERY_RADIUS),
+                other -> isFlightEntity(heli, other))) {
+            if (other instanceof HelicopterEntity aircraft) {
+                for (Shape part : parts) for (Shape target : shapes(aircraft))
+                    if (part.intersects(target) || part.sweep(target, movement) < 1) return true;
+            } else {
+                Box target = other.getBoundingBox();
+                for (Shape part : parts)
+                    if (part.intersects(target) || part.sweep(target, movement) < 1) return true;
+            }
+        }
+        return false;
     }
 
     /** 原地旋转也检查尾部扫掠；受阻时停在最后安全姿态，记录部位与尾端线速度。 */

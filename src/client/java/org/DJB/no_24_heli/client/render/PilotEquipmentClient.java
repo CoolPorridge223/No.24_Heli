@@ -17,7 +17,7 @@ import org.DJB.no_24_heli.data.PilotEquipment;
 import org.DJB.no_24_heli.network.PilotEquipmentPayload;
 
 /**
- * 职责：接收装备外观，仅在本地玩家第一人称提供夜间夜视强度，不写药水状态或游戏亮度选项。
+ * 职责：接收装备外观，为本地玩家第一及第三人称提供夜间夜视强度，不写药水状态或游戏亮度选项。
  * 引用 Fabric 客户端网络与实体加载事件解决追踪包先于实体生成的顺序；MinecraftClient 判断当前视角。
  * 生命周期：客户端初始化、收到快照与每帧渲染；只在客户端主线程运行。
  * 排查：夜视残留查装备和透视条件；跨服外观查断线清空 pending。
@@ -60,11 +60,10 @@ public final class PilotEquipmentClient {
         player.getInventory().setStack(PilotEquipment.GOGGLES, packet.goggles());
     }
 
-    /** 本地第一人称下日落/日出各用 1000 tick 平滑过渡，无天空光维度保持夜视；其他视角不启用目镜效果。 */
+    /** 本地相机跟随本人时，第一及第三人称均在日落/日出各用 1000 tick 平滑过渡，无天空光维度保持夜视。 */
     public static float nightStrength(PlayerEntity player) {
         var client = MinecraftClient.getInstance();
         if (player != client.player || client.getCameraEntity() != player
-                || !client.options.getPerspective().isFirstPerson()
                 || !PilotEquipment.hasGoggles(player) || player.isSpectator()) return 0;
         var world = player.getWorld();
         if (!world.getDimension().hasSkyLight()) return 1;

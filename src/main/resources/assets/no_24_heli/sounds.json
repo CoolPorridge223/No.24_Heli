@@ -26,6 +26,42 @@
       }
     ]
   },
+  "voice.height_50": {
+    "subtitle": "subtitles.no_24_heli.voice_height_50",
+    "sounds": [{"name": "no_24_heli:voice/height_50", "stream": false}]
+  },
+  "voice.height_30": {
+    "subtitle": "subtitles.no_24_heli.voice_height_30",
+    "sounds": [{"name": "no_24_heli:voice/height_30", "stream": false}]
+  },
+  "voice.height_20": {
+    "subtitle": "subtitles.no_24_heli.voice_height_20",
+    "sounds": [{"name": "no_24_heli:voice/height_20", "stream": false}]
+  },
+  "voice.height_10": {
+    "subtitle": "subtitles.no_24_heli.voice_height_10",
+    "sounds": [{"name": "no_24_heli:voice/height_10", "stream": false}]
+  },
+  "voice.height_5": {
+    "subtitle": "subtitles.no_24_heli.voice_height_5",
+    "sounds": [{"name": "no_24_heli:voice/height_5", "stream": false}]
+  },
+  "voice.sink_rate": {
+    "subtitle": "subtitles.no_24_heli.voice_sink_rate",
+    "sounds": [{"name": "no_24_heli:voice/sink_rate", "stream": false}]
+  },
+  "voice.landing_blocked": {
+    "subtitle": "subtitles.no_24_heli.voice_landing_blocked",
+    "sounds": [{"name": "no_24_heli:voice/landing_blocked", "stream": false}]
+  },
+  "voice.landing_gear": {
+    "subtitle": "subtitles.no_24_heli.voice_landing_gear",
+    "sounds": [{"name": "no_24_heli:voice/landing_gear", "stream": false}]
+  },
+  "voice.stall": {
+    "subtitle": "subtitles.no_24_heli.voice_stall",
+    "sounds": [{"name": "no_24_heli:voice/stall", "stream": false}]
+  },
   "radio": {
     "sounds": []
   }

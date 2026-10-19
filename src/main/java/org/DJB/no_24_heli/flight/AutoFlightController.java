@@ -2,12 +2,14 @@ package org.DJB.no_24_heli.flight;
 
 /** 一键起降只生成现有物理系统可接受的杆量，不直接设置坐标或跳过碰撞。 */
 public final class AutoFlightController {
+    /** 自动起飞相对开始位置的悬停高度，单位格；启动净空、爬升目标与提示共用二十格。 */
+    public static final double TAKEOFF_HEIGHT = 20;
     private AutoFlightController() {}
 
     /**
      * 以起降开始时的水平坐标为锚点抵抗惯性和风；偏航保持当前方向。
-     * 起飞总距由高度控制从当前值渐变，未预转完成不产生升力，离地后爬升到十格。
-     * 降落时沿同一垂线降至经实体验证的支撑面；接地停机由实体负责。
+     * 起飞总距由高度控制从当前值渐变，未预转完成不产生升力，离地后爬升到二十格。
+     * 降落时沿同一垂线降至经实体验证的支撑面；通道占用时保持实体捕获的暂停高度，接地停机由实体负责。
      */
     public static void step(FlightState s,double x,double y,double z,boolean grounded){
         // 起飞离开实际方块支撑后自动收架，降落阶段始终放架。
@@ -18,8 +20,8 @@ public final class AutoFlightController {
         s.cyclicPitch=(float)(-Math.toDegrees(Math.atan2(-Math.sin(yaw)*ax+Math.cos(yaw)*az,FlightPhysics.GRAVITY))/30);
         s.cyclicRoll=(float)(-Math.toDegrees(Math.atan2(Math.cos(yaw)*ax+Math.sin(yaw)*az,FlightPhysics.GRAVITY))/32);
         s.pedal=(float)FlightPhysics.clamp(-s.yawRate*.7,-1,1);s.collectiveInput=0;
-        s.targetAltitude=s.autoY;
+        if(!s.landingBlocked)s.targetAltitude=s.autoY;
         if(s.autoPhase==1&&s.armed)s.autoPhase=2;
-        if(s.autoPhase==2&&!grounded&&Math.abs(y-s.autoY)<.25&&Math.abs(s.vy)<.025)s.autoPhase=0;
+        if(s.autoPhase==2&&!grounded&&Math.abs(y-s.autoY)<.25&&Math.abs(s.vy)<.025)s.cancelAutoFlight();
     }
 }

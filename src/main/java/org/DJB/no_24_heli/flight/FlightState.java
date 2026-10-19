@@ -30,6 +30,8 @@ public final class FlightState {
     public int difficultyMode;
     /** 一键起降阶段：0关闭、1预转、2爬升、3降落；重载不恢复自动动作，防止无人起飞。 */
     public int autoPhase;
+    /** 自动降落通道被实体占用时暂停；随快照同步，取消任务或重载后清除，不覆盖原降落目标。 */
+    public boolean landingBlocked;
     public double autoX,autoZ,autoY;
     /** 导航初次接管先制动对正；开始前飞后沿弯道连续转向，不在途经节点重新停车对齐。 */
     public boolean navAligned;
@@ -44,4 +46,6 @@ public final class FlightState {
     public float cyclicPitch, cyclicRoll, pedal, collectiveInput;
     /** 功能：服务端在超时、离座和读档时清除输入与摇杆显示，不抹掉惯性或旋翼转速；不依赖 MC API。 */
     public void clearInputs() { stickPitch = stickRoll = cyclicPitch = cyclicRoll = pedal = collectiveInput = 0; }
+    /** 功能：结束自动起降并清除占用警告；无 MC API，服务端各接管/终止入口共用，不改变速度或高度目标。 */
+    public void cancelAutoFlight() { autoPhase = 0; landingBlocked = false; }
 }

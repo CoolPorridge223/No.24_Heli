@@ -1,26 +1,24 @@
 package org.DJB.no_24_heli.client.hud;
 
-import org.DJB.no_24_heli.No_24_heli;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
 
 
 import net.minecraft.client.MinecraftClient;
 
-/** 近地高度提示与下降率警告共用采样；语音通过事件接口接入，不循环播放警报。 */
+/** 近地高度提示与下降率警告共用采样；只返回事件，全部语音由 FlightVoiceManager 管理。 */
+@Environment(EnvType.CLIENT)
 public final class GroundProximityWarning {
     /** 档位从远到近排列，单位为米；零号表示没有低空提示。 */
     private static final int[] HEIGHTS={0,50,30,20,10,5};
-    /** 各档危险下降率，单位为米/秒；越近地面容许下降率越小。 */
-    private static final double[] SINK_LIMITS={0,5,4,3,2,1.5};
+    /** 各档危险下降率，单位米/秒；最低档也高于正常辅助下降的 3.2 m/s，保留少量控制余量。 */
+    private static final double[] SINK_LIMITS={0,6,5,4.5,4,3.5};
     private static final Monitor monitor=new Monitor();
-    private static int vehicle=-1;
+    private static HelicopterEntity vehicle;
     /** warning 区分正常高度播报与危险下降率警告，actualHeight 为实际离地高度。 */
     public record Notice(int band,int threshold,double actualHeight,double verticalSpeed,boolean warning){}
-    @FunctionalInterface public interface VoiceListener {void onNotice(Notice notice);}
-    private static VoiceListener voiceListener=notice->{};
     private GroundProximityWarning(){}
-    /** 客户端初始化时注册语音回调；null 恢复无声占位接口。 */
-    public static void setVoiceListener(VoiceListener listener){voiceListener=listener==null?notice->{}:listener;}
     public static int level(){return monitor.level;}
     public static boolean warning(){return monitor.warning;}
     public static double height(){return monitor.height;}
@@ -49,13 +47,13 @@ public final class GroundProximityWarning {
             return new Notice(level,HEIGHTS[level],height,verticalSpeed,warning);
         }
     }
-    public static void tick(MinecraftClient client){
+    /** 客户端主线程采样并返回一次近地事件；MinecraftClient 提供乘机，不在此选择音频或调用播报。 */
+    public static Notice tick(MinecraftClient client){
         if(client.world==null||client.player==null||!(client.player.getVehicle() instanceof HelicopterEntity h)){
-            vehicle=-1;monitor.reset();return;
+            vehicle=null;monitor.reset();return null;
         }
-        if(vehicle!=h.getId()){vehicle=h.getId();monitor.reset();}
+        if(vehicle!=h){vehicle=h;monitor.reset();}
         double height=h.heightAboveGround();
-        Notice notice=monitor.update(height,h.flight.vy*20,!h.flight.wreck&&h.flight.armed&&!h.isOnGround()&&!h.isTouchingWater()&&height>.15);
-        if(notice!=null)try{voiceListener.onNotice(notice);}catch(RuntimeException e){No_24_heli.LOGGER.warn("近地语音接口调用失败",e);}
+        return monitor.update(height,h.flight.vy*20,!h.flight.wreck&&h.flight.armed&&!h.isOnGround()&&!h.isTouchingWater()&&height>.15);
     }
 }
