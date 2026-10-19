@@ -177,7 +177,7 @@ public class RopeSeatEntity extends Entity {
     public boolean canBoardHelicopter(PlayerEntity player){
         HelicopterEntity heli=helicopter();Rider rider=riders.get(player.getUuid());
         if(heli==null||!heli.flight.rope||!hasPassenger(player)||nodes[0]==null||rider==null)return false;
-        if(!heli.canBoardRopeCopilot())return false;
+        if(!heli.canBoardFromRope())return false;
         if(getWorld().isClient)return rider.boardReady;
         double reach=BOARD_REACH;
         if(getWorld().getTime()<=rider.boardUntil&&rider.input>=0)reach+=BOARD_GRACE_DISTANCE;
@@ -187,7 +187,7 @@ public class RopeSeatEntity extends Entity {
         return rider.distance<=top+reach&&pointAt(rider.distance).squaredDistanceTo(nodes[0])<=anchorReach*anchorReach;
     }
     /**
-     * 校验真实乘骑关系后记录 W/S；E 只在顶部且副驾空闲时入舱。
+     * 校验真实乘骑关系后记录 W/S；E 只在顶部且有空座时入舱，后排优先。
      * Shift 沿用离地三格与三秒二次确认；各人按实际脚下 net.minecraft.world.World#raycast 判断。
      */
     public void control(PlayerEntity player,ControlPayload packet){
@@ -196,12 +196,14 @@ public class RopeSeatEntity extends Entity {
         rider.input=Math.clamp(packet.collective(),-1,1);rider.inputTick=getWorld().getTime();
         if((packet.actions()&ControlPayload.ROPE_BOARD)!=0&&canBoardHelicopter(player)){
             HelicopterEntity heli=helicopter();
-            if(heli.boardRopeCopilot(player))return;
+            if(heli.boardFromRope(player))return;
         }
         if((packet.actions()&ControlPayload.DISMOUNT)!=0){
             long now=getWorld().getTime();
-            if(groundDistance(player)<=3||player.isTouchingWater()||rider.exitUntil>=now){
+            boolean airborne=groundDistance(player)>3&&!player.isTouchingWater();
+            if(!airborne||rider.exitUntil>=now){
                 Vec3d velocity=getVelocity();player.stopRiding();player.setVelocity(velocity);
+                if(airborne)ParachuteEntity.startFreefall(player,null,-1);
             }else{rider.exitUntil=now+60;player.sendMessage(Text.translatable("message.no_24_heli.rope_exit_warning"),true);}
         }
     }

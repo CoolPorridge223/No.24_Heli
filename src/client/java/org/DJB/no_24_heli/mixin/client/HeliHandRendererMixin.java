@@ -34,6 +34,6 @@ public final class HeliHandRendererMixin {
             ClientPlayerEntity player, int light, CallbackInfo ci) {
         if (player.getVehicle() instanceof HelicopterEntity
                 || player.isAlive() && player.getVehicle() instanceof ParachuteEntity canopy
-                && canopy.mode() == ParachuteEntity.ACTIVE) ci.cancel();
+                && canopy.isAirborne()) ci.cancel();
     }
 }

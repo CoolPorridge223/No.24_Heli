@@ -1,4 +1,4 @@
-/** 文件：舱门开关意图；端侧：COMMON；通道：no_24_heli:cabin_door（C2S）。 */
+/** 文件：自动开门乘降意图；端侧：COMMON；通道：no_24_heli:cabin_door（C2S）。 */
 package org.DJB.no_24_heli.network;
 
 import net.minecraft.network.RegistryByteBuf;

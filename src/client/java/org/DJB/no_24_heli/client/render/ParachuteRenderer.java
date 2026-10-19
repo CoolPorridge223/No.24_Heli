@@ -89,6 +89,10 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
     /** 活翼共用人物旋转，失压翼使用世界节点；封闭表面和吊绳的矩阵成对恢复。 */
     @Override public void render(ParachuteEntity entity, float yaw, float delta, MatrixStack matrices,
             VertexConsumerProvider consumers, int light) {
+        if (entity.isFreefall()) {
+            ParachuteHandsRenderer.render(entity, delta, matrices, consumers, light);
+            super.render(entity, yaw, delta, matrices, consumers, light); return;
+        }
         boolean loose = entity.mode() != ParachuteEntity.ACTIVE;
         ParachuteCloth mesh = cloth.computeIfAbsent(entity, ignored -> new ParachuteCloth());
         mesh.prepare(entity, delta);
@@ -133,8 +137,9 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
         if (!loose) drawFlightRig(entity, mesh, matrices, cordBuffer, delta, light);
         if (entity.mode() == ParachuteEntity.TRAILING && entity.hasLines())
             drawTrailingLines(entity, mesh, matrices, cordBuffer, delta, light);
+        matrices.pop();
         if (!loose) ParachuteHandsRenderer.render(entity, delta, matrices, consumers, light);
-        matrices.pop(); super.render(entity, yaw, delta, matrices, consumers, light);
+        super.render(entity, yaw, delta, matrices, consumers, light);
     }
 
     /**
@@ -145,7 +150,7 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
             VertexConsumer buffer, float delta, int light) {
         for (boolean left : new boolean[]{false, true}) {
             double side = left ? 1 : -1;
-            Vec3d bundle = ParachutePose.bundle(entity, left);
+            Vec3d bundle = ParachutePose.bundle(entity, left, delta);
             for (int group = 0; group < ParachuteSuspension.GROUPS_PER_SIDE; group++) {
                 // 三个短分束接头相距 4.5cm，让每组前后两根吊绳在汇入主绳之前仍清晰可辨。
                 Vec3d junction = bundle.add((group - 1) * .045, .065, 0);
@@ -159,9 +164,9 @@ public final class ParachuteRenderer extends EntityRenderer<ParachuteEntity> {
                 }
             }
             // 主绳不经过手掌，沿肩部外侧接入背包内部，操纵时不能跟着手柄上下拉动整束承力绳。
-            Vec3d shoulder = new Vec3d(side * .25, 1.42, -.02);
+            Vec3d shoulder = ParachutePose.rigPoint(entity, new Vec3d(side * .25, 1.42, -.02), delta);
             drawCord(matrices, buffer, bundle, shoulder, light, 3, 0xff34383c);
-            drawCord(matrices, buffer, shoulder, ParachuteSuspension.packAnchor(left), light, 3, 0xff34383c);
+            drawCord(matrices, buffer, shoulder, ParachutePose.rigPoint(entity, ParachuteSuspension.packAnchor(left), delta), light, 3, 0xff34383c);
             Vec3d grip = ParachutePose.grip(entity, left, delta);
             Vec3d a = grip.add(-HANDLE_HALF_WIDTH, 0, 0), b = grip.add(HANDLE_HALF_WIDTH, 0, 0);
             // 两边下垂带与横向握杆组成闭合三角拉手，掌心位于握杆中央。

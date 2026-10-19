@@ -13,7 +13,6 @@ import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.util.math.MathHelper;
-import net.minecraft.util.math.RotationAxis;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -26,7 +25,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * 职责：人物全身、背包和手持物跟随伞，视角仍可独立观察。
  * 引用：net.minecraft.client.render.entity.LivingEntityRenderer#setupTransforms 为全身骨骼前变换；
  * Fabric 特征事件只能添加模型，不能旋转原有人物，故此处必须使用 Mixin。
- * 生命周期：仅真实乘坐 ParachuteEntity 的活乘员渲染时生效，离伞立即恢复原版。
+ * 生命周期：仅真实乘坐 ParachuteEntity 的活乘员渲染时生效，未开伞、展开和悬挂共用连续变换。
  * 排查：左右反倾查 ParachutePose 的人物共轭；身体航向偏移查原版 180-bodyYaw 的补偿。
  */
 @Environment(EnvType.CLIENT)
@@ -44,9 +43,9 @@ public abstract class ParachuteRiderRendererMixin {
                     shift = At.Shift.AFTER))
     private void holdLines(LivingEntity player, float yaw, float delta, MatrixStack matrices,
             VertexConsumerProvider vertices, int light, CallbackInfo ci) {
-        if (!(player.getVehicle() instanceof ParachuteEntity canopy) || canopy.mode() != ParachuteEntity.ACTIVE
+        if (!(player.getVehicle() instanceof ParachuteEntity canopy) || !canopy.isAirborne()
                 || !player.isAlive() || !(model instanceof BipedEntityModel<?> biped)) return;
-        ParachutePose.holdLines(biped, canopy, delta);
+        ParachutePose.poseRider(biped, canopy, delta);
     }
 
     /** 原版完成死亡/晃动等基本变换后，统一身体航向及吊点倾斜；不回写玩家视角字段。 */
@@ -54,8 +53,24 @@ public abstract class ParachuteRiderRendererMixin {
     private void followCanopy(LivingEntity player, MatrixStack matrices, float animation, float bodyYaw,
             float delta, float scale, CallbackInfo ci) {
         if (!(player.getVehicle() instanceof ParachuteEntity canopy) || !player.isAlive()) return;
-        matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(bodyYaw - canopy.canopyYaw(delta)));
-        ParachutePose.apply(matrices, canopy, delta, true);
+        ParachutePose.applyRider(matrices, canopy, bodyYaw, delta);
+    }
+
+    /** 跃出末帧的机体倾斜偏移与人物一起平滑还原，第一/第三人称不会在切换载具时跳到另一脚位。 */
+    @Inject(method = "render(Lnet/minecraft/entity/LivingEntity;FFLnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider;I)V",
+            at = @At("HEAD"))
+    private void entryPosition(LivingEntity player, float yaw, float delta, MatrixStack matrices,
+            VertexConsumerProvider vertices, int light, CallbackInfo ci) {
+        if (!(player.getVehicle() instanceof ParachuteEntity canopy)) return;
+        var offset = canopy.entryOffset(delta); matrices.push(); matrices.translate(offset.x, offset.y, offset.z);
+    }
+
+    /** 与离机位置入口成对恢复矩阵，不影响同帧其他人物。 */
+    @Inject(method = "render(Lnet/minecraft/entity/LivingEntity;FFLnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider;I)V",
+            at = @At("RETURN"))
+    private void restoreEntryPosition(LivingEntity player, float yaw, float delta, MatrixStack matrices,
+            VertexConsumerProvider vertices, int light, CallbackInfo ci) {
+        if (player.getVehicle() instanceof ParachuteEntity) matrices.pop();
     }
 
     /** 以伞的身体方向计算头部自由观察角，避免身体转向后仍使用旧身体的相对头角。 */

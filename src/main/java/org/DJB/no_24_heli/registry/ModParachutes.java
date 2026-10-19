@@ -3,6 +3,7 @@ package org.DJB.no_24_heli.registry;
 
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.SpawnGroup;
 import net.minecraft.item.Item;
@@ -45,6 +46,11 @@ public final class ModParachutes {
      * 仅服务端主线程改变状态；非法数值拒绝并记录，防止 NaN 污染世界坐标。
      */
     public static void initialize() {
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            for (var player : server.getPlayerManager().getPlayerList())
+                if (player.fallDistance > 2 && !player.horizontalCollision && ParachuteEntity.canStartFreefall(player))
+                    ParachuteEntity.startFreefall(player, null, -1);
+        });
         PayloadTypeRegistry.playC2S().register(ParachutePayload.ID, ParachutePayload.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(ParachutePayload.ID, (packet, context) ->
                 context.server().execute(() -> {

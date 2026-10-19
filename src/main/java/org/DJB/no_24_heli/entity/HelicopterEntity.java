@@ -42,6 +42,8 @@ public class HelicopterEntity extends Entity {
     public static final double SEAT_FORWARD_OFFSET=.12;
     /** 主旋翼毂相对机体原点的高度，单位格；天气采样不能落在低于滑橇的实体原点而被地面误遮挡。 */
     private static final double ROTOR_WEATHER_HEIGHT=2.71;
+    /** F 与 Shift 共用空中离机确认，60 tick 即三秒；同 tick 的重复输入不算第二次按下。 */
+    private static final int EXIT_CONFIRM_TICKS=60;
     private static final TrackedData<NbtCompound> STATUS=DataTracker.registerData(HelicopterEntity.class,TrackedDataHandlerRegistry.NBT_COMPOUND);
     private final NavigationPilot navigation=new NavigationPilot();
     public final FlightState flight=new FlightState();
@@ -62,7 +64,7 @@ public class HelicopterEntity extends Entity {
     private RopeSeatEntity activeRope;
     /** 客户端从 Flight 同步的权威绳实体 ID，仅用于查找与绘制，不跨存档恢复部署。 */
     private int ropeCarrierId=-1;
-    /** 固定四座及左右滑门；权威状态随 Flight 快照同步，两端只共享乘降时序。 */
+    /** 固定四座及四扇铰接门；权威状态随 Flight 快照同步，两端只共享乘降时序。 */
     public final HelicopterCabin cabin = new HelicopterCabin(this);
     private long lastRadio=-100;
     private long lastInput=-100,lastActions=-100,lastEngine=-100;
@@ -126,11 +128,12 @@ public class HelicopterEntity extends Entity {
         flight.difficultyMode=mode.ordinal();flight.hardcoreMode=hardcore;flight.trim=!hardcore;flight.altitudeHold=!hardcore;flight.cruise=false;
         flight.targetAltitude=getY();flight.targetSpeed=Math.hypot(flight.vx,flight.vz);
     }
-    /** net.minecraft.entity.Entity 的普通挂载也必须遵守门和同侧空位规则。 */
+    /** 普通挂载遵守门和空位规则；自动登机预占者可先挂载，在门外等待开门动画结束。 */
     @Override protected boolean canAddPassenger(Entity passenger) {
         return !flight.wreck && getPassengerList().size() < HelicopterCabin.SEATS
                 && (!(passenger instanceof PlayerEntity player) || cabin.canReach(player)
-                && cabin.canPass(cabin.accessSide(player)) && cabin.freeSeat(cabin.accessSide(player)) >= 0);
+                && (cabin.seat(player) >= 0 || cabin.canPass(cabin.accessDoor(player))
+                && cabin.freeSeat(cabin.accessSide(player)) >= 0));
     }
     /** net.minecraft.entity.Entity#addPassenger 在原版存档恢复和真实挂载时维护固定座号。 */
     @Override protected void addPassenger(Entity passenger) { super.addPassenger(passenger); cabin.added(passenger); }
@@ -138,10 +141,10 @@ public class HelicopterEntity extends Entity {
     public boolean isPilot(Entity entity) { return entity != null && pilot() == entity; }
     /** 第一座独立于乘客列表顺序，后排绝不因前排空缺而接管。 */
     private Entity pilot() { return cabin.occupant(0); }
-    /** 绳顶副驾资格与舱门操作分开，便于关门时仍显示开门提示。 */
-    public boolean canBoardRopeCopilot() { return !flight.wreck && cabin.freeSeat(1) == 1; }
-    /** 绳顶 E 仍进入右前副驾，服务端再复核右门已完全打开。 */
-    public boolean boardRopeCopilot(PlayerEntity player) { return cabin.boardFromRope(player); }
+    /** 绳顶只要求任意座位空闲，门状态不影响资格；后排优先，前排为后备空座。 */
+    public boolean canBoardFromRope() { return !flight.wreck && cabin.freeRopeSeat() >= 0; }
+    /** 绳顶 F/E 自动按后排优先分配空座，再串联对应门的开门、登机与关门。 */
+    public boolean boardFromRope(PlayerEntity player) { return cabin.boardFromRope(player); }
     /** 任何离座途径都清除确认窗口；空中仅副驾玩家可接替主驾。 */
     @Override protected void removePassenger(Entity passenger) {
         boolean pilot = isPilot(passenger), airborne = !isCabinGrounded();
@@ -235,10 +238,10 @@ public class HelicopterEntity extends Entity {
         return hit.getType()==HitResult.Type.MISS?65:getY()-hit.getPos().y;
     }
     private boolean safeHover(){double h=heightAboveGround();return !flight.wreck&&h>3&&h<=24&&Math.hypot(flight.vx,flight.vz)<.10&&Math.abs(flight.vy)<.075;}
-    private void rappel(Entity passenger){
+    /** 安全悬停时按 Y 自动开本座门，门全开后由舱位组件回调并转移到绳索。 */
+    void rappel(Entity passenger){
         if(!safeHover())return;
-        if(passenger instanceof PlayerEntity player && (!cabin.canPass(cabin.accessSide(player))
-                || cabin.motion(player)!=HelicopterCabin.SEATED)){message(player,"door_closed");return;}
+        if(passenger instanceof PlayerEntity player && !cabin.prepareRappel(player))return;
         RopeSeatEntity seat=ensureRopeCarrier();if(seat!=null)seat.board(passenger,false);
     }
     /**
@@ -351,14 +354,12 @@ public class HelicopterEntity extends Entity {
         setYaw((float)flight.yaw);
         Vec3d before=getPos(),velocity=new Vec3d(flight.vx,flight.vy,flight.vz);setVelocity(velocity);
         move(MovementType.SELF,velocity);Vec3d moved=getPos().subtract(before);
-        // 向下真实触地后强制放架；不把撞到天花板或候选大盒擦地当成落地。
-        if(verticalCollision&&velocity.y<0)flight.gear=true;
         if(isOnGround()&&!hasBlockSupport())setOnGround(false);
         if(!flight.wreck){
             HelicopterCollision.spinningContact(this);
             double minimum=blockImpactPart==HelicopterCollision.Part.LANDING_GEAR?.12:.02;
             // 静止接地的重力贴地不算事故；旋翼自身转动的接触速度仍正常结算。
-            if(blockImpactSpeed>minimum&&collisionCooldown==0
+            if(blockImpactSpeed>minimum
                     &&(!grounded||horizontalCollision||blockImpactSpeed>FlightPhysics.GRAVITY+.001))collide(blockImpactPart,blockImpactSpeed);
             // 扫过的包围盒防止高速穿越漏检；实体伤害限流，低速碰撞不反伤飞机。
             if(!flight.wreck&&entityContactsEnabled&&entityImpactCooldown==0){
@@ -374,7 +375,7 @@ public class HelicopterEntity extends Entity {
                     hitEntity=true;
                     if(other instanceof HelicopterEntity aircraft)aircraft.collide(contact.otherPart(),relative);
                     else other.damage(getDamageSources().flyIntoWall(),(float)(relative*12));
-                    if(relative>ENTITY_DAMAGE_SPEED&&collisionCooldown==0){collide(contact.part(),relative);if(flight.wreck)break;}
+                    if(relative>ENTITY_DAMAGE_SPEED){collide(contact.part(),relative);if(flight.wreck)break;}
                 }
                 if(hitEntity)entityImpactCooldown=10;
             }
@@ -389,6 +390,8 @@ public class HelicopterEntity extends Entity {
                 ensureRopeCarrier();
             }
         }
+        // 事故结算后才强制放架，让灾难阈值读取接地前的真实收放状态。
+        if(verticalCollision&&velocity.y<0)flight.gear=true;
         if(horizontalCollision){if(Math.abs(velocity.x-moved.x)>.001)flight.vx=0;if(Math.abs(velocity.z-moved.z)>.001)flight.vz=0;}
         if(verticalCollision)flight.vy=0;
         // 碰撞后当 tick 立即清除残骸水平动量，避免下一 tick 接地前再滑动一段。
@@ -428,12 +431,14 @@ public class HelicopterEntity extends Entity {
     private HeliConfig flightConfig(){
         return HeliConfig.forMode(HeliConfig.Difficulty.values()[Math.clamp(flight.difficultyMode,0,2)]);
     }
-    /** 服务端事故按实际接触部位扣耐久并限流；仅机舱/动力/油箱的高速撞击沿用原灾难阈值。 */
+    /** 服务端结构碰撞（含尾梁和起落架）先判高速坠毁；旋翼单独受损，普通扣耐久仍限流十 tick。 */
     void collide(HelicopterCollision.Part part,double impact){
-        if(collisionCooldown>0||flight.wreck)return;
-        collisionCooldown=10;
-        boolean body=part==HelicopterCollision.Part.CABIN||part==HelicopterCollision.Part.ENGINE||part==HelicopterCollision.Part.FUEL_TANK;
+        if(flight.wreck)return;
+        boolean body=part!=HelicopterCollision.Part.MAIN_ROTOR&&part!=HelicopterCollision.Part.TAIL_ROTOR;
+        // 滑橇或尾梁先接触也会阻停整机，不能成为高速撞击的免爆保护；轻微擦碰的冷却不豁免后续坠毁。
         if(body&&FlightPhysics.catastrophic(impact,flight,flightConfig())){destroy(true);return;}
+        if(collisionCooldown>0)return;
+        collisionCooldown=10;
         damagePart(part,impact*(flight.hardcoreMode?30:14),false);
     }
     /** 统一碰撞与攻击的分部耐久，尾桨受击不再误扣引擎或主旋翼。 */
@@ -511,7 +516,7 @@ public class HelicopterEntity extends Entity {
         }
         if(stack.isOf(Items.LEAD)&&pilot() instanceof PlayerEntity&&getPassengerList().size()<HelicopterCabin.SEATS){
             int side=cabin.accessSide(player), seat=cabin.freeSeat(side);
-            if(seat>=0&&cabin.canPass(side))for(VillagerEntity villager:getWorld().getEntitiesByClass(VillagerEntity.class,getBoundingBox().expand(5),v->!v.hasVehicle()))
+            if(seat>=0)for(VillagerEntity villager:getWorld().getEntitiesByClass(VillagerEntity.class,getBoundingBox().expand(5),v->!v.hasVehicle()))
                 if(cabin.mount(villager,seat,true))return ActionResult.CONSUME;
         }
         if(player.isSneaking()){
@@ -696,16 +701,15 @@ public class HelicopterEntity extends Entity {
         stopAutopilot();navigation.reset();flight.cancelAutoFlight();flight.waypoint=!p.clear();flight.waypointX=p.x();flight.waypointZ=p.z();
         message(player,p.clear()?"waypoint_clear":"waypoint_set");dataTracker.set(STATUS,saveFlight());
     }
-    /** 先开同侧门再离机；保留原空中 60 tick 二次确认，确认后播放跃出动作。 */
+    /** F/Shift 共用下机流程；空中先立即警告，三秒内再次按下才自动开门并跃出。 */
     public void requestDismount(PlayerEntity player){
-        if(!hasPassenger(player)||cabin.motion(player)!=HelicopterCabin.SEATED)return;
-        int side=cabin.accessSide(player);
-        if(!cabin.canPass(side)){message(player,cabin.isOpen(side)?"door_wait":"door_closed");return;}
+        if(flight.wreck||!hasPassenger(player)||cabin.motion(player)!=HelicopterCabin.SEATED)return;
         long now=getWorld().getTime();Long until=exitWarnings.get(player.getUuid());
         boolean grounded=isCabinGrounded();
+        if(!grounded&&until!=null&&now==until-EXIT_CONFIRM_TICKS)return;
         if(grounded||(until!=null&&now<=until)){
             exitWarnings.remove(player.getUuid());cabin.beginExit(player,!grounded);
-        }else{exitWarnings.put(player.getUuid(),now+60);message(player,"exit_warning");}
+        }else{exitWarnings.put(player.getUuid(),now+EXIT_CONFIRM_TICKS);message(player,"exit_warning");}
     }
     @Override protected void writeCustomDataToNbt(NbtCompound n){n.put("Flight",saveFlight());var items=net.minecraft.util.collection.DefaultedList.ofSize(19,ItemStack.EMPTY);for(int i=0;i<19;i++)items.set(i,cargo.getStack(i));Inventories.writeNbt(n,items,getRegistryManager());}
     @Override protected void readCustomDataFromNbt(NbtCompound n){loadFlight(n.getCompound("Flight"));cabin.resetAnimations();var items=net.minecraft.util.collection.DefaultedList.ofSize(19,ItemStack.EMPTY);Inventories.readNbt(n,items,getRegistryManager());for(int i=0;i<19;i++)cargo.setStack(i,items.get(i));// 飞行任务不跨重载恢复，电台也默认静音；导航点和机体数据仍保留。

@@ -16,7 +16,7 @@ import org.DJB.no_24_heli.network.CabinDoorPayload;
 import org.lwjgl.glfw.GLFW;
 
 /**
- * 职责：舱内或看向近处侧门时把可重绑 F 转为舱门意图；离舱后继续由开伞处理。
+ * 职责：把可重绑 F 转为自动开门登机/下机意图；离舱后继续由开伞处理。
  * 引用 net.minecraft.client.option.KeyBinding 注册原版控制菜单，ClientPlayNetworking 只发送目标 ID。
  * 生命周期：客户端初始化注册，键盘/鼠标回调按下边沿调用；不修改门的权威状态。
  * 排查：共享 F 冲突查 HeliKeyBindingMixin；目标为空查侧门距离及准星遮挡。
@@ -45,12 +45,6 @@ public final class CabinDoorClient {
             return rope.helicopter();
         return client.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof HelicopterEntity heli
                 && heli.cabin.canReach(client.player) ? heli : null;
-    }
-
-    /** 绳顶沿原右前副驾入口开门，其余由本侧位置决定。 */
-    public static int side(HelicopterEntity heli) {
-        var player = MinecraftClient.getInstance().player;
-        return player.getVehicle() instanceof RopeSeatEntity ? 1 : heli.cabin.accessSide(player);
     }
 
     /** net.minecraft.client.Keyboard#onKey 只消费作用域内实际绑定，释放事件放回原版。 */

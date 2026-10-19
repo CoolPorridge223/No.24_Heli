@@ -56,15 +56,8 @@ public final class HeliHud {
     private static final float TAPE_TITLE_SCALE=1.05f;
     /** 高度末两位数字鼓的步长，单位：米；700→720 的整个区间连续滚动。 */
     private static final int ALTITUDE_ROLL_STEP=20;
-    /** 登机 E 键帽的边长与文字间隔，单位：GUI 逻辑像素。 */
+    /** 登机、下机与开伞键帽的边长和文字间隔，单位：GUI 逻辑像素。 */
     private static final int BOARD_KEY_SIZE=18,BOARD_KEY_GAP=4;
-    /**
-     * net.minecraft.client.gui.DrawContext 绘制准星右侧的登机提示，E 居中放入圆角正方形。
-     * 仅客户端渲染；两段翻译文本分别布局，避免依赖某种语言中 E 的字符位置。
-     */
-    private static void drawBoardHint(DrawContext ctx){
-        drawKeyHint(ctx,Text.literal("E"),"hud.no_24_heli.rope_board_before","hud.no_24_heli.rope_board_after");
-    }
     /** 开伞与登机共用原有金色文字和圆角键帽；重绑后按实际键名扩展键帽宽度。 */
     private static void drawKeyHint(DrawContext ctx,Text key,String beforeKey,String afterKey){
         var font=MinecraftClient.getInstance().textRenderer;
@@ -119,12 +112,15 @@ public final class HeliHud {
         else if(mc.player.getVehicle() instanceof org.DJB.no_24_heli.entity.ParachuteEntity canopy&&canopy.needsPull())
             drawKeyHint(ctx,ParachuteClient.keyName(),"hud.no_24_heli.parachute_pull_before","hud.no_24_heli.parachute_pull_after");
         var doorTarget=org.DJB.no_24_heli.client.input.CabinDoorClient.target();
-        boolean doorHint=doorTarget!=null&&!doorTarget.cabin.isOpen(org.DJB.no_24_heli.client.input.CabinDoorClient.side(doorTarget));
+        boolean aboard=doorTarget!=null&&doorTarget.hasPassenger(mc.player);
+        // 离地后隐藏下机键帽；F/Shift 的空中危险确认仍由原有输入与服务端逻辑处理。
+        boolean doorHint=doorTarget!=null&&(aboard
+                ?doorTarget.isCabinGrounded()
+                    &&doorTarget.cabin.motion(mc.player)==org.DJB.no_24_heli.entity.HelicopterCabin.SEATED
+                :mc.player.getVehicle() instanceof RopeSeatEntity?doorTarget.cabin.freeRopeSeat()>=0
+                :doorTarget.cabin.freeSeat(doorTarget.cabin.accessSide(mc.player))>=0);
         if(doorHint)drawKeyHint(ctx,org.DJB.no_24_heli.client.input.CabinDoorClient.keyName(),
-                "hud.no_24_heli.rope_board_before","hud.no_24_heli.door_open_after");
-        if(!doorHint&&mc.player.getVehicle() instanceof RopeSeatEntity rope&&rope.canBoardHelicopter(mc.player)){
-            drawBoardHint(ctx);
-        }
+                "hud.no_24_heli.rope_board_before",aboard?"hud.no_24_heli.cabin_exit_after":"hud.no_24_heli.cabin_board_after");
         if(!(mc.player.getVehicle() instanceof HelicopterEntity h))return;
         // 机内的全部飞行读数、机组、导航、部件与警告由实体仪表板呈现，不叠加屏幕 HUD。
         if(mc.options.getPerspective().isFirstPerson())return;
@@ -145,13 +141,13 @@ public final class HeliHud {
         if(s.autoPhase!=0)text(ctx,"hud.no_24_heli.auto_phase_"+s.autoPhase,4,-120,0xff8fffb1);
         if(s.autopilot)text(ctx,"hud.no_24_heli.autopilot",4,-108,0xff8fffb1);
         if(s.waypoint)text(ctx,"hud.no_24_heli.waypoint",4,-96,0xffe9e897,(int)Math.hypot(s.waypointX-h.getX(),s.waypointZ-h.getZ()));
-        // 四行机组文字：座位标签与姓名独立成行。
+        // 主副驾居左、后排乘客居右，标签与姓名分别对齐同一高度；右侧按实际字宽对齐。
         text(ctx,"hud.no_24_heli.pilot",4,-174,0xff7ce3bc);
-        crewName(ctx,h,0,4,-162);
+        crewName(ctx,h,0,4,-162,false);
         text(ctx,"hud.no_24_heli.copilot",4,-150,0xff7ce3bc);
-        crewName(ctx,h,1,4,-138);
-        text(ctx,"hud.no_24_heli.rear_left",92,-174,0xff7ce3bc);crewName(ctx,h,2,92,-162);
-        text(ctx,"hud.no_24_heli.rear_right",92,-150,0xff7ce3bc);crewName(ctx,h,3,92,-138);
+        crewName(ctx,h,1,4,-138,false);
+        rightText(ctx,"hud.no_24_heli.rear_left",bw-4,-174,0xff7ce3bc);crewName(ctx,h,2,bw-4,-162,true);
+        rightText(ctx,"hud.no_24_heli.rear_right",bw-4,-150,0xff7ce3bc);crewName(ctx,h,3,bw-4,-138,true);
         // 五段血条紧密拼接；每个部件仍独立扣血，总宽由 240 缩短到 150。
         double[] values={s.hull,s.rotor,s.tail,s.engine,s.tank};String[] keys={"hull","rotor","tail","engine","tank"};
         int barWidth=150,barX=(bw-barWidth)/2,segment=barWidth/5;
@@ -197,10 +193,16 @@ public final class HeliHud {
         HeliRadar.draw(ctx,h,w-4);
         m.pop();
     }
-    /** 姓名遵循真实座位顺序，空座给出明确文字。 */
-    private static void crewName(DrawContext ctx,HelicopterEntity h,int seat,int x,int y){
+    /** 客户端通过 net.minecraft.client.gui.DrawContext#drawText 按字体宽度右对齐翻译标签；x 为右边界。 */
+    private static void rightText(DrawContext ctx,String key,int x,int y,int color){
+        var font=MinecraftClient.getInstance().textRenderer;Text label=Text.translatable(key);
+        ctx.drawText(font,label,x-font.getWidth(label),y,color,true);
+    }
+    /** 姓名遵循真实座位顺序，空座给出明确文字；rightAligned 时 x 为右边界，使用实际姓名字宽。 */
+    private static void crewName(DrawContext ctx,HelicopterEntity h,int seat,int x,int y,boolean rightAligned){
         Text name=h.cabin.occupant(seat)!=null?h.cabin.occupant(seat).getName():Text.translatable("hud.no_24_heli.empty_seat");
-        ctx.drawText(MinecraftClient.getInstance().textRenderer,name,x,y,0xffe6f4ee,true);
+        var font=MinecraftClient.getInstance().textRenderer;
+        ctx.drawText(font,name,rightAligned?x-font.getWidth(name):x,y,0xffe6f4ee,true);
     }
     /**
      * 功能：让刻度与数字在中心完全不透明、两端渐淡到 50%。

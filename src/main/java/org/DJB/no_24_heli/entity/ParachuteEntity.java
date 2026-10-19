@@ -1,9 +1,10 @@
-/** 文件：载人伞降、失压拖行及故障生命周期；端侧：COMMON；实体：no_24_heli:parachute。 */
+/** 文件：未开伞趴姿飞行、载人伞降、失压拖行及故障生命周期；端侧：COMMON；实体：no_24_heli:parachute。 */
 package org.DJB.no_24_heli.entity;
 
 import org.DJB.no_24_heli.No_24_heli;
 import org.DJB.no_24_heli.flight.ParachuteCanopy;
 import org.DJB.no_24_heli.flight.ParachutePhysics;
+import org.DJB.no_24_heli.flight.SkydivingPhysics;
 import org.DJB.no_24_heli.item.ParachuteItem;
 import org.DJB.no_24_heli.network.ParachutePayload;
 import org.DJB.no_24_heli.registry.ModAdvancements;
@@ -30,17 +31,19 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.math.random.Random;
 import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 /**
  * 职责：服务端负责开伞资格、气动力、故障、耐久和失压布料；客户端仅插值显示。
  * 引用：net.minecraft.entity.Entity#move 提供乘员碰撞；DataTracker 同步姿态及布面快照。
- * 生命周期：ACTIVE → TRAILING 保留与胸槽连接，或 DETACHED 飘走十五秒后移除。
+ * 生命周期：FREEFALL → ACTIVE → TRAILING 保留与胸槽连接，或 DETACHED 飘走十五秒后移除。
  * 线程：逻辑服务端主线程，不接受原版载具坐标包；结束后不再改变玩家运动或跌落距离。
  * 排查：碰墙缓降查 finishFlight；拖行消失查伞包 UUID；卡伞恢复查 F 的按下边沿。
  */
 public final class ParachuteEntity extends Entity {
     /** 生命周期与故障码保存到 NBT，不能随渲染或重连重新抽签。 */
-    public static final int ACTIVE = 0, TRAILING = 1, DETACHED = 2;
+    public static final int ACTIVE = 0, TRAILING = 1, DETACHED = 2, FREEFALL = 3;
     public static final int NORMAL = 0, JAMMED = 1, TORN = 2, WING_LOST = 3;
     /** 开伞至少十格；严重故障的自由伞面保留十五秒。 */
     public static final double MIN_DEPLOY_HEIGHT = 10;
@@ -60,13 +63,28 @@ public final class ParachuteEntity extends Entity {
             ParachuteEntity.class, TrackedDataHandlerRegistry.FLOAT);
     private static final TrackedData<NbtCompound> CLOTH = DataTracker.registerData(
             ParachuteEntity.class, TrackedDataHandlerRegistry.NBT_COMPOUND);
+    /** 未开伞的身体俯仰、横滚与收拢比例独立于伞翼，开伞时保留为动作混合起点。 */
+    private static final TrackedData<Float> DIVE_PITCH = DataTracker.registerData(
+            ParachuteEntity.class, TrackedDataHandlerRegistry.FLOAT);
+    private static final TrackedData<Float> DIVE_BANK = DataTracker.registerData(
+            ParachuteEntity.class, TrackedDataHandlerRegistry.FLOAT);
+    private static final TrackedData<Float> DIVE_TUCK = DataTracker.registerData(
+            ParachuteEntity.class, TrackedDataHandlerRegistry.FLOAT);
+    /** 跃出时身体四元数、视觉偏移及世界时间；重追踪不会重新播放跃出到趴姿的过渡。 */
+    private static final TrackedData<NbtCompound> ENTRY = DataTracker.registerData(
+            ParachuteEntity.class, TrackedDataHandlerRegistry.NBT_COMPOUND);
     /** 每具伞独立的权威气动与失压布料；客户端只读取同步后的节点。 */
     private final ParachutePhysics.State flight = new ParachutePhysics.State();
     private final ParachuteCanopy cloth = new ParachuteCanopy();
+    private final SkydivingPhysics.State dive = new SkydivingPhysics.State();
+    /** 未开伞阶段累计实际下降距离，用于触地跌落伤害，不能因挂载载具获得免伤。 */
+    private float diveDistance;
     /** 所有者和所穿伞包的持久连接，与可回收的运行时实体 ID 分开。 */
     private UUID ownerUuid, packUuid;
     /** 操纵意图范围 -1..1；输入和拉绳时间使用世界 tick，不从客户端接收时钟。 */
     private float forwardInput, turnInput;
+    /** 观察角单位度，来自已校验 C2S；仅趴姿飞行使用，展开后保持原有自由观察。 */
+    private float lookYaw, lookPitch;
     private long lastInput = -100, lastPull = -100;
     /** 离线宽限、自由伞面寿命和耐久损耗计时相互独立。 */
     private int emptyTicks, detachedTicks, flyingTicks;
@@ -79,6 +97,8 @@ public final class ParachuteEntity extends Entity {
     private float clothBlend = 1;
     private double lerpX, lerpY, lerpZ;
     private float lerpYaw, previousBank, previousCanopyPitch;
+    /** 上一客户端 tick 的身体姿态，用于帧内插值，不回写服务端气动。 */
+    private float previousDivePitch = 90, previousDiveBank, previousDiveTuck;
 
     /** 原版实体工厂入口，碰撞箱保持站立玩家大小。 */
     public ParachuteEntity(EntityType<?> type, World world) { super(type, world); }
@@ -88,11 +108,63 @@ public final class ParachuteEntity extends Entity {
         builder.add(OPENING, 0); builder.add(MODE, ACTIVE); builder.add(FAILURE, NORMAL);
         builder.add(OWNER, -1); builder.add(BANK, 0f); builder.add(CANOPY_PITCH, 0f);
         builder.add(CLOTH, new NbtCompound());
+        builder.add(DIVE_PITCH, 90f); builder.add(DIVE_BANK, 0f); builder.add(DIVE_TUCK, 0f);
+        builder.add(ENTRY, new NbtCompound());
+    }
+
+    /** 未开伞趴姿只接管穿戴已叠好伞包的正常空中玩家，不抢占鞘翅、创造飞行、水中或其他载具。 */
+    public static boolean canStartFreefall(PlayerEntity player) {
+        return player.isAlive() && !player.isSpectator() && !player.hasVehicle() && !player.isOnGround()
+                && !player.isTouchingWater() && !player.isInLava() && !player.isFallFlying()
+                && !player.getAbilities().flying && ParachuteItem.isPacked(player.getEquippedStack(EquipmentSlot.CHEST));
+    }
+
+    /**
+     * 功能：在跃出或正常高处下落时接管未开伞运动，不扣耐久、不消耗折叠状态、不抽取故障。
+     * net.minecraft.entity.Entity#startRiding 保持服务端位置权威；可选 source/seat 保存离机姿态以连续混合。
+     * 仅逻辑服务端调用；返回是否成功接管，失败不改变玩家；原版落地伤害由 diveDistance 单独累计。
+     */
+    public static boolean startFreefall(PlayerEntity player, HelicopterEntity source, int seat) {
+        if (player.getWorld().isClient) return false;
+        if (source != null && !source.isCabinGrounded() && !player.hasVehicle()) player.setOnGround(false);
+        if (!canStartFreefall(player)) return false;
+        ParachuteEntity canopy = new ParachuteEntity(ModParachutes.CANOPY, player.getWorld());
+        canopy.dataTracker.set(MODE, FREEFALL); canopy.ownerUuid = player.getUuid();
+        canopy.setPosition(player.getPos()); canopy.setYaw(player.getYaw());
+        canopy.lookYaw = MathHelper.wrapDegrees(player.getYaw()); canopy.lookPitch = player.getPitch();
+        Vec3d velocity = player.getVelocity();
+        // 普通玩家移动以坐标包同步，服务端 velocity 可能只含重力；补回真实下落位移，避免接管时刹停。
+        if (source == null && player.fallDistance > 0) {
+            Vec3d displacement = player.getPos().subtract(player.prevX, player.prevY, player.prevZ);
+            if (displacement.lengthSquared() <= 25 && displacement.lengthSquared() > velocity.lengthSquared()) velocity = displacement;
+        }
+        canopy.dive.vx = velocity.x; canopy.dive.vy = velocity.y; canopy.dive.vz = velocity.z;
+        canopy.dive.yaw = player.getYaw(); canopy.diveDistance = player.fallDistance;
+        canopy.setVelocity(velocity); canopy.dataTracker.set(OWNER, player.getId());
+        NbtCompound entry = new NbtCompound(); entry.putLong("Started", player.getWorld().getTime());
+        entry.putBoolean("Cabin", source != null);
+        Quaternionf rotation = new Quaternionf().rotationY((float) -Math.toRadians(player.bodyYaw));
+        if (source != null) {
+            Quaternionf body = HelicopterCollision.pose(source).rotation();
+            rotation.set(body).rotateY((float) Math.toRadians(HelicopterCabin.side(seat) == 0 ? 90 : -90));
+            Vec3d local = player.getPos().subtract(source.getPos()).rotateY((float) Math.toRadians(source.getYaw()));
+            Vector3f visual = new Vector3f((float) local.x, (float) local.y, (float) local.z).rotate(body);
+            Vec3d offset = source.getPos().add(visual.x, visual.y, visual.z).subtract(player.getPos());
+            entry.putDouble("X", offset.x); entry.putDouble("Y", offset.y); entry.putDouble("Z", offset.z);
+        }
+        entry.putFloat("Qx", rotation.x); entry.putFloat("Qy", rotation.y);
+        entry.putFloat("Qz", rotation.z); entry.putFloat("Qw", rotation.w);
+        canopy.dataTracker.set(ENTRY, entry);
+        if (!player.getWorld().spawnEntity(canopy)) return false;
+        if (!player.startRiding(canopy, true)) { canopy.discard(); return false; }
+        return true;
     }
 
     /** 两端共用资格，服务端开伞时再次复核；未叠好、低空或空间不足均不显示 F。 */
     public static boolean canDeploy(PlayerEntity player) {
-        return player.isAlive() && !player.isSpectator() && !player.hasVehicle() && !player.isOnGround()
+        return player.isAlive() && !player.isSpectator()
+                && (!player.hasVehicle() || player.getVehicle() instanceof ParachuteEntity canopy && canopy.isFreefall())
+                && !player.isOnGround()
                 && !player.isTouchingWater() && !player.isInLava() && !player.isFallFlying()
                 && !player.getAbilities().flying
                 && ParachuteItem.isPacked(player.getEquippedStack(EquipmentSlot.CHEST))
@@ -125,23 +197,21 @@ public final class ParachuteEntity extends Entity {
     /** 成功生成、挂载后才消耗耐久及折叠状态；故障按消耗前的剩余耐久判断。 */
     public static void deploy(ServerPlayerEntity player) {
         if (!canDeploy(player)) return;
+        if (!player.hasVehicle() && !startFreefall(player, null, -1)) return;
+        if (player.getVehicle() instanceof ParachuteEntity canopy) canopy.open(player);
+    }
+
+    /** 同一实体从趴姿转为开伞，保留速度及人物姿态；完成资格复核后才扣耐久并抽取故障。 */
+    private void open(ServerPlayerEntity player) {
+        if (!isFreefall() || !canDeploy(player)) return;
         ItemStack pack = player.getEquippedStack(EquipmentSlot.CHEST);
-        ParachuteEntity canopy = new ParachuteEntity(ModParachutes.CANOPY, player.getWorld());
-        canopy.setPosition(player.getPos()); canopy.setYaw(player.getYaw());
-        Vec3d velocity = player.getVelocity();
-        // 原版自由落体以坐标包更新，最近一 tick 位移补足服务端 velocity 未包含的惯性。
-        Vec3d displacement = player.getPos().subtract(player.prevX, player.prevY, player.prevZ);
-        if (displacement.lengthSquared() <= 25 && displacement.lengthSquared() > velocity.lengthSquared())
-            velocity = displacement;
-        canopy.flight.vx = velocity.x; canopy.flight.vy = velocity.y; canopy.flight.vz = velocity.z;
-        canopy.flight.yaw = player.getYaw(); canopy.setVelocity(velocity);
-        canopy.ownerUuid = player.getUuid(); canopy.packUuid = UUID.randomUUID();
-        canopy.dataTracker.set(OWNER, player.getId());
-        if (!player.getWorld().spawnEntity(canopy)) return;
-        if (!player.startRiding(canopy, true)) { canopy.discard(); return; }
-        canopy.dataTracker.set(FAILURE, rollFailure(pack, player.getRandom()));
-        ParachuteItem.markUsed(pack, canopy.packUuid);
-        if (canopy.failure() == WING_LOST) ParachuteItem.loseWing(pack);
+        Vec3d velocity = getVelocity();
+        flight.vx = velocity.x; flight.vy = velocity.y; flight.vz = velocity.z;
+        flight.yaw = getYaw(); flight.yawRate = flight.bank = flight.pitch = 0;
+        packUuid = UUID.randomUUID(); dataTracker.set(MODE, ACTIVE);
+        dataTracker.set(FAILURE, rollFailure(pack, player.getRandom()));
+        ParachuteItem.markUsed(pack, packUuid);
+        if (failure() == WING_LOST) ParachuteItem.loseWing(pack);
         else pack.damage(ParachuteItem.DEPLOY_DAMAGE, player, EquipmentSlot.CHEST);
         ModAdvancements.grant(player, ModAdvancements.DIFFERENT_ENDING);
         player.getWorld().playSound(null, player.getBlockPos(), SoundEvents.ITEM_ARMOR_EQUIP_LEATHER.value(),
@@ -158,8 +228,13 @@ public final class ParachuteEntity extends Entity {
 
     /** 真实乘员的 WASD 意图；卡伞时只接受分离的 F 按下边沿，长按重复不计。 */
     public void control(PlayerEntity player, ParachutePayload packet) {
-        if (mode() != ACTIVE || !hasPassenger(player) || !packet.valid()) return;
+        if (!isAirborne() || !hasPassenger(player) || !packet.valid()) return;
         forwardInput = packet.forward(); turnInput = packet.turn(); lastInput = getWorld().getTime();
+        lookYaw = packet.lookYaw(); lookPitch = packet.lookPitch();
+        if (isFreefall()) {
+            if (packet.deploy() && player instanceof ServerPlayerEntity serverPlayer) open(serverPlayer);
+            return;
+        }
         if (failure() != JAMMED || !packet.deploy() || lastInput - lastPull < 2) return;
         int progress = lastInput - lastPull > PULL_WINDOW ? JAM_START : dataTracker.get(OPENING);
         lastPull = lastInput; progress = Math.min(ParachutePhysics.OPEN_TICKS, progress + 4);
@@ -171,7 +246,7 @@ public final class ParachuteEntity extends Entity {
     @Override public LivingEntity getControllingPassenger() { return null; }
     /** 失压布面不可再乘坐，载人阶段仅允许一名玩家。 */
     @Override protected boolean canAddPassenger(Entity passenger) {
-        return mode() == ACTIVE && !hasPassengers() && passenger instanceof PlayerEntity;
+        return isAirborne() && !hasPassengers() && passenger instanceof PlayerEntity;
     }
     /** 不受实体推挤，但保留原版 move 方块碰撞。 */
     @Override public boolean isPushable() { return false; }
@@ -185,6 +260,7 @@ public final class ParachuteEntity extends Entity {
     @Override public void tick() {
         super.tick();
         if (getWorld().isClient) { tickClient(); return; }
+        if (isFreefall()) { tickFreefall(); return; }
         if (mode() != ACTIVE) { tickLoose(); return; }
         PlayerEntity player = getFirstPassenger() instanceof PlayerEntity rider ? rider : owner();
         if (player == null) { if (++emptyTicks > 100) discard(); return; }
@@ -226,6 +302,42 @@ public final class ParachuteEntity extends Entity {
             if (impact > 0) player.damage(ground ? getDamageSources().fall()
                     : getDamageSources().flyIntoWall(), (float) (impact * impact * .16));
         }
+    }
+
+    /** 未开伞阶段积分重力、姿态阻力和水平平移；net.minecraft.entity.Entity#move 继续执行真实方块碰撞。 */
+    private void tickFreefall() {
+        PlayerEntity player = getFirstPassenger() instanceof PlayerEntity rider ? rider : null;
+        if (player == null) { if (++emptyTicks > 100) discard(); return; }
+        emptyTicks = 0;
+        if (!player.isAlive() || !ParachuteItem.isPacked(player.getEquippedStack(EquipmentSlot.CHEST))) {
+            finishFreefall(player, false); return;
+        }
+        if (getWorld().getTime() - lastInput > 10) { forwardInput = 0; turnInput = 0; }
+        SkydivingPhysics.step(dive, forwardInput, turnInput, lookYaw, lookPitch);
+        setYaw(MathHelper.wrapDegrees((float) dive.yaw));
+        dataTracker.set(DIVE_PITCH, (float) dive.pitch); dataTracker.set(DIVE_BANK, (float) dive.bank);
+        dataTracker.set(DIVE_TUCK, (float) dive.tuck);
+        Vec3d velocity = new Vec3d(dive.vx, dive.vy, dive.vz);
+        double previousY = getY(); setVelocity(velocity); move(MovementType.SELF, velocity);
+        diveDistance += (float) Math.max(0, previousY - getY()); velocityDirty = true;
+        if (isTouchingWater() || isInLava() || isOnGround() || horizontalCollision || verticalCollision) {
+            boolean ground = isOnGround(), water = isTouchingWater() || isInLava();
+            finishFreefall(player, true);
+            if (ground && !water) player.handleFallDamage(diveDistance, 1, getDamageSources().fall());
+            else if (!water && velocity.horizontalLength() * 20 > SAFE_WALL_SPEED) {
+                double impact = velocity.horizontalLength() * 20 - SAFE_WALL_SPEED;
+                player.damage(getDamageSources().flyIntoWall(), (float) (impact * impact * .16));
+            }
+        }
+    }
+
+    /** 趴姿触地/碰墙或失去伞包时恢复原版玩家；未开伞不生成伞布、不改变伞包，不豁免累计跌落伤害。 */
+    private void finishFreefall(PlayerEntity player, boolean stopped) {
+        Vec3d position = getPos(), velocity = getVelocity();
+        player.stopRiding(); player.requestTeleport(position.x, position.y, position.z);
+        player.setVelocity(stopped ? Vec3d.ZERO : velocity); player.velocityModified = true;
+        player.fallDistance = stopped ? 0 : diveDistance;
+        discard();
     }
 
     /**
@@ -282,6 +394,8 @@ public final class ParachuteEntity extends Entity {
     private void tickClient() {
         previousOpening = dataTracker.get(OPENING); previousBank = dataTracker.get(BANK);
         previousCanopyPitch = dataTracker.get(CANOPY_PITCH);
+        previousDivePitch = dataTracker.get(DIVE_PITCH); previousDiveBank = dataTracker.get(DIVE_BANK);
+        previousDiveTuck = dataTracker.get(DIVE_TUCK);
         if (lerpTicks > 0) {
             setPosition(getX() + (lerpX - getX()) / lerpTicks, getY() + (lerpY - getY()) / lerpTicks,
                     getZ() + (lerpZ - getZ()) / lerpTicks);
@@ -290,6 +404,45 @@ public final class ParachuteEntity extends Entity {
     }
     /** 同步模式，显示端不能自行切换生命周期。 */
     public int mode() { return dataTracker.get(MODE); }
+    /** 未开伞阶段不绘制翼面、不消耗伞包；服务端仍拥有玩家运动。 */
+    public boolean isFreefall() { return mode() == FREEFALL; }
+    /** 只有未开伞及载人翼面阶段控制乘员，失压布料不接管玩家。 */
+    public boolean isAirborne() { return isFreefall() || mode() == ACTIVE; }
+    /** 旧存档已经展开的伞没有离机姿态，应直接使用原有握绳姿势。 */
+    public boolean hasDiveEntry() { return !dataTracker.get(ENTRY).isEmpty(); }
+    /** 世界 tick 驱动离机到趴姿的平滑比例；新进入视野的玩家读取已完成的同一时间线。 */
+    public float entryBlend(float delta) {
+        if (!hasDiveEntry()) return 1;
+        float t = Math.clamp((getWorld().getTime() - dataTracker.get(ENTRY).getLong("Started") + delta)
+                / SkydivingPhysics.ENTRY_TICKS, 0, 1);
+        return t * t * (3 - 2 * t);
+    }
+    /** 跳机前的模型缩放与腿部动作只在直升机跃出时使用，普通坠落从原版站姿过渡。 */
+    public boolean enteredFromCabin() { return dataTracker.get(ENTRY).getBoolean("Cabin"); }
+    /** 跃出末帧的世界身体四元数；net.minecraft.entity.Entity 的观察方向不被回写。 */
+    public Quaternionf entryRotation() {
+        NbtCompound entry = dataTracker.get(ENTRY);
+        return entry.isEmpty() ? new Quaternionf().rotationY((float) -Math.toRadians(getYaw()))
+                : new Quaternionf(entry.getFloat("Qx"), entry.getFloat("Qy"), entry.getFloat("Qz"), entry.getFloat("Qw"));
+    }
+    /** 机身倾斜造成的乘员视觉/权威位置差在入趴姿时逐渐消失，相机与第三人称读取同一偏移。 */
+    public Vec3d entryOffset(float delta) {
+        NbtCompound entry = dataTracker.get(ENTRY);
+        return new Vec3d(entry.getDouble("X"), entry.getDouble("Y"), entry.getDouble("Z")).multiply(1 - entryBlend(delta));
+    }
+    /** 趴姿与握绳动作随 24 tick 开伞过程平滑混合，未开伞时保持趴姿。 */
+    public float openingBlend(float delta) {
+        if (isFreefall()) return 0;
+        if (!hasDiveEntry()) return 1;
+        float t = (float) Math.clamp(openingTicks(delta) / ParachutePhysics.OPEN_TICKS, 0, 1);
+        return t * t * (3 - 2 * t);
+    }
+    /** 未开伞身体俯仰插值，单位度。 */
+    public float divePitch(float delta) { return MathHelper.lerp(delta, previousDivePitch, dataTracker.get(DIVE_PITCH)); }
+    /** 平移造成的身体侧倾插值，D 为正，单位度。 */
+    public float diveBank(float delta) { return MathHelper.lerp(delta, previousDiveBank, dataTracker.get(DIVE_BANK)); }
+    /** 纯前进时收拢，静止及其他平移方向展开，返回连续的 0..1 比例。 */
+    public float diveTuck(float delta) { return MathHelper.lerp(delta, previousDiveTuck, dataTracker.get(DIVE_TUCK)); }
     /** 同步故障类型；卡伞完成后变为 NORMAL。 */
     public int failure() { return dataTracker.get(FAILURE); }
     /** 卡伞时客户端允许 F 连点，实际处理仍校验真实乘员。 */
@@ -355,7 +508,10 @@ public final class ParachuteEntity extends Entity {
         if (packUuid != null) nbt.putUuid("Pack", packUuid);
         nbt.putDouble("YawRate", flight.yawRate); nbt.putDouble("Bank", flight.bank);
         nbt.putDouble("CanopyPitch", flight.pitch);
-        if (mode() != ACTIVE) nbt.put("Cloth", cloth.snapshot(true));
+        nbt.put("DiveEntry", dataTracker.get(ENTRY).copy());
+        nbt.putDouble("DivePitch", dataTracker.get(DIVE_PITCH)); nbt.putDouble("DiveBank", dataTracker.get(DIVE_BANK));
+        nbt.putDouble("DiveTuck", dataTracker.get(DIVE_TUCK)); nbt.putFloat("DiveDistance", diveDistance);
+        if (!isAirborne()) nbt.put("Cloth", cloth.snapshot(true));
     }
     /** NBT 姿态限定有限范围；原版 Entity 恢复 Motion、Rotation 和乘员关系。 */
     @Override protected void readCustomDataFromNbt(NbtCompound nbt) {
@@ -365,7 +521,7 @@ public final class ParachuteEntity extends Entity {
         }
         ownerUuid = nbt.containsUuid("Owner") ? nbt.getUuid("Owner") : null;
         packUuid = nbt.containsUuid("Pack") ? nbt.getUuid("Pack") : null;
-        dataTracker.set(MODE, Math.clamp(nbt.getInt("Mode"), ACTIVE, DETACHED));
+        dataTracker.set(MODE, Math.clamp(nbt.getInt("Mode"), ACTIVE, FREEFALL));
         dataTracker.set(FAILURE, Math.clamp(nbt.getInt("Failure"), NORMAL, WING_LOST));
         detachedTicks = Math.clamp(nbt.getInt("DetachedTicks"), 0, DETACHED_LIFETIME);
         flyingTicks = Math.max(0, nbt.getInt("FlyingTicks"));
@@ -375,6 +531,36 @@ public final class ParachuteEntity extends Entity {
         dataTracker.set(BANK, (float) flight.bank);
         flight.pitch = Math.clamp(pitch, -ParachutePhysics.MAX_PITCH, ParachutePhysics.MAX_PITCH);
         dataTracker.set(CANOPY_PITCH, (float) flight.pitch);
-        if (mode() != ACTIVE) { cloth.read(nbt.getCompound("Cloth")); dataTracker.set(CLOTH, cloth.snapshot(false)); }
+        readDive(nbt);
+        if (!isAirborne()) { cloth.read(nbt.getCompound("Cloth")); dataTracker.set(CLOTH, cloth.snapshot(false)); }
+    }
+
+    /** NBT 系统边界验证未开伞姿态及离机四元数，旧存档缺省为已展开的原有姿势，不重置伞包状态。 */
+    private void readDive(NbtCompound nbt) {
+        double pitch = nbt.contains("DivePitch") ? nbt.getDouble("DivePitch") : 90;
+        double bank = nbt.getDouble("DiveBank"), tuck = nbt.getDouble("DiveTuck");
+        float distance = nbt.getFloat("DiveDistance");
+        if (!Double.isFinite(pitch) || !Double.isFinite(bank) || !Double.isFinite(tuck) || !Float.isFinite(distance)) {
+            No_24_heli.LOGGER.warn("未开伞姿态存档无效，恢复中性：{}", getUuid());
+            pitch = 90; bank = tuck = distance = 0;
+        }
+        dive.pitch = Math.clamp(pitch, 65, 175); dive.bank = Math.clamp(bank, -25, 25); dive.tuck = Math.clamp(tuck, 0, 1);
+        diveDistance = Math.max(0, distance); dive.yaw = getYaw(); lookYaw = getYaw();
+        Vec3d velocity = getVelocity(); dive.vx = velocity.x; dive.vy = velocity.y; dive.vz = velocity.z;
+        dataTracker.set(DIVE_PITCH, (float) dive.pitch); dataTracker.set(DIVE_BANK, (float) dive.bank);
+        dataTracker.set(DIVE_TUCK, (float) dive.tuck);
+        NbtCompound entry = nbt.getCompound("DiveEntry").copy();
+        if (!entry.isEmpty()) {
+            Quaternionf rotation = new Quaternionf(entry.getFloat("Qx"), entry.getFloat("Qy"), entry.getFloat("Qz"), entry.getFloat("Qw"));
+            Vec3d offset = new Vec3d(entry.getDouble("X"), entry.getDouble("Y"), entry.getDouble("Z"));
+            if (!rotation.isFinite() || rotation.lengthSquared() < .001 || !Double.isFinite(offset.lengthSquared())
+                    || offset.lengthSquared() > 400) {
+                No_24_heli.LOGGER.warn("未开伞离机姿态存档无效，丢弃过渡：{}", getUuid()); entry = new NbtCompound();
+            } else {
+                rotation.normalize(); entry.putFloat("Qx", rotation.x); entry.putFloat("Qy", rotation.y);
+                entry.putFloat("Qz", rotation.z); entry.putFloat("Qw", rotation.w);
+            }
+        }
+        dataTracker.set(ENTRY, entry);
     }
 }

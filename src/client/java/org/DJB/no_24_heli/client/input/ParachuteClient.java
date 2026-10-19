@@ -39,7 +39,7 @@ public final class ParachuteClient {
             "key.no_24_heli.parachute", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F, "category.no_24_heli"));
     /** 只缓存一次按下边沿，GUI 打开或离开世界时丢弃。 */
     private static boolean deployRequested;
-    /** 当前伞的追踪 ID，用于只在初次挂载时覆盖原版不适用的 Shift 脱离提示。 */
+    /** 当前伞实体 ID：仅初次乘骑时清除原版 Shift 脱离提示，避免每 tick 覆盖其他消息。 */
     private static int mountedCanopy = -1;
 
     /** 无实例，输入状态仅属于当前客户端。 */
@@ -97,9 +97,9 @@ public final class ParachuteClient {
             }
             boolean active = client.player.getVehicle() instanceof ParachuteEntity;
             int currentCanopy = active ? client.player.getVehicle().getId() : -1;
+            // net.minecraft.client.gui.hud.InGameHud#setOverlayMessage 清除原版骑乘提示，不替换成操作说明。
             if (currentCanopy != mountedCanopy && active)
-                client.inGameHud.setOverlayMessage(net.minecraft.text.Text.translatable(
-                        "hud.no_24_heli.parachute_controls"), false);
+                client.inGameHud.setOverlayMessage(net.minecraft.text.Text.empty(), false);
             mountedCanopy = currentCanopy;
             boolean deploy = deployRequested && client.currentScreen == null && canPull(client);
             deployRequested = false;
@@ -109,7 +109,8 @@ public final class ParachuteClient {
                     - (client.options.backKey.isPressed() ? 1 : 0) : 0;
             float turn = input ? (client.options.rightKey.isPressed() ? 1 : 0)
                     - (client.options.leftKey.isPressed() ? 1 : 0) : 0;
-            ClientPlayNetworking.send(new ParachutePayload(forward, turn, deploy));
+            ClientPlayNetworking.send(new ParachutePayload(forward, turn, deploy,
+                    net.minecraft.util.math.MathHelper.wrapDegrees(client.player.getYaw()), client.player.getPitch()));
         });
     }
 }
