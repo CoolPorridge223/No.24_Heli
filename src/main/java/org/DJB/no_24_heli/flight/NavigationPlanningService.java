@@ -34,6 +34,14 @@ public final class NavigationPlanningService {
     private NavigationPlanningService() {}
 
     /**
+     * 功能：把已完成的地形快照送入同一有界工作队列；不新增线程或绕开取消机制。
+     * 无 MC API；服务端提交、后台只读，快照不含世界或实体；队列满由驾驶器悬停重试。
+     */
+    static Future<NavigationTerrainRoute.Result> submitTerrain(NavigationTerrainSnapshot snapshot) {
+        return EXECUTOR.submit(snapshot::plan);
+    }
+
+    /**
      * 功能：提交一次规划，队列满时由调用方处理 RejectedExecutionException 并继续悬停。
      * 引用 MC API：无。端侧/线程：服务端 tick 提交，纯算法在后台执行。
      * 参数：起终点、全部圆快照和有限资源配置。返回：可取消的规划结果。

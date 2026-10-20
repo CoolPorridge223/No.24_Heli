@@ -12,7 +12,6 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.Heightmap;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -20,7 +19,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 
 /**
- * 文件职责：在主线程制作禁区快照、接收后台 A* 曲线结果并连续跟随轨迹，复用原高度与运动控制。
+ * 文件职责：编排禁区全局路线与地形三维局部路线，按飞行时间和顶棚风险选择升降及绕行。
  * 端侧：SERVER；关联通道：no_24_heli:navigation、no_24_heli:controls。
  * 依赖 MC API：net.minecraft.server.world.ServerWorld 提供地形和持久状态；
  * net.minecraft.entity.Entity#getWidth 提供稳定机体尺寸；net.minecraft.entity.player.PlayerEntity 接收提示。
@@ -29,8 +28,8 @@ import java.util.concurrent.RejectedExecutionException;
  * 故障排查：旧路线恢复查 pending 的取消；卡顿查 Future 是否阻塞；实际切角查惯性通道限速。
  */
 public final class NavigationPilot {
-    /** 前视范围 256 格，地形净空 10 格；目标高度变化限制为每 tick 0.10 格。 */
-    private static final double TERRAIN_LOOK=256,CLEARANCE=10,CLIMB_STEP=.10;
+    /** 每次沿全局路线取最多 256 格局部目标，四侧另留搜索空间；高度目标每 tick 最多变化 0.10 格。 */
+    private static final double TERRAIN_LOOK=256,CLIMB_STEP=.10;
     /** 最终到点半径 0.5 格、停稳速度 0.01 格/tick；提交前漂移降至 0.03 格/tick。 */
     private static final double ARRIVAL_DISTANCE=.5,ARRIVAL_SPEED=.01,PLAN_SPEED=.03;
     /** 保守制动加速度 0.008 格/tick²，并为机体姿态响应留出 12 tick。 */
@@ -47,15 +46,24 @@ public final class NavigationPilot {
     /** 失败后不重复大搜索，修改禁区或重新开启导航才再规划。 */
     private boolean attempted;
     /** 禁区快照版本及重试/地形采样时刻，单位服务端 tick；不进行网络同步。 */
-    private long revision=-1,retryAt,terrainAt;
-    /** 当前目标及原地形前视缓存，单位格；NaN只标记尚未初始化。 */
-    private double goalX=Double.NaN,goalZ,terrainAltitude,ridgeDistance;
-    /** 下一个轨迹采样索引，供原地形扫描使用。 */
+    private long revision=-1,retryAt;
+    /** 当前目标坐标，单位格；NaN只标记尚未初始化。 */
+    private double goalX=Double.NaN,goalZ;
+    /** 下一个全局路线采样索引，只有到达对应局部终点后才推进，侧绕期间不做全局最近点跳跃。 */
     private int node;
-    /** 本机连续控制、局部跟踪和只读轨迹；只在取消时清除控制器记忆。 */
+    /** 本机连续控制与只读全局轨迹；只在取消时清除控制器记忆。 */
     private final NavigationController controller = new NavigationController();
-    private final NavigationFollower follower = new NavigationFollower();
     private NavigationTrajectory trajectory;
+    /** 地形采集、后台结果和跟随段状态；全部由服务端主线程独占管理，取消时一起失效。 */
+    private NavigationTerrainSnapshot terrainSnapshot;
+    private Future<NavigationTerrainRoute.Result> terrainPending;
+    private NavigationTerrainRoute.Result terrainRoute;
+    private int terrainNode,terrainGoalNode;
+    /** 动态障碍持续两秒触发重规划；采集失败五秒后重试以等待新区块或障碍变化。 */
+    private long terrainRetryAt,blockedAt=-1;
+    private static final int TERRAIN_RETRY_TICKS=100;
+    /** 重复失败不每次刷新动作栏；新目标清除该诊断状态。 */
+    private NavigationRoute.Status terrainFailure;
     /** 生命周期诊断状态；状态切换绝不清零实际速度，不进入存档和网络协议。 */
     public enum Phase { IDLE, PLANNING, READY, ACCELERATING, CRUISING, TURNING,
         DECELERATING, ARRIVING, COMPLETED, REPLANNING, FAILED, CANCELLED }
@@ -78,8 +86,9 @@ public final class NavigationPilot {
      */
     public void reset(){
         if(pending!=null){NavigationPlanningService.cancel(pending);pending=null;}
+        cancelTerrain();terrainRetryAt=0;terrainFailure=null;
         revision=-1;goalX=Double.NaN;route=List.of();circles=List.of();settings=null;
-        node=0;retryAt=terrainAt=0;terrainAltitude=Double.NaN;attempted=false;
+        node=0;retryAt=0;attempted=false;
         trajectory=null;controller.reset();phase=Phase.CANCELLED;
     }
 
@@ -102,6 +111,7 @@ public final class NavigationPilot {
         boolean newTarget=goalX!=goal.x()||goalZ!=goal.z()||!currentSettings.equals(settings);
         boolean changed=newTarget||revision!=airspace.revision();
         if(changed){
+            cancelTerrain();terrainRetryAt=0;
             if(newTarget) reset();
             else if(pending!=null){NavigationPlanningService.cancel(pending);pending=null;}
             revision=airspace.revision();goalX=goal.x();goalZ=goal.z();settings=currentSettings;
@@ -152,9 +162,9 @@ public final class NavigationPilot {
                     h.getUuid(),result.status(),result.expandedNodes(),result.path().size(),result.startEnclosed(),result.goalEnclosed(),result.cellSize(),planningNanos/1_000_000.0,planned.reused());
             if(result.status()==NavigationRoute.Status.SUCCESS){
                 if(!planned.reused()){
-                    trajectory=planned.trajectory();route=trajectory.points();follower.bind(trajectory);node=1;terrainAt=0;
+                    trajectory=planned.trajectory();route=trajectory.points();node=1;
                 }
-                phase=Phase.READY;notify(h,"route_success");
+                phase=Phase.PLANNING;notify(h,"route_terrain_planning");
             }else if(result.status()==NavigationRoute.Status.ALREADY_ARRIVED){
                 if(Math.hypot(h.getX()-goalX,h.getZ()-goalZ)<ARRIVAL_DISTANCE
                         &&Math.hypot(h.flight.vx,h.flight.vz)<ARRIVAL_SPEED){
@@ -191,81 +201,175 @@ public final class NavigationPilot {
         };
     }
 
-    /**
-     * 功能：推进安全路径点，沿用地形预判、原高度控制与姿态闭环。
-     * 引用 MC API：net.minecraft.entity.Entity#getBoundingBox 与 ServerWorld 用于原局部碰撞检查。
-     * 端侧/线程：服务端 tick。返回：无。副作用：只输出输入，不改实体坐标或实际速度。
-     * 故障排查：切角查前视和制动距离；到点未退出查速度门槛。
-     */
-    private void follow(HelicopterEntity h,ServerWorld world,NavigationRoute.Point pos,NavigationRoute.Point goal){
-        var s=h.flight;
-        double speed=Math.hypot(s.vx,s.vz);
-        if(NavigationRoute.distance(pos,goal)<ARRIVAL_DISTANCE&&speed<ARRIVAL_SPEED){
-            h.finishAutopilot();phase=Phase.COMPLETED;notify(h,"route_arrived");return;
-        }
-        var sample=follower.sample(pos,speed,HeliConfig.INSTANCE.autopilotLookMin,
-                HeliConfig.INSTANCE.autopilotLookMax,circles,settings);
-        node=follower.nextNode();
-        if(!sample.safe()||sample.deviation()>12){
-            if(pending!=null){NavigationPlanningService.cancel(pending);pending=null;}
-            route=List.of();trajectory=null;attempted=false;phase=Phase.REPLANNING;
-            controller.step(s,h.getX(),h.getZ(),pos,0,0,0);return;
-        }
-        double remaining=Math.max(sample.remaining(),NavigationRoute.distance(pos,goal));
-        var target=sample.target();
-        double dx=target.x()-h.getX(),dz=target.z()-h.getZ(),distance=Math.hypot(dx,dz);
-        double look=Math.min(distance,Math.max(24,speed*60+12));
-        Vec3d ahead=distance<.1?Vec3d.ZERO:new Vec3d(dx/distance*look,0,dz/distance*look);
-        // 实际前视与惯性通道独立检查，未知区块不强制加载。
-        Box base=h.getBoundingBox().expand(2,.7,2);
-        boolean forwardClear=corridorClear(world,h,base,ahead);
-        boolean driftClear=corridorClear(world,h,base,new Vec3d(s.vx*(speed/(2*BRAKE_ACCELERATION)+BRAKE_RESPONSE),Math.min(0,s.vy*30),s.vz*(speed/(2*BRAKE_ACCELERATION)+BRAKE_RESPONSE)));
-        double limit=forwardClear&&driftClear?Math.min(sample.speed(),NavigationRoute.speedLimit(pos,s.vx,s.vz,circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0)):0;
-        if(world.getTime()>=terrainAt||Double.isNaN(terrainAltitude)){
-            previewTerrain(world,h,pos);terrainAt=world.getTime()+10;
-        }
-        // 在山体尚未进入制动通道前就开始爬升；剩余距离决定水平限速，避免贴山急拉。
-        double desired=Math.max(s.targetAltitude,terrainAltitude);
-        if(!forwardClear){
-            for(int rise=4;rise<=64;rise+=4)if(h.getY()+rise+4<world.getTopY()
-                    &&clear(world,h,base.stretch(0,rise,0))&&corridorClear(world,h,base.offset(0,rise,0),ahead)){
-                desired=Math.max(desired,h.getY()+rise);break;
-            }
-        }
-        desired=Math.min(desired,world.getTopY()-5);
-        if(desired>s.targetAltitude&&clear(world,h,base.stretch(0,2,0)))s.targetAltitude=Math.min(desired,s.targetAltitude+CLIMB_STEP);
-        double rise=Math.max(0,terrainAltitude-h.getY());
-        if(rise>2)limit=Math.min(limit,Math.max(.06,ridgeDistance*.08/(rise+8)));
-        controller.step(s,h.getX(),h.getZ(),target,limit,remaining,sample.curvature());
-        if(pending!=null)phase=Phase.REPLANNING;
-        else if(remaining<8)phase=Phase.ARRIVING;
-        else if(limit<speed-.03)phase=Phase.DECELERATING;
-        else if(Math.abs(sample.curvature())>.002)phase=Phase.TURNING;
-        else if(controller.commandedSpeed()>speed+.02)phase=Phase.ACCELERATING;
-        else phase=Phase.CRUISING;
+    /** 功能：同时取消地形采集、搜索和跟随；无 MC API，不改变飞机真实速度。 */
+    private void cancelTerrain(){
+        if(terrainPending!=null){NavigationPlanningService.cancel(terrainPending);terrainPending=null;}
+        terrainSnapshot=null;terrainRoute=null;terrainNode=0;blockedAt=-1;
     }
 
-    /** 沿缓存路线分段采样地形，不把弯道内侧或相邻山体误当作路线上的山峰。 */
-    private void previewTerrain(ServerWorld world,HelicopterEntity h,NavigationRoute.Point start){
-        terrainAltitude=h.flight.targetAltitude;ridgeDistance=TERRAIN_LOOK;
-        var from=start;double travelled=0;
-        for(int at=node;at<route.size()&&travelled<TERRAIN_LOOK;at++){
-            var to=route.get(at);double length=NavigationRoute.distance(from,to);if(length<.01){from=to;continue;}
-            double end=Math.min(length,TERRAIN_LOOK-travelled);
-            for(double d=0;d<=end;d+=8){
-                double x=from.x()+(to.x()-from.x())*d/length,z=from.z()+(to.z()-from.z())*d/length;
-                double top=Double.NEGATIVE_INFINITY;
-                for(int side=-1;side<=1;side++){
-                    int bx=MathHelper.floor(x-(to.z()-from.z())/length*side*3),bz=MathHelper.floor(z+(to.x()-from.x())/length*side*3);
-                    if(!world.getChunkManager().isChunkLoaded(bx>>4,bz>>4))return;
-                    top=Math.max(top,world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES,bx,bz)+CLEARANCE);
+    /**
+     * 功能：选择全局路线前方局部终点，停稳后分片采集，非阻塞提交及接收三维路线。
+     * MC API：net.minecraft.server.world.ServerWorld#getTime 限频；其余世界读取仅采集器主线程执行。
+     * 返回：是否已有可用路线；副作用：更新 Future 与规划诊断，不修改实体位置或速度。
+     * 排查：地图设点或禁区变化须同时取消两级 Future；局部失败不能退回无地形直飞。
+     */
+    private boolean prepareTerrain(HelicopterEntity h,ServerWorld world){
+        if(terrainRoute!=null)return true;
+        long now=world.getTime();
+        if(terrainPending!=null&&terrainPending.isDone()){
+            var completed=terrainPending;terrainPending=null;
+            try{
+                var result=completed.get();expandedNodes+=result.expanded();
+                if(result.status()==NavigationRoute.Status.SUCCESS&&result.path().size()>1
+                        &&result.volume().clear(terrainPosition(h),result.path().getFirst())){
+                    terrainRoute=result;terrainNode=1;terrainFailure=null;phase=Phase.READY;
+                    No_24_heli.LOGGER.info("三维地形规划：飞机={}，节点={}，航点={}，风险加权tick={}",
+                            h.getUuid(),result.expanded(),result.path().size(),result.costTicks());
+                    notify(h,"route_success");return true;
                 }
-                // 上方有实心顶棚时保持局部障碍检查，防止洞内导航追逐山顶高度。
-                if(!world.isSkyVisible(h.getBlockPos().up(4)))return;
-                if(top>terrainAltitude){terrainAltitude=top;ridgeDistance=Math.max(8,travelled+d);}
+                terrainFailed(h,result.status()==NavigationRoute.Status.SUCCESS
+                        ?NavigationRoute.Status.TRAJECTORY_UNSAFE:result.status(),now);
+            }catch(CancellationException e){terrainFailed(h,NavigationRoute.Status.INTERRUPTED,now);
+            }catch(InterruptedException e){
+                Thread.currentThread().interrupt();terrainFailed(h,NavigationRoute.Status.INTERRUPTED,now);
+            }catch(ExecutionException e){
+                No_24_heli.LOGGER.error("三维地形规划失败：飞机={}",h.getUuid(),e.getCause());
+                terrainFailed(h,NavigationRoute.Status.TRAJECTORY_UNSAFE,now);
             }
-            travelled+=end;from=to;
         }
+        if(pending!=null||terrainPending!=null||now<terrainRetryAt)return false;
+        if(terrainSnapshot==null){
+            if(Math.hypot(h.flight.vx,h.flight.vz)>PLAN_SPEED||Math.abs(h.flight.vy)>.02)return false;
+            var from=new NavigationRoute.Point(h.getX(),h.getZ());double distance=0;
+            terrainGoalNode=Math.min(node,route.size()-1);
+            for(int at=terrainGoalNode;at<route.size();at++){
+                double segment=NavigationRoute.distance(from,route.get(at));
+                if(distance+segment>TERRAIN_LOOK&&at>node)break;
+                if(!loadedAround(world,route.get(at)))break;
+                distance+=segment;from=route.get(at);terrainGoalNode=at;
+            }
+            if(!loadedAround(world,route.get(terrainGoalNode))){
+                terrainFailed(h,NavigationRoute.Status.GRID_RESOLUTION,now);return false;
+            }
+            terrainSnapshot=new NavigationTerrainSnapshot(world,terrainPosition(h),route.get(terrainGoalNode),
+                    circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0);
+            if(terrainSnapshot.tooLarge()){
+                terrainSnapshot=null;terrainFailed(h,NavigationRoute.Status.CELL_LIMIT,now);return false;
+            }
+            phase=Phase.PLANNING;
+        }
+        terrainSnapshot.step(world,h);
+        if(terrainSnapshot.complete()){
+            try{
+                terrainPending=NavigationPlanningService.submitTerrain(terrainSnapshot);terrainSnapshot=null;
+            }catch(RejectedExecutionException e){terrainRetryAt=now+BUSY_TICKS;notify(h,"route_busy");}
+        }
+        return false;
+    }
+
+    /** 功能：记录局部精度或资源失败，等待已加载世界变化后重试；不宣称整个空间不可达。 */
+    private void terrainFailed(HelicopterEntity h,NavigationRoute.Status status,long now){
+        terrainRetryAt=now+TERRAIN_RETRY_TICKS;phase=Phase.FAILED;
+        if(terrainFailure!=status){
+            notify(h,switch(status){
+                case GRID_RESOLUTION,TRAJECTORY_UNSAFE -> "route_terrain_wait";
+                case NODE_LIMIT -> "route_terrain_limit";
+                default -> messageKey(status);
+            });terrainFailure=status;
+            No_24_heli.LOGGER.info("三维地形规划等待：飞机={}，状态={}",h.getUuid(),status);}
+    }
+
+    /** 功能：获取实体原点的纯三维快照；MC API：net.minecraft.entity.Entity#getX/#getY/#getZ；仅主线程。 */
+    private static NavigationTerrainRoute.Point terrainPosition(HelicopterEntity h){
+        return new NavigationTerrainRoute.Point(h.getX(),h.getY(),h.getZ());
+    }
+
+    /** 功能：局部终点只取整机邻域均已加载的位置；MC API：区块管理器 isChunkLoaded，不强制加载远方区块。 */
+    private static boolean loadedAround(ServerWorld world,NavigationRoute.Point point){
+        double radius=NavigationTerrainRoute.ENVELOPE+NavigationTerrainRoute.CELL;
+        for(int x=MathHelper.floor(point.x()-radius)>>4;x<=MathHelper.floor(point.x()+radius)>>4;x++)
+            for(int z=MathHelper.floor(point.z()-radius)>>4;z<=MathHelper.floor(point.z()+radius)>>4;z++)
+                if(!world.getChunkManager().isChunkLoaded(x,z))return false;
+        return true;
+    }
+
+    /**
+     * 功能：执行已验证的三维折线，升降和水平速度联动，顶棚通道限速且不追逐山顶高度。
+     * MC API：ServerWorld 与 net.minecraft.util.math.Box 复查当前完整机体及惯性通道；仅服务端 tick。
+     * 返回：无；副作用仅正常操纵输入与目标高度，不修改手动飞行、碰撞或实际速度。
+     * 排查：转角先减速再换段；高度偏差先修正再前进；动态障碍持续存在则停车重新采集。
+     */
+    private void follow(HelicopterEntity h,ServerWorld world,NavigationRoute.Point pos,NavigationRoute.Point goal){
+        var s=h.flight;double speed=Math.hypot(s.vx,s.vz);
+        if(!prepareTerrain(h,world)){
+            controller.step(s,h.getX(),h.getZ(),pos,0,0,0);return;
+        }
+        var points=terrainRoute.path();var here=terrainPosition(h);
+        var a=points.get(terrainNode-1);var b=points.get(terrainNode);
+        double distance=NavigationRoute.distance(pos,b.horizontal());
+        if(distance<ARRIVAL_DISTANCE&&Math.abs(h.getY()-b.y())<.6&&speed<.08){
+            if(++terrainNode>=points.size()){
+                if(terrainGoalNode==route.size()-1&&NavigationRoute.distance(pos,goal)<ARRIVAL_DISTANCE
+                        &&speed<ARRIVAL_SPEED&&Math.abs(s.vy)<.02){
+                    h.finishAutopilot();phase=Phase.COMPLETED;notify(h,"route_arrived");return;
+                }
+                if(terrainGoalNode==route.size()-1){terrainNode--;}
+                else {node=terrainGoalNode+1;cancelTerrain();s.targetAltitude=h.getY();
+                    controller.step(s,h.getX(),h.getZ(),pos,0,0,0);return;}
+            }else {a=points.get(terrainNode-1);b=points.get(terrainNode);distance=NavigationRoute.distance(pos,b.horizontal());}
+        }
+        double dx=b.x()-a.x(),dz=b.z()-a.z(),length=Math.hypot(dx,dz);
+        double fraction=length<1e-6?1:Math.clamp(((h.getX()-a.x())*dx+(h.getZ()-a.z())*dz)/(length*length),0,1);
+        double expected=a.y()+(b.y()-a.y())*fraction;
+        // 原高度闭环增益 .025，需要约四十 tick 的前馈；只在本段高度范围内提前升降。
+        double lead=length<1e-6?b.y():expected+(b.y()-a.y())/length*Math.max(.08,speed)*40;
+        double desired=Math.clamp(lead,Math.min(a.y(),b.y()),Math.max(a.y(),b.y()));
+        double limit=terrainRoute.volume().speed(here,b);
+        double vertical=Math.abs(b.y()-h.getY());
+        if(vertical>1)limit=Math.min(limit,distance*(b.y()>h.getY()?NavigationTerrainRoute.CLIMB_SPEED
+                :NavigationTerrainRoute.DESCENT_SPEED)/(vertical+4));
+        // 只在高度进度落后时等候；已提前爬升或下降时不能又拉回旧坡线造成往复。
+        if(length>1e-6&&((b.y()>a.y()&&h.getY()<expected-1)
+                ||(b.y()<a.y()&&h.getY()>expected+1)))limit=0;
+        if(b.y()>a.y())desired=Math.max(desired,Math.min(h.getY(),b.y()));
+        else if(b.y()<a.y())desired=Math.min(desired,Math.max(h.getY(),b.y()));
+        if(distance<.5)desired=b.y();
+        // 所有方向采用整机旋转包络，连未来尾梁转动也必须有空间，不依赖当前机头朝向。
+        double radius=NavigationTerrainRoute.ENVELOPE;
+        Box base=new Box(h.getX()-radius,h.getY()-radius,h.getZ()-radius,
+                h.getX()+radius,h.getY()+radius,h.getZ()+radius);
+        double look=Math.min(here.distance(b),Math.max(16,speed*60+12));
+        double factor=here.distance(b)<1e-6?0:look/here.distance(b);
+        Vec3d ahead=new Vec3d((b.x()-h.getX())*factor,(b.y()-h.getY())*factor,(b.z()-h.getZ())*factor);
+        double stopTime=speed/(2*BRAKE_ACCELERATION)+BRAKE_RESPONSE;
+        boolean forwardClear=terrainRoute.volume().clear(here,b)&&corridorClear(world,h,base,ahead);
+        boolean driftClear=corridorClear(world,h,base,new Vec3d(s.vx*stopTime,s.vy*30,s.vz*stopTime));
+        // 坡线尚未对准时可先安全垂直升降到本段高度；前方不通不能同时冻结解围所需的爬升。
+        if(!forwardClear&&vertical>.6&&corridorClear(world,h,base,new Vec3d(0,b.y()-h.getY(),0)))desired=b.y();
+        boolean altitudeClear=corridorClear(world,h,base,new Vec3d(0,desired-h.getY(),0));
+        if(driftClear&&altitudeClear){
+            s.targetAltitude+=Math.clamp(desired-s.targetAltitude,-CLIMB_STEP,CLIMB_STEP);
+        }else s.targetAltitude=h.getY();
+        boolean adjusting=driftClear&&altitudeClear&&Math.abs(desired-h.getY())>.6;
+        if(forwardClear&&driftClear&&altitudeClear)blockedAt=-1;
+        else{
+            limit=0;
+            if(adjusting)blockedAt=-1;
+            else{
+                if(blockedAt<0)blockedAt=world.getTime();
+                if(world.getTime()-blockedAt>=REPLAN_TICKS){
+                    cancelTerrain();terrainRetryAt=world.getTime()+REPLAN_TICKS;phase=Phase.REPLANNING;
+                }
+            }
+        }
+        limit=Math.min(limit,NavigationRoute.speedLimit(pos,s.vx,s.vz,circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0));
+        // 每段末端按剩余距离制动，禁止未验证的 Bezier 切角穿过洞壁；真实惯性由原控制器消除。
+        controller.step(s,h.getX(),h.getZ(),b.horizontal(),limit,distance,0);
+        if(terrainRoute==null)phase=Phase.REPLANNING;
+        else if(terrainGoalNode==route.size()-1&&distance<8)phase=Phase.ARRIVING;
+        else if(limit<speed-.03)phase=Phase.DECELERATING;
+        else if(controller.commandedSpeed()>speed+.02)phase=Phase.ACCELERATING;
+        else phase=Phase.CRUISING;
     }
     /** 小段扫掠避免斜向航线的大包围盒把旁侧障碍误报为整条通道堵塞。 */
     private static boolean corridorClear(ServerWorld world,HelicopterEntity h,Box base,Vec3d delta){
@@ -283,7 +387,8 @@ public final class NavigationPilot {
     private static boolean clear(ServerWorld world,HelicopterEntity h,Box box){
         for(int x=MathHelper.floor(box.minX)>>4;x<=MathHelper.floor(box.maxX)>>4;x++)
             for(int z=MathHelper.floor(box.minZ)>>4;z<=MathHelper.floor(box.maxZ)>>4;z++)if(!world.getChunkManager().isChunkLoaded(x,z))return false;
-        if(!world.getWorldBorder().contains(box)||world.getBlockCollisions(h,box).iterator().hasNext())return false;
+        if(box.minY<world.getBottomY()||box.maxY>world.getTopY()||!world.getWorldBorder().contains(box)
+                ||world.getBlockCollisions(h,box).iterator().hasNext()||world.containsFluid(box))return false;
         return world.getOtherEntities(h,box,e->!h.isConnectedThroughVehicle(e)&&!(e instanceof PlayerEntity)&&!(e instanceof RopeSeatEntity)
                 &&!(e.getRootVehicle() instanceof RopeSeatEntity)&&!e.isSpectator()
                 &&(e.isCollidable()||e instanceof net.minecraft.entity.LivingEntity||e instanceof HelicopterEntity)).isEmpty();
