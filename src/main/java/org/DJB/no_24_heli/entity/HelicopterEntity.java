@@ -59,6 +59,10 @@ public class HelicopterEntity extends Entity {
     public float visualLightYaw,previousLightYaw,visualLightPitch=-65,previousLightPitch=-65;
     private float smoothPitch,smoothRoll;
     private final java.util.Map<java.util.UUID,Long> exitWarnings=new java.util.HashMap<>();
+    /** 刚离机的乘员保留两秒本机碰撞豁免，世界 tick 到期即移除；避免乘骑清零速度与出舱过渡造成自撞。 */
+    private final java.util.Map<java.util.UUID,Long> departingPassengers=new java.util.HashMap<>();
+    /** 离机碰撞豁免持续四十个服务端 tick，仅作用于离开的那一架飞机。 */
+    private static final int DEPARTURE_GRACE_TICKS=40;
     public int ropeLength;
     /** 当前部署的唯一绳实体；运行时缓存跨越查询半径，卸载后按同一 UUID 等待恢复。 */
     private RopeSeatEntity activeRope;
@@ -74,7 +78,13 @@ public class HelicopterEntity extends Entity {
     /** 本 tick 真实受阻部位与被阻挡速度，单位格/tick；由有向盒扫掠记录，逻辑服务端结算。 */
     private HelicopterCollision.Part blockImpactPart=HelicopterCollision.Part.CABIN;
     private double blockImpactSpeed;
-    /** 低于 10 m/s 的实体碰撞不损伤机体；高速撞击仍按飞控事故阈值处理。 */
+    /** 主桨方块接触独立记录，避免被机身接触覆盖；高速旋转损坏不受普通耐久伤害冷却影响。 */
+    private boolean mainRotorBlockImpact;
+    /** 主桨本 tick 被方块阻挡的最大机体速度，格/tick；低转速接触按此与桨尖速度的较大值扣耐久。 */
+    private double mainRotorBlockSpeed;
+    /** 达到额定转速的百分之五十即视为高速旋转，主桨撞方块会一次扣光耐久。 */
+    private static final double ROTOR_BREAK_RPM=.5;
+    /** 低于 10 m/s 的实体机身碰撞不反伤本机；旋翼仍按接触强度磨损，高速机身撞击按事故阈值处理。 */
     public static final double ENTITY_DAMAGE_SPEED=.5;
     /** 连续离开方块支撑三 tick 后才启用实体事故，防止放置接地前误判。 */
     private int airborneTicks;
@@ -101,15 +111,27 @@ public class HelicopterEntity extends Entity {
         Box broad=getBoundingBox();setBoundingBox(HelicopterCollision.cabinBounds(this));
         try{super.checkBlockCollision();}finally{setBoundingBox(broad);}
     }
-    /** 只保留本 tick 最强的真实分部接触；静止旋翼擦墙也能归因到正确部位。 */
+    /** 主桨与其余部位各自记录真实方块接触，旋翼不能遮蔽机身随后发生的高速撞击。 */
     public void recordBlockImpact(HelicopterCollision.Part part,double speed){
-        if(speed>blockImpactSpeed){blockImpactPart=part;blockImpactSpeed=speed;}
+        if(part==HelicopterCollision.Part.MAIN_ROTOR){
+            mainRotorBlockImpact=true;mainRotorBlockSpeed=Math.max(mainRotorBlockSpeed,speed);
+        }else if(speed>blockImpactSpeed){blockImpactPart=part;blockImpactSpeed=speed;}
+    }
+    /**
+     * 功能：高速主桨撞方块立即折断，允许机身继续完成本次移动，不能让已断桨盘充当防撞护盾。
+     * COMMON 服务端碰撞入口；速度为格/tick；返回是否折断，低转速只记录接触并保留碰撞阻挡。
+     */
+    public boolean breakMainRotorOnBlock(double speed){
+        recordBlockImpact(HelicopterCollision.Part.MAIN_ROTOR,speed);
+        if(flight.rpm<ROTOR_BREAK_RPM)return false;
+        flight.rotor=0;return true;
     }
     @Override public boolean isPushable(){return false;}
     /** 实体撞击单独计算，避免原版把动物阻挡误报成撞墙并直接炸机。 */
     @Override public boolean collidesWith(Entity other){return false;}
     private boolean crashObstacle(Entity other){
-        return !(other instanceof PlayerEntity)&&!other.isSpectator()&&!isConnectedThroughVehicle(other)
+        return !other.isSpectator()&&!isConnectedThroughVehicle(other)
+                &&getWorld().getTime()>=departingPassengers.getOrDefault(other.getUuid(),Long.MIN_VALUE)
                 &&!(other instanceof RopeSeatEntity)&&!(other.getRootVehicle() instanceof RopeSeatEntity)
                 &&(other.isCollidable()||other instanceof LivingEntity||other instanceof HelicopterEntity);
     }
@@ -149,6 +171,7 @@ public class HelicopterEntity extends Entity {
     @Override protected void removePassenger(Entity passenger) {
         boolean pilot = isPilot(passenger), airborne = !isCabinGrounded();
         super.removePassenger(passenger);
+        if(!getWorld().isClient&&airborne)departingPassengers.put(passenger.getUuid(),getWorld().getTime()+DEPARTURE_GRACE_TICKS);
         exitWarnings.remove(passenger.getUuid());
         if (pilot) { stopAutopilot(); flight.cancelAutoFlight(); flight.clearInputs(); }
         cabin.removed(passenger, airborne);
@@ -291,6 +314,7 @@ public class HelicopterEntity extends Entity {
             player.getAbilities().flying=false;player.sendAbilitiesUpdate();
         }
         if(entityImpactCooldown>0)entityImpactCooldown--;
+        departingPassengers.values().removeIf(until->until<=getWorld().getTime());
         if(collisionCooldown>0)collisionCooldown--;if(repairCooldown>0)repairCooldown--;
         if(getWorld().getTime()-lastInput>10||!(pilot() instanceof PlayerEntity))flight.clearInputs();
 
@@ -308,6 +332,8 @@ public class HelicopterEntity extends Entity {
         }
         HeliConfig physicsConfig=flightConfig();
         boolean grounded=hasBlockSupport();
+        // 支撑探测早于地面配平和弃机状态复位，不能先扶正失控机体再判定安全着陆。
+        if(!flight.wreck&&grounded&&FlightPhysics.unsafeLanding(flight))destroy(true);
         boolean rain=isRotorInRain();
         airborneTicks=grounded?0:Math.min(3,airborneTicks+1);
         entityContactsEnabled=(airborneTicks>=3||flight.rpm>.05)&&!flight.wreck;
@@ -335,7 +361,7 @@ public class HelicopterEntity extends Entity {
             if(!(pilot() instanceof PlayerEntity)||grounded||!flight.running||flight.engine<=0||flight.fuel<=0||flight.wreck)stopAutopilot();
             else navigation.step(this);
         }
-        blockImpactSpeed=0;
+        blockImpactSpeed=0;mainRotorBlockImpact=false;mainRotorBlockSpeed=0;
         HelicopterCollision.Pose previousPose=HelicopterCollision.pose(this);
         FlightPhysics.handleAbandonment(flight,physicsConfig,grounded,pilot() instanceof PlayerEntity,getY());
         // 自动飞行也驱动双杆；手动输入已在收包时保存，接地物理不能清掉其他乘员看到的杆量。
@@ -357,6 +383,12 @@ public class HelicopterEntity extends Entity {
         if(isOnGround()&&!hasBlockSupport())setOnGround(false);
         if(!flight.wreck){
             HelicopterCollision.spinningContact(this);
+            if(mainRotorBlockImpact){
+                if(flight.rpm>=ROTOR_BREAK_RPM)flight.rotor=0;
+                else collide(HelicopterCollision.Part.MAIN_ROTOR,Math.max(mainRotorBlockSpeed,flight.rpm*1.1));
+            }
+            // 倾斜接地独立于速度和普通伤害冷却；单纯旋翼接触只损伤旋翼，不直接引爆整机。
+            if((isOnGround()||hasBlockSupport())&&FlightPhysics.unsafeLanding(flight))destroy(true);
             double minimum=blockImpactPart==HelicopterCollision.Part.LANDING_GEAR?.12:.02;
             // 静止接地的重力贴地不算事故；旋翼自身转动的接触速度仍正常结算。
             if(blockImpactSpeed>minimum
@@ -375,7 +407,10 @@ public class HelicopterEntity extends Entity {
                     hitEntity=true;
                     if(other instanceof HelicopterEntity aircraft)aircraft.collide(contact.otherPart(),relative);
                     else other.damage(getDamageSources().flyIntoWall(),(float)(relative*12));
-                    if(relative>ENTITY_DAMAGE_SPEED){collide(contact.part(),relative);if(flight.wreck)break;}
+                    if(relative>ENTITY_DAMAGE_SPEED||contact.part()==HelicopterCollision.Part.MAIN_ROTOR
+                            ||contact.part()==HelicopterCollision.Part.TAIL_ROTOR){
+                        collide(contact.part(),relative);if(flight.wreck)break;
+                    }
                 }
                 if(hitEntity)entityImpactCooldown=10;
             }
@@ -394,6 +429,7 @@ public class HelicopterEntity extends Entity {
         if(verticalCollision&&velocity.y<0)flight.gear=true;
         if(horizontalCollision){if(Math.abs(velocity.x-moved.x)>.001)flight.vx=0;if(Math.abs(velocity.z-moved.z)>.001)flight.vz=0;}
         if(verticalCollision)flight.vy=0;
+        if(flight.wreck)HelicopterCollision.settleWreck(this,verticalCollision&&velocity.y<0);
         // 碰撞后当 tick 立即清除残骸水平动量，避免下一 tick 接地前再滑动一段。
         if(flight.wreck&&isOnGround()){flight.vx=0;flight.vz=0;}
         setVelocity(flight.vx,flight.vy,flight.vz);fallDistance=0;
@@ -596,7 +632,8 @@ public class HelicopterEntity extends Entity {
         flight.waypoint=n.getBoolean("Waypoint");flight.waypointX=number(n,"WaypointX",0,-29999984,29999984);flight.waypointZ=number(n,"WaypointZ",0,-29999984,29999984);
         flight.autopilot=n.getBoolean("Autopilot");flight.restricted=n.getBoolean("Restricted");
         flight.abandonedTicks=Math.clamp(n.getInt("AbandonedTicks"),0,1000000);
-        flight.rpm=number(n,"Rpm",0,0,1);flight.collective=number(n,"Collective",0,0,1);flight.pitch=number(n,"Pitch",0,-60,60);flight.roll=number(n,"Roll",0,-60,60);flight.yaw=number(n,"Yaw",getYaw(),-360,360);flight.yawRate=number(n,"YawRate",0,-20,20);
+        double tiltLimit=n.getBoolean("Wreck")?180:60;
+        flight.rpm=number(n,"Rpm",0,0,1);flight.collective=number(n,"Collective",0,0,1);flight.pitch=number(n,"Pitch",0,-tiltLimit,tiltLimit);flight.roll=number(n,"Roll",0,-tiltLimit,tiltLimit);flight.yaw=number(n,"Yaw",getYaw(),-360,360);flight.yawRate=number(n,"YawRate",0,-20,20);
         flight.fuel=number(n,"Fuel",0,0,100000);flight.rotor=number(n,"Rotor",100,0,100);flight.tail=number(n,"Tail",100,0,100);flight.engine=number(n,"Engine",100,0,100);flight.tank=number(n,"Tank",100,0,100);flight.hull=number(n,"Hull",100,0,100);
         flight.vx=number(n,"Vx",0,-3,3);flight.vy=number(n,"Vy",0,-3,3);flight.vz=number(n,"Vz",0,-3,3);flight.targetAltitude=number(n,"TargetAltitude",getY(),-2048,2048);flight.targetSpeed=number(n,"TargetSpeed",0,0,3);
         flight.running=n.getBoolean("Running");flight.armed=n.getBoolean("Armed");flight.altitudeHold=n.getBoolean("Altitude");flight.trim=n.contains("Trim")?n.getBoolean("Trim"):!flight.hardcoreMode;flight.cruise=n.getBoolean("Cruise");flight.gear=!n.contains("Gear")||n.getBoolean("Gear");flight.wreck=n.getBoolean("Wreck");flight.rope=n.getBoolean("Rope");flight.paint=Math.clamp(n.contains("Paint")?n.getInt("Paint"):FlightState.POLICE_PAINT,0,FlightState.POLICE_PAINT);ropeLength=Math.clamp(n.getInt("RopeLength"),0,24);

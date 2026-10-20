@@ -10,6 +10,8 @@ import org.DJB.no_24_heli.network.ParachutePayload;
 import org.DJB.no_24_heli.registry.ModAdvancements;
 import org.DJB.no_24_heli.registry.ModParachutes;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
@@ -47,6 +49,14 @@ public final class ParachuteEntity extends Entity {
     public static final int NORMAL = 0, JAMMED = 1, TORN = 2, WING_LOST = 3;
     /** 开伞至少十格；严重故障的自由伞面保留十五秒。 */
     public static final double MIN_DEPLOY_HEIGHT = 10;
+    /** 只限制开始未开伞趴姿，严格超过五十格；不提高原有十格开伞门槛。 */
+    public static final double MIN_FREEFALL_HEIGHT = 50;
+    /** 身体与碰撞共用的胸前旋转支点，单位格。 */
+    private static final double BODY_PIVOT = 1.25;
+    /** 测高和方块候选查询的容差，单位格；五十格整不得因射线终点取舍而进入趴姿。 */
+    private static final double COLLISION_EPSILON = 1.0e-5;
+    /** 释放站姿时脚底保留一毫米净距，抵消有向扫掠接触容差，防止原版移动校验反复回传传送纠正。 */
+    private static final double DISMOUNT_CLEARANCE = .001;
     private static final int DETACHED_LIFETIME = 300, JAM_START = 6, PULL_WINDOW = 12;
     private static final double SAFE_SINK = 7, SAFE_WALL_SPEED = 6;
     private static final TrackedData<Integer> OPENING = DataTracker.registerData(
@@ -100,7 +110,7 @@ public final class ParachuteEntity extends Entity {
     /** 上一客户端 tick 的身体姿态，用于帧内插值，不回写服务端气动。 */
     private float previousDivePitch = 90, previousDiveBank, previousDiveTuck;
 
-    /** 原版实体工厂入口，碰撞箱保持站立玩家大小。 */
+    /** 原版实体工厂入口；载人碰撞体随共用身体姿态旋转。 */
     public ParachuteEntity(EntityType<?> type, World world) { super(type, world); }
 
     /** 默认未展开、无故障；NBT 布面只在失压阶段同步。 */
@@ -112,11 +122,35 @@ public final class ParachuteEntity extends Entity {
         builder.add(ENTRY, new NbtCompound());
     }
 
-    /** 未开伞趴姿只接管穿戴已叠好伞包的正常空中玩家，不抢占鞘翅、创造飞行、水中或其他载具。 */
+    /** 未开伞趴姿只接管离地超过五十格的合资格玩家；低于该高度保持原版下落。 */
     public static boolean canStartFreefall(PlayerEntity player) {
+        return canStartFlight(player) && hasFreefallHeight(player);
+    }
+
+    /** 载人阶段共用的穿戴与运动资格；net.minecraft.entity.player.PlayerEntity 提供飞行、流体和乘骑状态。 */
+    private static boolean canStartFlight(PlayerEntity player) {
         return player.isAlive() && !player.isSpectator() && !player.hasVehicle() && !player.isOnGround()
                 && !player.isTouchingWater() && !player.isInLava() && !player.isFallFlying()
                 && !player.getAbilities().flying && ParachuteItem.isPacked(player.getEquippedStack(EquipmentSlot.CHEST));
+    }
+
+    /**
+     * 功能：用 net.minecraft.world.World#raycast 检查脚底中心和四角，平台、非完整方块和液面均计入地面。
+     * COMMON 主线程只读；任一点在五十格以内（含边界）命中即拒绝，不把世界 Y 当作离地高度。
+     */
+    private static boolean hasFreefallHeight(PlayerEntity player) {
+        Box body = player.getBoundingBox();
+        double[] xs = {player.getX(), body.minX + COLLISION_EPSILON, body.maxX - COLLISION_EPSILON};
+        double[] zs = {player.getZ(), body.minZ + COLLISION_EPSILON, body.maxZ - COLLISION_EPSILON};
+        for (int i = 0; i < 5; i++) {
+            int x = i == 0 ? 0 : i <= 2 ? 1 : 2, z = i == 0 ? 0 : i % 2 == 1 ? 1 : 2;
+            Vec3d feet = new Vec3d(xs[x], body.minY, zs[z]);
+            var hit = player.getWorld().raycast(new RaycastContext(feet,
+                    feet.add(0, -MIN_FREEFALL_HEIGHT - COLLISION_EPSILON, 0),
+                    RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.ANY, player));
+            if (hit.getType() != HitResult.Type.MISS && feet.y - hit.getPos().y <= MIN_FREEFALL_HEIGHT) return false;
+        }
+        return true;
     }
 
     /**
@@ -128,6 +162,16 @@ public final class ParachuteEntity extends Entity {
         if (player.getWorld().isClient) return false;
         if (source != null && !source.isCabinGrounded() && !player.hasVehicle()) player.setOnGround(false);
         if (!canStartFreefall(player)) return false;
+        return createFlight(player, source, seat, true);
+    }
+
+    /**
+     * 功能：生成权威载人实体，趴姿及直接开伞共用挂载与惯性初始化；prone 决定是否保存趴姿过渡。
+     * net.minecraft.world.World#spawnEntity 和 net.minecraft.entity.Entity#startRiding 只在逻辑服务端调用。
+     * 十至五十格直接开伞不经过趴姿高度检查；失败清理新实体，不消耗伞包。
+     */
+    private static boolean createFlight(PlayerEntity player, HelicopterEntity source, int seat, boolean prone) {
+        if (!canStartFlight(player)) return false;
         ParachuteEntity canopy = new ParachuteEntity(ModParachutes.CANOPY, player.getWorld());
         canopy.dataTracker.set(MODE, FREEFALL); canopy.ownerUuid = player.getUuid();
         canopy.setPosition(player.getPos()); canopy.setYaw(player.getYaw());
@@ -154,7 +198,7 @@ public final class ParachuteEntity extends Entity {
         }
         entry.putFloat("Qx", rotation.x); entry.putFloat("Qy", rotation.y);
         entry.putFloat("Qz", rotation.z); entry.putFloat("Qw", rotation.w);
-        canopy.dataTracker.set(ENTRY, entry);
+        if (prone) canopy.dataTracker.set(ENTRY, entry);
         if (!player.getWorld().spawnEntity(canopy)) return false;
         if (!player.startRiding(canopy, true)) { canopy.discard(); return false; }
         return true;
@@ -197,7 +241,7 @@ public final class ParachuteEntity extends Entity {
     /** 成功生成、挂载后才消耗耐久及折叠状态；故障按消耗前的剩余耐久判断。 */
     public static void deploy(ServerPlayerEntity player) {
         if (!canDeploy(player)) return;
-        if (!player.hasVehicle() && !startFreefall(player, null, -1)) return;
+        if (!player.hasVehicle() && !createFlight(player, null, -1, false)) return;
         if (player.getVehicle() instanceof ParachuteEntity canopy) canopy.open(player);
     }
 
@@ -252,6 +296,85 @@ public final class ParachuteEntity extends Entity {
     @Override public boolean isPushable() { return false; }
     /** 不把刚离开的飞机或其他乘员当成墙。 */
     @Override public boolean collidesWith(Entity entity) { return false; }
+    /**
+     * 功能：向 net.minecraft.entity.Entity 的环境查询提供身体旋转后的轴对齐候选范围。
+     * 父类构造期间 flight 尚未初始化，先用注册尺寸；真实碰撞通过 clipMovement 的有向盒完成。
+     */
+    @Override protected Box calculateBoundingBox() {
+        return flight == null || !isAirborne() ? super.calculateBoundingBox() : bodyShape().bounds();
+    }
+
+    /**
+     * 功能：将乘员原始宽高绕与显示一致的支点、缩放及四元数旋转，覆盖趴姿、跃出和开伞起身。
+     * 引用 net.minecraft.entity.Entity#getWidth/getHeight 读取乘员尺寸，net.minecraft.util.math.Box 保存局部体积。
+     * COMMON 主线程只读；不使用玩家 getBoundingBox 反推尺寸，防止已经旋转的范围被重复扩大。
+     */
+    private HelicopterCollision.Shape bodyShape() {
+        Entity rider = getFirstPassenger();
+        double width = rider == null ? getWidth() : rider.getWidth();
+        double height = rider == null ? getHeight() : rider.getHeight();
+        double pivot = bodyPivot(1), scale = bodyScale(1);
+        Box local = new Box(-width * scale / 2, -pivot * scale, -width * scale / 2,
+                width * scale / 2, (height - pivot) * scale, width * scale / 2);
+        return HelicopterCollision.orientedBox(HelicopterCollision.Part.CABIN, local,
+                getPos().add(entryOffset(1)).add(0, pivot, 0), bodyRotation(1));
+    }
+
+    /** 乘员和载具共用同一候选盒，net.minecraft.entity.Entity#setPosition 重算玩家碰撞箱时由 Mixin 调用。 */
+    public Box riderBounds(Entity rider) {
+        return bodyShape().bounds().offset(rider.getPos().subtract(getPos()));
+    }
+
+    /**
+     * 功能：以身体有向盒连续扫掠原版方块形状，先垂直再水平，交给 Entity#move 更新接地与撞墙标记。
+     * net.minecraft.world.World#getBlockCollisions 只筛选候选；COMMON 主线程，无客户端物理积分。
+     * 排查：斜身空角被挡时检查是否仍使用候选 AABB；不得通过 setPos 绕过连续碰撞。
+     */
+    public Vec3d clipMovement(Vec3d movement) {
+        HelicopterCollision.Shape body = bodyShape();
+        List<Box> blocks = new ArrayList<>();
+        for (var shape : getWorld().getBlockCollisions(this, body.bounds().stretch(movement).expand(COLLISION_EPSILON)))
+            blocks.addAll(shape.getBoundingBoxes());
+        Vec3d moved = Vec3d.ZERO;
+        int[] order = Math.abs(movement.x) < Math.abs(movement.z) ? new int[]{1, 0, 2} : new int[]{1, 2, 0};
+        for (int axis : order) {
+            Vec3d delta = axis == 0 ? new Vec3d(movement.x, 0, 0)
+                    : axis == 1 ? new Vec3d(0, movement.y, 0) : new Vec3d(0, 0, movement.z);
+            double fraction = 1;
+            for (Box block : blocks) fraction = Math.min(fraction, body.sweep(block.offset(moved.negate()), delta));
+            moved = moved.add(delta.multiply(fraction));
+        }
+        // 保留原版世界边界的四个限制平面；有向盒只替换方块裁剪，不能让玩家穿出边界。
+        var border = getWorld().getWorldBorder(); Box bounds = body.bounds();
+        double x = moved.x, z = moved.z;
+        if (x > 0) x = Math.min(x, Math.max(0, border.getBoundEast() - bounds.maxX));
+        if (x < 0) x = Math.max(x, Math.min(0, border.getBoundWest() - bounds.minX));
+        if (z > 0) z = Math.min(z, Math.max(0, border.getBoundSouth() - bounds.maxZ));
+        if (z < 0) z = Math.max(z, Math.min(0, border.getBoundNorth() - bounds.minZ));
+        return new Vec3d(x, moved.y, z);
+    }
+
+    /**
+     * 功能：姿态变化也必须检查真实方块接触，避免先旋入地面后被平移扫掠视为允许退出的旧重叠。
+     * net.minecraft.world.World#getBlockCollisions 读取碰撞形状；COMMON 服务端使用上一安全身体范围结束飞行。
+     * 排查：落地站姿进入地面时检查此处是否在 move 前执行，以及释放脚位是否取身体实际最低点。
+     */
+    private void moveBody(Vec3d velocity, HelicopterCollision.Shape previous, Box previousBounds) {
+        HelicopterCollision.Shape body = bodyShape();
+        boolean overlaps = false, supported = false;
+        for (var shape : getWorld().getBlockCollisions(this, body.bounds().union(previousBounds).expand(COLLISION_EPSILON)))
+            for (Box block : shape.getBoundingBoxes()) {
+                overlaps |= body.intersects(block);
+                supported |= previous.sweep(block, new Vec3d(0, -.08, 0)) < 1;
+            }
+        if (overlaps) {
+            setBoundingBox(previousBounds);
+            setOnGround(supported && velocity.y <= 0);
+            verticalCollision = supported; horizontalCollision = !supported;
+        } else {
+            setBoundingBox(body.bounds()); move(MovementType.SELF, velocity);
+        }
+    }
     /** 玩家冲击按真实速度结算，布料本身不承受跌落伤害。 */
     @Override public boolean handleFallDamage(float distance, float multiplier,
             net.minecraft.entity.damage.DamageSource source) { return false; }
@@ -274,6 +397,7 @@ public final class ParachuteEntity extends Entity {
             finishFlight(player, false, false); return;
         }
         if (getWorld().getTime() - lastInput > 10) { forwardInput = 0; turnInput = 0; }
+        HelicopterCollision.Shape previousBody = bodyShape(); Box previousBounds = getBoundingBox();
         int opening = dataTracker.get(OPENING);
         if (failure() == JAMMED) {
             if (getWorld().getTime() - lastPull > PULL_WINDOW) opening = Math.min(JAM_START, opening + 1);
@@ -286,7 +410,7 @@ public final class ParachuteEntity extends Entity {
         setYaw(MathHelper.wrapDegrees((float) flight.yaw)); dataTracker.set(BANK, (float) flight.bank);
         dataTracker.set(CANOPY_PITCH, (float) flight.pitch);
         Vec3d velocity = new Vec3d(flight.vx, flight.vy, flight.vz);
-        setVelocity(velocity); move(MovementType.SELF, velocity);
+        setVelocity(velocity); moveBody(velocity, previousBody, previousBounds);
         fallDistance = 0; player.fallDistance = 0; velocityDirty = true;
         if (failure() == WING_LOST && opening == ParachutePhysics.OPEN_TICKS) {
             finishFlight(player, false, true); return;
@@ -313,12 +437,13 @@ public final class ParachuteEntity extends Entity {
             finishFreefall(player, false); return;
         }
         if (getWorld().getTime() - lastInput > 10) { forwardInput = 0; turnInput = 0; }
+        HelicopterCollision.Shape previousBody = bodyShape(); Box previousBounds = getBoundingBox();
         SkydivingPhysics.step(dive, forwardInput, turnInput, lookYaw, lookPitch);
         setYaw(MathHelper.wrapDegrees((float) dive.yaw));
         dataTracker.set(DIVE_PITCH, (float) dive.pitch); dataTracker.set(DIVE_BANK, (float) dive.bank);
         dataTracker.set(DIVE_TUCK, (float) dive.tuck);
         Vec3d velocity = new Vec3d(dive.vx, dive.vy, dive.vz);
-        double previousY = getY(); setVelocity(velocity); move(MovementType.SELF, velocity);
+        double previousY = getY(); setVelocity(velocity); moveBody(velocity, previousBody, previousBounds);
         diveDistance += (float) Math.max(0, previousY - getY()); velocityDirty = true;
         if (isTouchingWater() || isInLava() || isOnGround() || horizontalCollision || verticalCollision) {
             boolean ground = isOnGround(), water = isTouchingWater() || isInLava();
@@ -331,9 +456,13 @@ public final class ParachuteEntity extends Entity {
         }
     }
 
-    /** 趴姿触地/碰墙或失去伞包时恢复原版玩家；未开伞不生成伞布、不改变伞包，不豁免累计跌落伤害。 */
+    /**
+     * 趴姿触地/碰墙或失去伞包时恢复原版玩家；站姿脚底必须在接触面上方，不能沿用扫掠允许的微小穿入。
+     * net.minecraft.server.network.ServerPlayNetworkHandler 会拒绝嵌入方块的移动并重置视角；未开伞仍结算跌落伤害。
+     */
     private void finishFreefall(PlayerEntity player, boolean stopped) {
-        Vec3d position = getPos(), velocity = getVelocity();
+        Vec3d position = stopped ? new Vec3d(getX(), getBoundingBox().minY + DISMOUNT_CLEARANCE, getZ()) : getPos();
+        Vec3d velocity = getVelocity();
         player.stopRiding(); player.requestTeleport(position.x, position.y, position.z);
         player.setVelocity(stopped ? Vec3d.ZERO : velocity); player.velocityModified = true;
         player.fallDistance = stopped ? 0 : diveDistance;
@@ -346,7 +475,9 @@ public final class ParachuteEntity extends Entity {
      */
     private void finishFlight(PlayerEntity player, boolean stopped, boolean wingLost) {
         boolean detached = wingLost || failure() == WING_LOST || !player.isAlive();
-        cloth.initialize(this, detached); Vec3d position = getPos(), velocity = getVelocity();
+        cloth.initialize(this, detached);
+        Vec3d position = stopped ? new Vec3d(getX(), getBoundingBox().minY + DISMOUNT_CLEARANCE, getZ()) : getPos();
+        Vec3d velocity = getVelocity();
         if (hasPassenger(player)) {
             player.stopRiding(); player.requestTeleport(position.x, position.y, position.z);
             player.setVelocity(stopped ? Vec3d.ZERO : velocity); player.velocityModified = true;
@@ -401,6 +532,7 @@ public final class ParachuteEntity extends Entity {
                     getZ() + (lerpZ - getZ()) / lerpTicks);
             setYaw(getYaw() + MathHelper.wrapDegrees(lerpYaw - getYaw()) / lerpTicks); lerpTicks--;
         }
+        setBoundingBox(calculateBoundingBox());
     }
     /** 同步模式，显示端不能自行切换生命周期。 */
     public int mode() { return dataTracker.get(MODE); }
@@ -443,6 +575,26 @@ public final class ParachuteEntity extends Entity {
     public float diveBank(float delta) { return MathHelper.lerp(delta, previousDiveBank, dataTracker.get(DIVE_BANK)); }
     /** 纯前进时收拢，静止及其他平移方向展开，返回连续的 0..1 比例。 */
     public float diveTuck(float delta) { return MathHelper.lerp(delta, previousDiveTuck, dataTracker.get(DIVE_TUCK)); }
+    /**
+     * 功能：渲染和碰撞共用跃出→趴姿→悬挂的身体旋转；Quaternionf 球面插值避免航向跨界反转。
+     * COMMON 只读；服务端 delta=1 读取权威姿态，客户端按帧插值，不回写玩家鼠标方向。
+     */
+    public Quaternionf bodyRotation(float delta) {
+        Quaternionf wing = new Quaternionf().rotationY((float) -Math.toRadians(canopyYaw(delta)))
+                .rotateZ((float) Math.toRadians(bank(delta))).rotateX((float) Math.toRadians(canopyPitch(delta)));
+        if (!hasDiveEntry() && !isFreefall()) return wing;
+        Quaternionf prone = new Quaternionf().rotationY((float) -Math.toRadians(canopyYaw(delta)))
+                .rotateZ((float) Math.toRadians(diveBank(delta))).rotateX((float) Math.toRadians(divePitch(delta)));
+        return entryRotation().slerp(prone, entryBlend(delta)).slerp(wing, openingBlend(delta));
+    }
+    /** 身体旋转支点由离舱髋部平滑转为胸前吊点，单位格，两端与碰撞共用。 */
+    public double bodyPivot(float delta) {
+        return enteredFromCabin() ? MathHelper.lerp(entryBlend(delta), .70, BODY_PIVOT) : BODY_PIVOT;
+    }
+    /** 舱内额外缩放在离机后恢复；与人物矩阵共用，避免碰撞体提前变大。 */
+    public float bodyScale(float delta) {
+        return enteredFromCabin() ? MathHelper.lerp(entryBlend(delta), .88f, 1) : 1;
+    }
     /** 同步故障类型；卡伞完成后变为 NORMAL。 */
     public int failure() { return dataTracker.get(FAILURE); }
     /** 卡伞时客户端允许 F 连点，实际处理仍校验真实乘员。 */

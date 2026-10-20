@@ -31,7 +31,7 @@ public final class ModParachutes {
     public static final RecipeSerializer<ParachuteRepairRecipe> REPAIR_SERIALIZER = Registry.register(
             Registries.RECIPE_SERIALIZER, No_24_heli.id("parachute_repair"),
             new SpecialRecipeSerializer<>(ParachuteRepairRecipe::new));
-    /** 碰撞箱覆盖站立玩家全身；伞翼是其上方的视觉网格，不作为巨大实心碰撞箱。 */
+    /** 注册尺寸作为默认身体大小；载人阶段随人物姿态旋转，伞翼不作为巨大实心碰撞箱。 */
     public static final EntityType<ParachuteEntity> CANOPY = Registry.register(Registries.ENTITY_TYPE,
             No_24_heli.id("parachute"), EntityType.Builder.<ParachuteEntity>create(
                     ParachuteEntity::new, SpawnGroup.MISC).dimensions(.6f, 1.8f)

@@ -284,7 +284,7 @@ public final class HelicopterCabin {
 
     /**
      * 服务端完成乘降；离机前复查移动后的落点，障碍出现则回到座位并明确提示。
-     * net.minecraft.entity.Entity#stopRiding 最终解除乘骑，登机坐稳及地面离机后关门，空中跳出留门打开。
+     * net.minecraft.entity.Entity#stopRiding 最终解除乘骑，登机坐稳及地面/空中离机后都关闭对应舱门。
      */
     public void tick() {
         if (heli.getWorld().isClient) return;
@@ -306,7 +306,7 @@ public final class HelicopterCabin {
                 heli.syncCabin(); continue;
             }
             entity.stopRiding(); entity.refreshPositionAfterTeleport(target);
-            if (heli.isCabinGrounded()) { setDoor(seat, false); heli.syncCabin(); }
+            setDoor(seat, false); heli.syncCabin();
             if (motion == JUMP) {
                 Vec3d push = new Vec3d(side(seat) == 0 ? .18 : -.18, .12, 0)
                         .rotateY((float) -Math.toRadians(heli.getYaw()));

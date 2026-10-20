@@ -90,12 +90,7 @@ public final class ParachutePose {
 
     /** 身体世界旋转：跃出姿态→趴姿平移→开伞悬挂；球面插值避免跨航向边界反转或突然站直。 */
     public static Quaternionf bodyRotation(ParachuteEntity canopy, float delta) {
-        Quaternionf wing = wingRotation(canopy, delta);
-        if (!canopy.hasDiveEntry() && !canopy.isFreefall()) return wing;
-        Quaternionf prone = new Quaternionf().rotationY((float) -Math.toRadians(canopy.canopyYaw(delta)))
-                .rotateZ((float) Math.toRadians(canopy.diveBank(delta)))
-                .rotateX((float) Math.toRadians(canopy.divePitch(delta)));
-        return canopy.entryRotation().slerp(prone, canopy.entryBlend(delta)).slerp(wing, canopy.openingBlend(delta));
+        return canopy.bodyRotation(delta);
     }
 
     /** 伞翼继续使用自身俯仰横滚，不随人物从趴姿起身的过渡翻转翼面。 */
@@ -107,12 +102,12 @@ public final class ParachutePose {
 
     /** 离舱初始绕髋部旋转，随后平滑改为胸前吊点，避免跃出末帧位置突然抬高。 */
     public static double bodyPivot(ParachuteEntity canopy, float delta) {
-        return canopy.enteredFromCabin() ? MathHelper.lerp(canopy.entryBlend(delta), .70, HARNESS_HEIGHT) : HARNESS_HEIGHT;
+        return canopy.bodyPivot(delta);
     }
 
     /** 舱内额外 0.88 倍缩放在离舱后逐渐恢复，人物不会在结束跳机时突然变大。 */
     public static float bodyScale(ParachuteEntity canopy, float delta) {
-        return canopy.enteredFromCabin() ? MathHelper.lerp(canopy.entryBlend(delta), .88f, 1) : 1;
+        return canopy.bodyScale(delta);
     }
 
     /** 原版人物已应用 180-bodyYaw，先取消再应用完整世界姿态，装备层也沿同一矩阵连续旋转。 */

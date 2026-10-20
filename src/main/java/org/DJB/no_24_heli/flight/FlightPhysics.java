@@ -7,6 +7,8 @@ import org.DJB.no_24_heli.data.HeliConfig;
 public final class FlightPhysics {
     /** 每 tick 的重力加速度，单位为格/tick²。 */
     public static final double GRAVITY = 0.04;
+    /** 接地时机体竖轴偏离世界竖轴超过三十度即坠毁，包含俯仰与横滚的合成倾斜。 */
+    private static final double MAX_LANDING_TILT = 30;
     /** 起落架放下时每 tick 额外保留 99.5% 的水平速度；只在空中施加，不改变垂直升力或地面摩擦。 */
     private static final double GEAR_DRAG = .995;
     /** 高度误差转目标垂速的增益，单位 tick⁻¹；垂速闭环响应与加速度上限分别为 tick⁻¹、格/tick²。 */
@@ -43,7 +45,7 @@ public final class FlightPhysics {
         if(c.unassisted()){s.trim=false;s.altitudeHold=false;s.cruise=false;s.autopilot=false;s.cancelAutoFlight();}
         if (s.wreck) {
             s.rpm = approach(s.rpm, 0, .012);
-            // 残骸保留空中坠落惯性，接地后静止；不进入完好飞机的飞控和辅助逻辑。
+            // 残骸保留空中坠落惯性，接地阻停平移；实体端继续按承重点倾倒，不进入完好飞机的飞控。
             if (grounded) { s.vx = 0; s.vz = 0; s.vy = -GRAVITY; }
             else s.vy -= GRAVITY;
             return;
@@ -179,7 +181,12 @@ public final class FlightPhysics {
             s.yawRate+=.08;
         }
     }
-    /** 撞击判据只使用实际被碰撞阻挡的速度，避免平行擦边被误判为全速撞击。 */
+    /** 接地前检查合成倾斜；纯数值、无 MC API，必须在地面配平或弃机状态清零之前调用。 */
+    public static boolean unsafeLanding(FlightState s) {
+        return Math.cos(Math.toRadians(s.pitch)) * Math.cos(Math.toRadians(s.roll))
+                < Math.cos(Math.toRadians(MAX_LANDING_TILT));
+    }
+    /** 撞击判据只使用实际被碰撞阻挡的速度，适用于任意方向，避免平行擦边被误判为全速撞击。 */
     public static boolean catastrophic(double impact, FlightState s, HeliConfig c) {
         double limit = c.hardcore() ? .66 : .9;
         if (!s.gear) limit *= .75;
