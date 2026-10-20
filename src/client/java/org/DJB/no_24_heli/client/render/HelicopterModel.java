@@ -742,6 +742,16 @@ public final class HelicopterModel {
     }
 
     /**
+     * 功能：按机腹椭圆截面确定支柱固定端高度；引用 MC API：无，复用机身轮廓参数。
+     * 端侧/线程：客户端渲染线程；参数：x/z 为机体局部横向/纵向格数，横向位置须在截面半宽内。
+     * 返回：嵌入外蒙皮的铰点高度；副作用：无；排查：前支柱悬空查是否仍使用统一固定高度。
+     */
+    static double gearMountHeight(double x, double z) {
+        double ratio = x / profile(z, 1);
+        return profile(z, 2) - profile(z, 3) * Math.sqrt(1 - ratio * ratio) + .02; // 向上嵌入两厘米，封住接缝。
+    }
+
+    /**
      * 功能：构建上翘弧形滑橇与斜支柱；引用 MC API：net.minecraft.util.math.Vec3d 定义折线节点。
      * 端侧/线程：构造期；参数/返回：无；副作用：填充连续 gear 与单位支柱；收放时铰点固定、滑橇沿舱外后移上升。
      * 排查：地面悬浮查最低滑橇中心 .12 格与半径 .045 格。

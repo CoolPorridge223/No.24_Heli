@@ -59,6 +59,8 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
     private static final double INSTRUMENT_DISTANCE_SQUARED = 6 * 6, LOD_DISTANCE_SQUARED = 64 * 64;
     /** 原折收轨迹：滑橇后移 0.45 格、上移 0.32 格；固定机身铰点不随滑橇平移。 */
     private static final double GEAR_STOW_BACK = .45, GEAR_STOW_UP = .32;
+    /** 支柱机身端距中轴 0.66 格，滑橇端距中轴 1.05 格、高 0.16 格，嵌入半径 0.045 格的滑橇上缘。 */
+    private static final double GEAR_MOUNT_X = .66, GEAR_SKID_X = 1.05, GEAR_SKID_Y = .16;
 
     /**
      * 功能：初始化阴影；引用 MC API：net.minecraft.client.render.entity.EntityRendererFactory.Context 提供资源。
@@ -201,7 +203,7 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
 
     /**
      * 功能：只用矩阵驱动缓存的滑橇和四根支柱；引用 net.minecraft.client.util.math.MatrixStack 保留原折收轨迹。
-     * 端侧：渲染线程；extension 为原同步插值，其余为绘制环境；排查：固定铰点与原折收轨迹一致。
+     * 端侧：渲染线程；extension 为原同步插值，其余为绘制环境；排查：固定铰点贴合机腹曲面，滑橇端跟随折收轨迹。
      */
     private static void drawGear(HelicopterModel selected, MatrixStack matrices, VertexConsumerProvider consumers,
             RenderLayer layer, HelicopterEntity heli, int light, boolean gpu, boolean distant, float extension) {
@@ -209,9 +211,11 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         matrices.push(); matrices.translate(0, up, back);
         drawPart("gear", selected, matrices, consumers, layer, heli, light, gpu, distant); matrices.pop();
         for (double side : new double[]{-1, 1}) for (double z : new double[]{-.87, .79}) {
-            Vector3f direction = new Vector3f((float) (side * .39), (float) (-.52 + up), (float) back);
+            double mountY = HelicopterModel.gearMountHeight(GEAR_MOUNT_X, z);
+            Vector3f direction = new Vector3f((float) (side * (GEAR_SKID_X - GEAR_MOUNT_X)),
+                    (float) (GEAR_SKID_Y + up - mountY), (float) back);
             float length = direction.length();
-            matrices.push(); matrices.translate(side * .66, .68, z);
+            matrices.push(); matrices.translate(side * GEAR_MOUNT_X, mountY, z);
             matrices.multiply(new Quaternionf().rotationTo(new Vector3f(0, 1, 0), direction.div(length)));
             matrices.scale(1, length, 1);
             drawPart("strut", selected, matrices, consumers, layer, heli, light, gpu, distant); matrices.pop();
