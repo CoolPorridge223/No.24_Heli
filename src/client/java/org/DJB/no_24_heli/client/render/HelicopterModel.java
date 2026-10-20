@@ -605,12 +605,17 @@ public final class HelicopterModel {
      */
     private void buildInterior() {
         buildFloor();
-        for (int row=0;row<2;row++) for (double side : new double[]{-.38, .38}) {
-            double forward = HelicopterEntity.SEAT_FORWARD_OFFSET-row*HelicopterCabin.ROW_SPACING;
-            ellipsoid(interior, new Vec3d(side, .69, -.12 + forward), new Vec3d(.29, .10, .36), SEAT);
-            ellipsoid(interior, new Vec3d(side, 1.01, -.40 + forward), new Vec3d(.29, .43, .09), SEAT);
-            ellipsoid(interior, new Vec3d(side, 1.38, -.41 + forward), new Vec3d(.18, .13, .09), SEAT);
-            if(row==0)ellipsoid(interior, new Vec3d(side, CockpitControlsRenderer.BASE_Y, CockpitControlsRenderer.BASE_Z),
+        for (int seat=0;seat<HelicopterCabin.SEATS;seat++) {
+            Vec3d position=HelicopterCabin.seatPosition(seat);
+            boolean rear=seat>=2;
+            // 后排抬高坐垫底边并收窄椅宽，靠背下端留在机腹内；坐垫顶面与后排髋高 0.82 格齐平。
+            ellipsoid(interior, new Vec3d(position.x, rear?.75:.69, position.z),
+                    rear?new Vec3d(.22, .07, .26):new Vec3d(.29, .10, .36), SEAT);
+            ellipsoid(interior, new Vec3d(position.x, rear?1.07:1.01, position.z-.28),
+                    rear?new Vec3d(.23, .34, .075):new Vec3d(.29, .43, .09), SEAT);
+            ellipsoid(interior, new Vec3d(position.x, 1.38, position.z-.29),
+                    rear?new Vec3d(.17, .12, .075):new Vec3d(.18, .13, .09), SEAT);
+            if(!rear)ellipsoid(interior, new Vec3d(position.x, CockpitControlsRenderer.BASE_Y, CockpitControlsRenderer.BASE_Z),
                     new Vec3d(.065, .045, .065), DARK);
         }
         tube(cyclic, Vec3d.ZERO, CockpitControlsRenderer.GRIP.add(0, -.03, 0), .023, .023, DARK);

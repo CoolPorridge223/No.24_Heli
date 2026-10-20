@@ -10,7 +10,6 @@ import org.DJB.no_24_heli.entity.RopeSeatEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.Box;
-import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -63,9 +62,17 @@ public final class NavigationPilot {
     private int terrainGoalNode,planningGoalNode,nextGoalNode;
     /** 直达走廊确有障碍后才扩大绕行采集范围；成功或取消后重新启用快速直达探测。 */
     private boolean wideTerrain;
-    /** 动态障碍持续四秒触发重规划；真正采集或搜索失败五秒后重试，区块加载不计作失败。 */
+    /** 动态障碍持续四秒触发重规划；地形失败间隔五秒，安全失败最多重试两次，区块等待不计失败。 */
     private long terrainRetryAt,blockedAt=-1;
     private static final int TERRAIN_RETRY_TICKS=100;
+    /** 同一地形安全失败最多重试两次；等待 FULL 区块不计次，成功或取消后清零。 */
+    private static final int MAX_TERRAIN_SAFETY_RETRIES=2;
+    /** 本轮安全失败已开始的重新采集次数，范围 0..2，仅服务端使用，不存档。 */
+    private int terrainSafetyRetries;
+    /** 安全重试是否仍在等待冷却和 FULL 区块；实际重新采集时清除，不进行网络同步。 */
+    private boolean terrainRetryPending;
+    /** 实时通道检查发现未知区块时保持制动；不将区块等待累计为真实障碍。 */
+    private boolean waitingForChunks;
     /** 重复失败不每次刷新动作栏；新目标清除该诊断状态。 */
     private NavigationRoute.Status terrainFailure;
     /** 生命周期诊断状态；状态切换绝不清零实际速度，不进入存档和网络协议。 */
@@ -210,6 +217,7 @@ public final class NavigationPilot {
         if(terrainPending!=null){NavigationPlanningService.cancel(terrainPending);terrainPending=null;}
         if(chunkLoader!=null){chunkLoader.close();chunkLoader=null;}
         terrainSnapshot=null;terrainRoute=null;terrainNext=null;terrainFollower=null;wideTerrain=false;blockedAt=-1;
+        terrainSafetyRetries=0;terrainRetryPending=false;terrainFailure=null;waitingForChunks=false;
     }
 
     /**
@@ -229,23 +237,32 @@ public final class NavigationPilot {
                         &&(terrainRoute!=null||result.volume().clear(terrainPosition(h),result.path().getFirst()))){
                     if(terrainRoute==null)useTerrain(result,planningGoalNode);
                     else {terrainNext=result;nextGoalNode=planningGoalNode;}
-                    terrainFailure=null;terrainSnapshot=null;wideTerrain=false;retainChunks();phase=Phase.READY;
+                    terrainFailure=null;terrainSnapshot=null;wideTerrain=false;terrainSafetyRetries=0;
+                    terrainRetryPending=false;terrainRetryAt=0;retainChunks();phase=Phase.READY;
                     No_24_heli.LOGGER.info("三维地形规划：飞机={}，节点={}，航点={}，风险加权tick={}",
                             h.getUuid(),result.expanded(),result.path().size(),result.costTicks());
                     if(terrainNext==null)notify(h,"route_success");
                 }else if(terrainSnapshot.directOnly&&result.status()==NavigationRoute.Status.GRID_RESOLUTION){
                     wideTerrain=true;terrainSnapshot=null;retainChunks();
-                }else {terrainSnapshot=null;retainChunks();terrainFailed(h,result.status()==NavigationRoute.Status.SUCCESS
+                }else {terrainFailed(h,result.status()==NavigationRoute.Status.SUCCESS
                         ?NavigationRoute.Status.TRAJECTORY_UNSAFE:result.status(),now);
                 }
             }catch(CancellationException e){terrainSnapshot=null;retainChunks();terrainFailed(h,NavigationRoute.Status.INTERRUPTED,now);
             }catch(InterruptedException e){
                 terrainSnapshot=null;retainChunks();Thread.currentThread().interrupt();terrainFailed(h,NavigationRoute.Status.INTERRUPTED,now);
             }catch(ExecutionException e){
-                terrainSnapshot=null;retainChunks();
                 No_24_heli.LOGGER.error("三维地形规划失败：飞机={}",h.getUuid(),e.getCause());
                 terrainFailed(h,NavigationRoute.Status.TRAJECTORY_UNSAFE,now);
             }
+        }
+        if(terrainRetryPending){
+            chunkLoader.step();
+            if(now<terrainRetryAt||!chunkLoader.ready())return terrainRoute!=null;
+            // 保留失败采集区的票据直到加载完成；真正重试时丢弃旧体素，从当前机位重新采集。
+            terrainSafetyRetries++;terrainRetryPending=false;terrainSnapshot=null;
+            notify(h,"route_terrain_retry");
+            No_24_heli.LOGGER.info("三维地形安全重试：飞机={}，次数={}/{}",h.getUuid(),
+                    terrainSafetyRetries,MAX_TERRAIN_SAFETY_RETRIES);
         }
         if(pending!=null||terrainPending!=null||terrainNext!=null||now<terrainRetryAt
                 ||terrainRoute!=null&&terrainGoalNode==route.size()-1){chunkLoader.step();return terrainRoute!=null;}
@@ -294,12 +311,21 @@ public final class NavigationPilot {
         chunkLoader.retain(terrainRoute,terrainNext,terrainSnapshot);
     }
 
-    /** 功能：记录局部精度或资源失败，等待已加载世界变化后重试；不宣称整个空间不可达。 */
+    /**
+     * 功能：安全失败保留采集区票据，加载齐全并等待 100 tick 后最多重新采集两次；资源失败沿用限频。
+     * MC API：无新增；仅服务端主线程。副作用：保存重试状态，耗尽后保留已验证航段并在末端悬停。
+     * 排查：等待加载不计次数，不能立即释放票据或重复提交失败快照；新目标/空域变化会清零。
+     */
     private void terrainFailed(HelicopterEntity h,NavigationRoute.Status status,long now){
-        terrainRetryAt=now+TERRAIN_RETRY_TICKS;phase=Phase.FAILED;
-        if(terrainFailure!=status){
+        boolean safety=status==NavigationRoute.Status.GRID_RESOLUTION||status==NavigationRoute.Status.TRAJECTORY_UNSAFE;
+        terrainRetryPending=safety&&terrainSafetyRetries<MAX_TERRAIN_SAFETY_RETRIES;
+        terrainRetryAt=safety&&!terrainRetryPending?Long.MAX_VALUE:now+TERRAIN_RETRY_TICKS;
+        phase=terrainRetryPending?Phase.REPLANNING:Phase.FAILED;
+        if(!safety)terrainSnapshot=null;
+        retainChunks();
+        if(terrainFailure!=status||safety){
             notify(h,switch(status){
-                case GRID_RESOLUTION,TRAJECTORY_UNSAFE -> "route_terrain_wait";
+                case GRID_RESOLUTION,TRAJECTORY_UNSAFE -> terrainRetryPending?"route_terrain_wait":"route_terrain_stopped";
                 case NODE_LIMIT -> "route_terrain_limit";
                 default -> messageKey(status);
             });terrainFailure=status;
@@ -348,23 +374,27 @@ public final class NavigationPilot {
                 h.getX()+radius,h.getY()+radius,h.getZ()+radius);
         Vec3d ahead=new Vec3d(target.x()-h.getX(),target.y()-h.getY(),target.z()-h.getZ());
         double stopTime=speed/(2*BRAKE_ACCELERATION)+BRAKE_RESPONSE;
-        boolean forwardClear=sample.safe()&&corridorClear(world,h,base,ahead);
+        boolean wasWaiting=waitingForChunks;waitingForChunks=false;chunkLoader.beginChecks();
+        boolean forwardClear=corridorClear(world,h,base,ahead)&&sample.safe();
         boolean driftClear=corridorClear(world,h,base,new Vec3d(s.vx*stopTime,s.vy*30,s.vz*stopTime));
         // 坡线尚未对准时可先安全垂直升降到本段高度；前方不通不能同时冻结解围所需的爬升。
         if(!forwardClear&&vertical>.6&&corridorClear(world,h,base,new Vec3d(0,target.y()-h.getY(),0)))desired=target.y();
         boolean altitudeClear=corridorClear(world,h,base,new Vec3d(0,desired-h.getY(),0));
-        if(driftClear&&altitudeClear){
+        if(waitingForChunks||wasWaiting)retainChunks();
+        chunkLoader.step();
+        if(waitingForChunks&&!wasWaiting)notify(h,"route_chunk_wait");
+        if(!waitingForChunks&&driftClear&&altitudeClear){
             s.targetAltitude+=Math.clamp(desired-s.targetAltitude,-CLIMB_STEP,CLIMB_STEP);
         }else s.targetAltitude=h.getY();
-        boolean adjusting=driftClear&&altitudeClear&&Math.abs(desired-h.getY())>.6;
+        boolean adjusting=!waitingForChunks&&driftClear&&altitudeClear&&Math.abs(desired-h.getY())>.6;
         if(forwardClear&&driftClear&&altitudeClear)blockedAt=-1;
         else{
             limit=0;
-            if(adjusting)blockedAt=-1;
+            if(adjusting||waitingForChunks)blockedAt=-1;
             else{
                 if(blockedAt<0)blockedAt=world.getTime();
                 // 短暂横穿的实体只减速等待，连续四秒确实堵塞才丢弃已计算的后续路线。
-                if(world.getTime()-blockedAt>=REPLAN_TICKS*2){
+                if(world.getTime()-blockedAt>=REPLAN_TICKS*2&&!terrainRetryPending&&terrainRetryAt!=Long.MAX_VALUE){
                     cancelTerrain();terrainRetryAt=world.getTime()+REPLAN_TICKS;phase=Phase.REPLANNING;
                 }
             }
@@ -376,7 +406,8 @@ public final class NavigationPilot {
         if(terrainGoalNode==route.size()-1&&remaining<4){remaining=Math.max(remaining,distance);limit=Math.max(limit,.12);}
         if(!forwardClear||!driftClear||!altitudeClear)limit=0;
         controller.step(s,h.getX(),h.getZ(),target.horizontal(),limit,remaining,sample.curvature());
-        if(terrainRoute==null)phase=Phase.REPLANNING;
+        if(terrainRoute==null||waitingForChunks||terrainRetryPending)phase=Phase.REPLANNING;
+        else if(terrainRetryAt==Long.MAX_VALUE)phase=Phase.FAILED;
         else if(terrainGoalNode==route.size()-1&&distance<8)phase=Phase.ARRIVING;
         else if(limit<speed-.03)phase=Phase.DECELERATING;
         else if(controller.commandedSpeed()>speed+.02)phase=Phase.ACCELERATING;
@@ -384,21 +415,20 @@ public final class NavigationPilot {
         else phase=Phase.CRUISING;
     }
     /** 小段扫掠避免斜向航线的大包围盒把旁侧障碍误报为整条通道堵塞。 */
-    private static boolean corridorClear(ServerWorld world,HelicopterEntity h,Box base,Vec3d delta){
+    private boolean corridorClear(ServerWorld world,HelicopterEntity h,Box base,Vec3d delta){
         int steps=Math.max(1,(int)Math.ceil(delta.length()/4));Vec3d part=delta.multiply(1.0/steps);
         for(int i=0;i<steps;i++)if(!clear(world,h,base.offset(part.multiply(i)).stretch(part)))return false;
         return true;
     }
     /**
-     * 功能：复用已加载世界的净空检查，不因二维规划而同步加载未知区块。
+     * 功能：先异步请求未知区块，加载完成后再检查真实方块、流体与动态实体净空。
      * 引用 MC API：net.minecraft.server.world.ServerWorld#getBlockCollisions/#getOtherEntities
      * 检查方块与实体；net.minecraft.world.border.WorldBorder#contains 检查世界边界。
-     * 端侧/线程：服务端 tick。返回：整个通道可用时为 true。副作用：无。
+     * 端侧/线程：服务端 tick。返回：整个通道可用时为 true。副作用：登记加载请求及等待状态。
      * 故障排查：世界边缘或未知地形停车查加载范围，禁止后台线程调用此方法。
      */
-    private static boolean clear(ServerWorld world,HelicopterEntity h,Box box){
-        for(int x=MathHelper.floor(box.minX)>>4;x<=MathHelper.floor(box.maxX)>>4;x++)
-            for(int z=MathHelper.floor(box.minZ)>>4;z<=MathHelper.floor(box.maxZ)>>4;z++)if(!world.getChunkManager().isChunkLoaded(x,z))return false;
+    private boolean clear(ServerWorld world,HelicopterEntity h,Box box){
+        if(!chunkLoader.load(box)){waitingForChunks=true;return false;}
         if(box.minY<world.getBottomY()||box.maxY>world.getTopY()||!world.getWorldBorder().contains(box)
                 ||world.getBlockCollisions(h,box).iterator().hasNext()||world.containsFluid(box))return false;
         return world.getOtherEntities(h,box,e->!h.isConnectedThroughVehicle(e)&&!(e instanceof PlayerEntity)&&!(e instanceof RopeSeatEntity)

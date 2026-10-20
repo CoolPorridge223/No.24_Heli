@@ -7,7 +7,9 @@ import java.util.Set;
 import java.util.UUID;
 import net.minecraft.server.world.ChunkTicketType;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
+import net.minecraft.util.math.MathHelper;
 
 /**
  * 文件：为导航当前航段和提前规划的航段持有临时区块票，归属 flight 飞控模块，端侧 SERVER。
@@ -28,6 +30,8 @@ final class NavigationChunkLoader {
     private final ServerWorld world;
     private final UUID owner = UUID.randomUUID();
     private final Set<ChunkPos> held = new HashSet<>(), waiting = new LinkedHashSet<>();
+    /** 本 tick 实时净空检查所需区块，包含碰撞形状外伸的一格邻域；随检查刷新，不长期积累。 */
+    private final Set<ChunkPos> checking = new LinkedHashSet<>();
     /** 同一 tick 多次推进仍共享请求上限；不持有 Future 或生成线程引用。 */
     private int requestTick=Integer.MIN_VALUE,issued;
 
@@ -43,6 +47,7 @@ final class NavigationChunkLoader {
             Set<ChunkPos> region=new LinkedHashSet<>();addRegion(region,request.x,request.z,request.nx,request.nz);
             region.removeIf(pos->!request.needsChunk(pos));needed.addAll(region);
         }
+        needed.addAll(checking);
         var iterator=held.iterator();
         while(iterator.hasNext()) {
             ChunkPos pos=iterator.next();
@@ -83,9 +88,38 @@ final class NavigationChunkLoader {
         }
     }
 
+    /** 功能：开始本 tick 的实时净空检查；仅服务端主线程，旧查询票在 retain 时按新范围释放。 */
+    void beginChecks() { checking.clear(); }
+
+    /**
+     * 功能：请求净空盒及一格碰撞邻域的区块，全部 FULL 后才允许判断障碍。
+     * MC API：ServerChunkManager#getWorldChunk 只读已完成区块，不同步等待生成；Box 为世界净空范围。
+     * 端侧/线程：服务端主线程；返回：区块是否齐全；副作用：登记临时票，不把未知区块当作障碍。
+     * 排查：加载慢时由 step 分批请求，等待期间不得累计真实堵塞时长。
+     */
+    boolean load(Box box) {
+        boolean loaded=true;
+        for(int x=MathHelper.floor(box.minX-1)>>4;x<=MathHelper.floor(box.maxX+1)>>4;x++)
+            for(int z=MathHelper.floor(box.minZ-1)>>4;z<=MathHelper.floor(box.maxZ+1)>>4;z++) {
+                ChunkPos pos=new ChunkPos(x,z);
+                if(!world.getWorldBorder().contains(pos))continue;
+                checking.add(pos);
+                if(!held.contains(pos))waiting.add(pos);
+                if(world.getChunkManager().getWorldChunk(x,z)==null)loaded=false;
+            }
+        return loaded;
+    }
+
+    /** 功能：确认全部规划票已发出且区块达到 FULL；getWorldChunk 不阻塞，等待不消耗安全重试次数。 */
+    boolean ready() {
+        if(!waiting.isEmpty())return false;
+        for(ChunkPos pos:held)if(world.getChunkManager().getWorldChunk(pos.x,pos.z)==null)return false;
+        return true;
+    }
+
     /** 功能：取消或卸载时释放本机全部票据和待加载请求；服务端调用，不改变其他加载来源。 */
     void close() {
         for(ChunkPos pos:held)world.getChunkManager().removeTicket(TICKET,pos,0,owner);
-        held.clear();waiting.clear();
+        held.clear();waiting.clear();checking.clear();
     }
 }

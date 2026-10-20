@@ -18,9 +18,9 @@ import org.DJB.no_24_heli.No_24_heli;
  * 排查：错座查 UUID 快照；门打不开查距离/侧别；动画跳变查世界 tick 和同步时间。
  */
 public final class HelicopterCabin {
-    /** 0 左前主驾、1 右前副驾、2 左后、3 右后；后排距前排 0.90 格。 */
+    /** 0 左前主驾、1 右前副驾、2 左后、3 右后；后排距前排 0.74 格，避开向机尾收窄的舱壁。 */
     public static final int SEATS = 4;
-    public static final double ROW_SPACING = .90;
+    public static final double ROW_SPACING = .74;
     /** 沿用原机身的两块侧窗；中柱宽 0.07 格，前后门均以前缘为轴向外打开 78 度。 */
     public static final double DOOR_BACK = -1.15, REAR_DOOR_FRONT = -.38,
             FRONT_DOOR_BACK = -.31, DOOR_FRONT = .50, DOOR_ANGLE = 78;
@@ -73,9 +73,13 @@ public final class HelicopterCabin {
         return (float) Math.toRadians((side(door) == 0 ? -1 : 1) * DOOR_ANGLE * progress);
     }
 
-    /** 座位脚位与现有前排保持一致；net.minecraft.util.math.Vec3d 用于模型和眼位共同基准。 */
+    /**
+     * 座位脚位保留前排基准；后排每侧内移 0.10 格、抬高 0.02 格，避开后舱向下收窄的机腹。
+     * net.minecraft.util.math.Vec3d 供模型、乘员和眼位共用，不能只移动可见椅子。
+     */
     public static Vec3d seatPosition(int seat) {
-        return new Vec3d(side(seat) == 0 ? .38 : -.38, .10,
+        double lateral=seat>=2?.28:.38;
+        return new Vec3d(side(seat) == 0 ? lateral : -lateral, seat>=2?.12:.10,
                 -.12 + HelicopterEntity.SEAT_FORWARD_OFFSET - (seat >= 2 ? ROW_SPACING : 0));
     }
 
