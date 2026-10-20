@@ -665,7 +665,7 @@ public class HelicopterEntity extends Entity {
     }
     /**
      * K为可撤销的起降任务：地面开始二十格起飞，空中尝试垂直降落，再按一次取消。
-     * 降落前对机体中心和四角分别向下探测，拒绝水面、悬崖边以及高低不平的支撑面；
+     * 降落前检查两条滑橇前后承重面的同高平整支撑，机体、主尾桨与长尾各自检查下降净空；
      * 起飞使用真实分部盒检查整条升空通道；降落的实体通道在启动时和下降期间持续复核，占用只暂停任务。
      */
     private void toggleAutoFlight(PlayerEntity player){
@@ -677,14 +677,8 @@ public class HelicopterEntity extends Entity {
         if(ground&&!FlightPhysics.hasTakeoffPower(flight,isRotorInRain())){message(player,"takeoff_power_low");return;}
         if(ground){if(!HelicopterCollision.verticalClearance(this,AutoFlightController.TAKEOFF_HEIGHT)){message(player,"auto_takeoff_blocked");return;}}
         else{
-            Double surface=null;
-            for(double[] offset:new double[][]{{0,0},{-1.5,-1.5},{1.5,-1.5},{-1.5,1.5},{1.5,1.5}}){
-                Vec3d start=getPos().add(offset[0],.05,offset[1]);
-                var hit=getWorld().raycast(new RaycastContext(start,new Vec3d(start.x,getWorld().getBottomY(),start.z),RaycastContext.ShapeType.COLLIDER,RaycastContext.FluidHandling.ANY,this));
-                if(hit.getType()==HitResult.Type.MISS||!getWorld().getFluidState(hit.getBlockPos()).isEmpty()||(surface!=null&&Math.abs(surface-hit.getPos().y)>.25)){message(player,"auto_unsafe");return;}
-                surface=hit.getPos().y;
-            }
-            target=surface-.2;
+            target=HelicopterCollision.landingTargetY(this);
+            if(!Double.isFinite(target)){message(player,"auto_unsafe");return;}
         }
         stopAutopilot();flight.autoPhase=ground?1:3;flight.autoX=getX();flight.autoZ=getZ();flight.autoY=target;
         // 起飞接管沿用当前总距，预转期间和离地后均由高度控制渐变调整。
@@ -694,13 +688,14 @@ public class HelicopterEntity extends Entity {
     }
 
     /**
-     * 功能：自动降落每 tick 复核实体占用，首次受阻捕获暂停高度；实体离开后恢复原 autoY 目标。
+     * 功能：自动降落每 tick 复核滑橇平整支撑、分部净空与实体占用，首次受阻捕获暂停高度。
      * 引用 MC API：net.minecraft.entity.Entity#getY 获取本机高度；实体查询交给 HelicopterCollision。
      * 端侧/线程：服务端主线程；参数/返回：无；副作用：更新同步警告、暂停高度并制止向下速度。
      * 排查：不能覆盖 autoY，否则通道清空后会停在半空；取消任务统一清除 landingBlocked，防止灯和语音残留。
      */
     private void updateLandingObstruction(){
-        boolean blocked=flight.autoPhase==3&&HelicopterCollision.landingObstructed(this,flight.autoY);
+        boolean blocked=flight.autoPhase==3&&(!HelicopterCollision.landingTerrainClear(this,flight.autoY,flight.autoX,flight.autoZ)
+                ||HelicopterCollision.landingObstructed(this,flight.autoY));
         if(blocked&&!flight.landingBlocked)flight.targetAltitude=getY();
         flight.landingBlocked=blocked;
         if(blocked)flight.vy=Math.max(0,flight.vy);

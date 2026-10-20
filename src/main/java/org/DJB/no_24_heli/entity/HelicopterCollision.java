@@ -5,9 +5,14 @@ import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.projectile.ProjectileEntity;
+import net.minecraft.util.function.BooleanBiFunction;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.shape.VoxelShapes;
+import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -27,6 +32,15 @@ public final class HelicopterCollision {
     private static final double CLEARANCE_EPSILON = EPSILON * 4;
     /** 降落实体净空每侧保留半格，给途中走入的实体留出余量；单位格，不参与普通碰撞。 */
     private static final double LANDING_ENTITY_MARGIN = .5;
+    /** 实际机体扫掠横向留十二厘米净空，不要求旋翼和尾梁下面全部铺平地面。 */
+    private static final double LANDING_CLEARANCE = .12;
+    /** 两条滑橇前后承重点的地面区域，局部坐标单位格；连续小面支撑避免点采样踩空。 */
+    private static final double SUPPORT_HALF_WIDTH = .20, SUPPORT_HALF_LENGTH = .24;
+    private static final double[] SUPPORT_SIDES = {-1.05, 1.05}, SUPPORT_ENDS = {-1.2, 1.0};
+    /** 目标低于支撑面二十厘米，使物理碰撞能确认真正接地；净空扫掠仅检查至真实触地位置。 */
+    private static final double LANDING_TARGET_DEPTH = .2;
+    /** 高处部件保留三度稳定误差的竖向余量，机腹只留两厘米，滑橇不膨胀到支撑面里。 */
+    private static final double LANDING_TILT_CLEARANCE = .35, LANDING_BODY_CLEARANCE = .02;
     /** 机体角度每半度采样一次，尾端相邻采样位移小于六厘米，避免原地转向跳过薄障碍。 */
     private static final double ROTATION_STEP = .5;
     /** 接地查询深度，单位格；仅用于确认机体结构的真实方块支撑。 */
@@ -506,6 +520,108 @@ public final class HelicopterCollision {
     private static boolean isFlightEntity(HelicopterEntity heli, Entity other) {
         return !other.isRemoved() && !other.isSpectator() && !heli.isConnectedThroughVehicle(other)
                 && !(other.getRootVehicle() instanceof RopeSeatEntity rope && rope.helicopter() == heli);
+    }
+
+    /**
+     * 功能：用滑橇四个承重点寻找同高支撑，再检查实际部件的下降通道。
+     * 引用 net.minecraft.world.World#raycast 取得候选高度，支撑面的连续性另由面积差集验证。
+     * 服务端主线程只读；返回控制目标高度，无安全支撑返回 NaN；不要求机身中心或尾翼下方有地面。
+     */
+    public static double landingTargetY(HelicopterEntity heli) {
+        double surface = Double.NaN;
+        Quaternionf rotation = new Pose(heli.getYaw(), 0, 0).rotation();
+        for (double side : SUPPORT_SIDES) for (double end : SUPPORT_ENDS) {
+            Vec3d start = heli.getPos().add(rotate(new Vec3d(side, .5, end), rotation));
+            if (!heli.getWorld().isChunkLoaded(BlockPos.ofFloored(start))) return Double.NaN;
+            var hit = heli.getWorld().raycast(new RaycastContext(start,
+                    new Vec3d(start.x, heli.getWorld().getBottomY(), start.z),
+                    RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.ANY, heli));
+            if (hit.getType() == HitResult.Type.MISS
+                    || Double.isFinite(surface) && Math.abs(surface - hit.getPos().y) > CLEARANCE_EPSILON)
+                return Double.NaN;
+            surface = hit.getPos().y;
+        }
+        double target = surface - LANDING_TARGET_DEPTH;
+        return landingTerrainClear(heli, target, heli.getX(), heli.getZ()) ? target : Double.NaN;
+    }
+
+    /**
+     * 功能：分开验证滑橇平整支撑与实际机体净空，允许尾梁、桨盘下方悬空或存在不接触机体的矮物。
+     * 引用 net.minecraft.world.World#getBlockCollisions 与有向盒扫掠检查每个部件，VoxelShapes 差集检查承重面。
+     * 服务端每 tick 只读；支撑必须干燥同高，主尾桨、机身、展开滑橇均需具有十二厘米横向余量。
+     * 排查：净空检查到滑橇真实触地高度，不能扫到用于总距控制的地下目标而误报地面阻挡。
+     */
+    public static boolean landingTerrainClear(HelicopterEntity heli, double targetY, double anchorX, double anchorZ) {
+        double surface = targetY + LANDING_TARGET_DEPTH;
+        Pose level = new Pose(heli.getYaw(), 0, 0);
+        Vec3d anchor = new Vec3d(anchorX, heli.getY(), anchorZ);
+        List<Shape> parts = shapes(heli, level, anchor, true);
+        double skidBottom = parts.stream().filter(part -> part.part == Part.LANDING_GEAR)
+                .mapToDouble(part -> part.bounds.minY - heli.getY()).min().orElseThrow();
+        double contactY = surface - skidBottom + CLEARANCE_EPSILON;
+        Vec3d descent = new Vec3d(0, Math.min(0, contactY - heli.getY()), 0);
+        Vec3d drift = heli.getPos().subtract(anchor);
+        List<Shape> corridor = new ArrayList<>();
+        for (Shape part : parts) {
+            double vertical = switch (part.part) {
+                case LANDING_GEAR -> 0;
+                case CABIN, FUEL_TANK -> LANDING_BODY_CLEARANCE;
+                default -> LANDING_TILT_CLEARANCE;
+            };
+            Vec3d padding = new Vec3d(LANDING_CLEARANCE + Math.abs(drift.x), vertical,
+                    LANDING_CLEARANCE + Math.abs(drift.z));
+            // 尾桨盒相对机身还旋转九十度，世界净空余量必须投影到每个分部自己的三个轴。
+            Vec3d half = part.half.add(axisPadding(part.axes[0], padding),
+                    axisPadding(part.axes[1], padding), axisPadding(part.axes[2], padding));
+            add(corridor, part.part, new Box(half.negate(), half), part.center, part.rotation);
+        }
+        Box area = bounds(corridor).stretch(descent);
+        World world = heli.getWorld();
+        if (surface < world.getBottomY() || area.maxY > world.getTopY()
+                || !world.getWorldBorder().contains(area)) return false;
+        // 方块形状可伸入相邻格，连同一格查询邻域一起确认已加载，不能把未知区块当成空地。
+        for (int x = MathHelper.floor(area.minX - 1) >> 4; x <= MathHelper.floor(area.maxX + 1) >> 4; x++)
+            for (int z = MathHelper.floor(area.minZ - 1) >> 4; z <= MathHelper.floor(area.maxZ + 1) >> 4; z++)
+                if (!world.isChunkLoaded(new BlockPos(x << 4, MathHelper.floor(surface), z << 4))) return false;
+        List<Box> blocks = obstacles(heli, area);
+        boolean hasFluid = world.containsFluid(area);
+        for (Shape part : corridor) {
+            if (hasFluid && world.containsFluid(part.bounds.stretch(descent))) return false;
+            for (Box block : blocks)
+                if (part.intersects(block) || part.sweep(block, descent) < 1) return false;
+        }
+        for (double side : SUPPORT_SIDES) for (double end : SUPPORT_ENDS) {
+            Shape patch = orientedBox(Part.LANDING_GEAR,
+                    new Box(side - SUPPORT_HALF_WIDTH, -CLEARANCE_EPSILON, end - SUPPORT_HALF_LENGTH,
+                            side + SUPPORT_HALF_WIDTH, CLEARANCE_EPSILON, end + SUPPORT_HALF_LENGTH),
+                    new Vec3d(anchorX, surface, anchorZ), level.rotation());
+            if (!flatSupport(heli, patch.bounds, surface)) return false;
+        }
+        return true;
+    }
+
+    /** 功能：将世界轴余量投影到分部局部轴；net.minecraft.util.math.Vec3d 保存余量，不改变真实碰撞几何。 */
+    private static double axisPadding(Vec3d axis, Vec3d padding) {
+        return Math.abs(axis.x) * padding.x + Math.abs(axis.y) * padding.y + Math.abs(axis.z) * padding.z;
+    }
+
+    /**
+     * 功能：小块承重区的实际顶面必须同高且连续，允许区域以外地形不平。
+     * 引用 net.minecraft.util.shape.VoxelShapes#combineAndSimplify 精确扣除方块顶面；服务端只读。
+     * 排查：台阶边、单点接触和滑橇下孔洞都留下非空差集；水浸支撑不接受。
+     */
+    private static boolean flatSupport(HelicopterEntity heli, Box support, double surface) {
+        World world = heli.getWorld();
+        if (world.containsFluid(support)) return false;
+        var uncovered = VoxelShapes.cuboid(new Box(support.minX, 0, support.minZ, support.maxX, 1, support.maxZ));
+        for (var shape : world.getBlockCollisions(heli, support)) for (Box block : shape.getBoundingBoxes()) {
+            if (Math.abs(block.maxY - surface) > CLEARANCE_EPSILON) continue;
+            uncovered = VoxelShapes.combineAndSimplify(uncovered,
+                    VoxelShapes.cuboid(new Box(block.minX, 0, block.minZ, block.maxX, 1, block.maxZ)),
+                    BooleanBiFunction.ONLY_FIRST);
+            if (uncovered.isEmpty()) return true;
+        }
+        return false;
     }
 
     /**

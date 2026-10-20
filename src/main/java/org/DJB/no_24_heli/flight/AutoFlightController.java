@@ -4,6 +4,10 @@ package org.DJB.no_24_heli.flight;
 public final class AutoFlightController {
     /** 自动起飞相对开始位置的悬停高度，单位格；启动净空、爬升目标与提示共用二十格。 */
     public static final double TAKEOFF_HEIGHT = 20;
+    /** 降落前先稳定：水平速度不超过一米/秒，俯仰/横滚不超过三度，偏航率不超过六度/秒。 */
+    private static final double LANDING_SPEED = .05, LANDING_TILT = 3, LANDING_YAW_RATE = .3;
+    /** 对准承重点后下降，偏差不超过十二厘米，避免在预检滑橇支撑区域外提前触地。 */
+    private static final double LANDING_POSITION_ERROR = .12;
     private AutoFlightController() {}
 
     /**
@@ -20,7 +24,13 @@ public final class AutoFlightController {
         s.cyclicPitch=(float)(-Math.toDegrees(Math.atan2(-Math.sin(yaw)*ax+Math.cos(yaw)*az,FlightPhysics.GRAVITY))/30);
         s.cyclicRoll=(float)(-Math.toDegrees(Math.atan2(Math.cos(yaw)*ax+Math.sin(yaw)*az,FlightPhysics.GRAVITY))/32);
         s.pedal=(float)FlightPhysics.clamp(-s.yawRate*.7,-1,1);s.collectiveInput=0;
-        if(!s.landingBlocked)s.targetAltitude=s.autoY;
+        if(!s.landingBlocked){
+            boolean settling=s.autoPhase==3&&(Math.hypot(s.vx,s.vz)>LANDING_SPEED
+                    ||Math.hypot(s.autoX-x,s.autoZ-z)>LANDING_POSITION_ERROR
+                    ||Math.abs(s.pitch)>LANDING_TILT||Math.abs(s.roll)>LANDING_TILT
+                    ||Math.abs(s.yawRate)>LANDING_YAW_RATE);
+            s.targetAltitude=settling?y:s.autoY;
+        }
         if(s.autoPhase==1&&s.armed)s.autoPhase=2;
         if(s.autoPhase==2&&!grounded&&Math.abs(y-s.autoY)<.25&&Math.abs(s.vy)<.025)s.cancelAutoFlight();
     }

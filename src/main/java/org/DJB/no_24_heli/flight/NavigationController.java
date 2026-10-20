@@ -16,11 +16,17 @@ public final class NavigationController {
     private static final double VELOCITY_GAIN = .10;
     /** 到点按半值制动能力提前减速，留出二十四 tick 的闭环及姿态响应；近点自然形成位置反馈。 */
     private static final double ARRIVAL_BRAKE = .004, ARRIVAL_RESPONSE = 24;
+    /** 水平目标进入一格内保持航向，离开两格才恢复转向，避免升降段与近点漂移导致反复掉头。 */
+    private static final double HEADING_HOLD_DISTANCE = 1, HEADING_RESUME_DISTANCE = 2;
+    /** 近前视点按位置误差限速，单位 tick⁻¹；缩短前视避障时不能仍按远处终点速度冲过目标。 */
+    private static final double TARGET_POSITION_GAIN = .10;
     /** 当前连续目标速度和上次虚拟杆量；不会因网络中性包或状态切换而归零。 */
     private double commandedSpeed, pitchInput, rollInput, pedalInput;
+    /** 仅本机控制器保存的近点航向滞回标志，不改变实际偏航或网络状态。 */
+    private boolean holdingHeading;
 
     /** 功能：取消时释放控制器内部记忆；服务端，无 MC API，不修改实际运动。 */
-    public void reset() { commandedSpeed = pitchInput = rollInput = pedalInput = 0; }
+    public void reset() { commandedSpeed = pitchInput = rollInput = pedalInput = 0; holdingHeading = false; }
 
     /**
      * 功能：将轨迹目标和限速映射到原 FlightPhysics 的脚蹬及侧倾/俯仰输入。
@@ -31,13 +37,15 @@ public final class NavigationController {
     public void step(FlightState s, double x, double z, NavigationRoute.Point target,
                      double limit, double remaining, double curvature) {
         double dx = target.x() - x, dz = target.z() - z, distance = Math.hypot(dx, dz);
+        if (distance < HEADING_HOLD_DISTANCE) holdingHeading = true;
+        else if (distance > HEADING_RESUME_DISTANCE) holdingHeading = false;
         double heading = Math.toDegrees(Math.atan2(-dx, dz));
         double error = wrap(heading - s.yaw);
         boolean arriving = remaining < 3;
         if (limit > 0 && !s.navAligned && Math.abs(error) < 8) s.navAligned = true;
-        double alignment = arriving ? 1 : Math.max(.2, Math.cos(Math.toRadians(error)));
-        double desired = s.navAligned || arriving
-                ? Math.min(limit, stoppingSpeed(remaining)) * alignment : 0;
+        double alignment = arriving || holdingHeading ? 1 : Math.max(.2, Math.cos(Math.toRadians(error)));
+        // 整机通道已经验证，可边低速平移边对准；不能把第一次进入八度航向窗作为永久起步门槛。
+        double desired = Math.min(Math.min(limit, stoppingSpeed(remaining)), distance * TARGET_POSITION_GAIN) * alignment;
         commandedSpeed += Math.clamp(desired - commandedSpeed, -DECELERATION, ACCELERATION);
         if (limit == 0) commandedSpeed = 0; // 安全制动只改变目标，不抹掉飞机惯性。
         double vx = distance < .01 ? 0 : dx / distance * commandedSpeed;
@@ -55,7 +63,7 @@ public final class NavigationController {
         // 原物理以姿态目标驱动俯仰/侧倾，按反馈限制目标与实际姿态的距离，避免持续翻滚。
         pitchInput = approach(pitchInput, Math.clamp(pitch, s.pitch - 8, s.pitch + 8) / 30, INPUT_STEP);
         rollInput = approach(rollInput, Math.clamp(bank, s.roll - 8, s.roll + 8) / 32, INPUT_STEP);
-        double turn = arriving || limit == 0 ? 0 : Math.clamp(error * .055
+        double turn = arriving || holdingHeading || limit == 0 ? 0 : Math.clamp(error * .055
                 + Math.toDegrees(curvature * Math.hypot(s.vx, s.vz)), -1.4, 1.4);
         if (Math.abs(error) < .2 && Math.abs(curvature) < 1e-5) turn = 0;
         // .29 为原 0.94 偏航阻尼和 .22 脚蹬增益的稳态前馈，误差项提供角速度阻尼。

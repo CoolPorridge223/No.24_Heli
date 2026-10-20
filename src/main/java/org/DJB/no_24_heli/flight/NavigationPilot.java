@@ -73,6 +73,14 @@ public final class NavigationPilot {
     private boolean terrainRetryPending;
     /** 实时通道检查发现未知区块时保持制动；不将区块等待累计为真实障碍。 */
     private boolean waitingForChunks;
+    /** 安全通道内十二秒无一格三维进展才重规划；同处最多两次，防止反复搜索同一路线。 */
+    private static final int STALL_TICKS=240,MAX_STALL_REPLANS=2;
+    private static final double PROGRESS_DISTANCE=1;
+    /** 无进展计时及最近航段进度；新任务清零重试次数，单纯转向不能冒充前进。 */
+    private long noProgressSince=-1;
+    private double progressCheckpoint;
+    private int stallReplans;
+    private boolean stalled;
     /** 重复失败不每次刷新动作栏；新目标清除该诊断状态。 */
     private NavigationRoute.Status terrainFailure;
     /** 生命周期诊断状态；状态切换绝不清零实际速度，不进入存档和网络协议。 */
@@ -101,6 +109,7 @@ public final class NavigationPilot {
         revision=-1;goalX=Double.NaN;route=List.of();circles=List.of();settings=null;
         node=0;retryAt=0;attempted=false;
         trajectory=null;controller.reset();phase=Phase.CANCELLED;
+        noProgressSince=-1;progressCheckpoint=0;stallReplans=0;stalled=false;
     }
 
     /**
@@ -123,6 +132,7 @@ public final class NavigationPilot {
         boolean changed=newTarget||revision!=airspace.revision();
         if(changed){
             cancelTerrain();terrainRetryAt=0;
+            noProgressSince=-1;stallReplans=0;stalled=false;
             if(newTarget) reset();
             else if(pending!=null){NavigationPlanningService.cancel(pending);pending=null;}
             revision=airspace.revision();goalX=goal.x();goalZ=goal.z();settings=currentSettings;
@@ -304,6 +314,7 @@ public final class NavigationPilot {
         terrainRoute=result;terrainGoalNode=goalNode;
         terrainFollower=new NavigationTerrainFollower();
         terrainFollower.bind(result,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0);
+        noProgressSince=-1;progressCheckpoint=0;
     }
 
     /** 功能：仅保留当前、续段及在途采集的区块票；主线程调用，已飞过的区块可以正常卸载。 */
@@ -345,6 +356,9 @@ public final class NavigationPilot {
      */
     private void follow(HelicopterEntity h,ServerWorld world,NavigationRoute.Point pos,NavigationRoute.Point goal){
         var s=h.flight;double speed=Math.hypot(s.vx,s.vz);
+        if(stalled){
+            s.targetAltitude=h.getY();controller.step(s,h.getX(),h.getZ(),pos,0,0,0);return;
+        }
         if(!prepareTerrain(h,world)){
             // 等待重规划时同时捕获当前高度，不能继续追逐旧航段留下的爬升或下降目标。
             s.targetAltitude=h.getY();
@@ -367,7 +381,7 @@ public final class NavigationPilot {
         double horizontal=NavigationRoute.distance(pos,target.horizontal()),vertical=Math.abs(target.y()-h.getY());
         if(vertical>1)limit=Math.min(limit,horizontal*(target.y()>h.getY()?NavigationTerrainRoute.CLIMB_SPEED
                 :NavigationTerrainRoute.DESCENT_SPEED)/vertical);
-        limit=Math.min(limit,terrainRoute.volume().speed(here,target));
+        // 前视可跨入续段，其净空和顶棚限速已由跟随器联合两份快照验证，不能再用旧快照越界降速。
         // 所有方向采用整机旋转包络，连未来尾梁转动也必须有空间，不依赖当前机头朝向。
         double radius=NavigationTerrainRoute.ENVELOPE;
         Box base=new Box(h.getX()-radius,h.getY()-radius,h.getZ()-radius,
@@ -405,6 +419,9 @@ public final class NavigationPilot {
         // 最终点越过后仍保留低速返回权限，续段接缝不作为到点减速目标。
         if(terrainGoalNode==route.size()-1&&remaining<4){remaining=Math.max(remaining,distance);limit=Math.max(limit,.12);}
         if(!forwardClear||!driftClear||!altitudeClear)limit=0;
+        if(replanIfStalled(h,world,forwardClear&&driftClear&&altitudeClear&&!waitingForChunks)){
+            s.targetAltitude=h.getY();controller.step(s,h.getX(),h.getZ(),pos,0,0,0);return;
+        }
         controller.step(s,h.getX(),h.getZ(),target.horizontal(),limit,remaining,sample.curvature());
         if(terrainRoute==null||waitingForChunks||terrainRetryPending)phase=Phase.REPLANNING;
         else if(terrainRetryAt==Long.MAX_VALUE)phase=Phase.FAILED;
@@ -413,6 +430,30 @@ public final class NavigationPilot {
         else if(controller.commandedSpeed()>speed+.02)phase=Phase.ACCELERATING;
         else if(Math.abs(sample.curvature())>1e-4)phase=Phase.TURNING;
         else phase=Phase.CRUISING;
+    }
+    /**
+     * 功能：整段通道安全却长期无三维航路进展时，从实际机位重规划，耗尽后明确提示并制动悬停。
+     * 引用 net.minecraft.server.world.ServerWorld#getTime 使用固定 tick；服务端主线程，无直接位移。
+     * 区块等待、真实堵塞及已耗尽的地形重试不累计；重规划次数只在确实前进一格或新任务时重置。
+     * 排查：原地旋转不推进弧长；垂直升降可推进，不能仅用水平速度误判正常爬升。
+     */
+    private boolean replanIfStalled(HelicopterEntity h,ServerWorld world,boolean clear){
+        if(terrainRoute==null||terrainRetryPending||terrainRetryAt==Long.MAX_VALUE||!clear
+                ||terrainNext==null&&terrainGoalNode<route.size()-1
+                &&terrainFollower.atEnd(terrainPosition(h),Math.hypot(h.flight.vx,h.flight.vz))){
+            noProgressSince=-1;return false;
+        }
+        double progress=terrainFollower.progress();long now=world.getTime();
+        if(noProgressSince<0||progress-progressCheckpoint>=PROGRESS_DISTANCE){
+            if(progress-progressCheckpoint>=PROGRESS_DISTANCE)stallReplans=0;
+            progressCheckpoint=progress;noProgressSince=now;return false;
+        }
+        if(now-noProgressSince<STALL_TICKS)return false;
+        if(stallReplans>=MAX_STALL_REPLANS){
+            cancelTerrain();stalled=true;phase=Phase.FAILED;notify(h,"route_stalled_stopped");return true;
+        }
+        stallReplans++;cancelTerrain();terrainRetryAt=now+REPLAN_TICKS;
+        phase=Phase.REPLANNING;notify(h,"route_stalled_retry");return true;
     }
     /** 小段扫掠避免斜向航线的大包围盒把旁侧障碍误报为整条通道堵塞。 */
     private boolean corridorClear(ServerWorld world,HelicopterEntity h,Box base,Vec3d delta){

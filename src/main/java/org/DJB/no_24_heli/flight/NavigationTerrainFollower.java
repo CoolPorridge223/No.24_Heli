@@ -35,7 +35,8 @@ final class NavigationTerrainFollower {
             lengths[i]=lengths[i-1]+a.distance(b);
             double horizontal=NavigationRoute.distance(a.horizontal(),b.horizontal()),vertical=Math.abs(b.y()-a.y());
             double limit=route.volume().speed(a,b);
-            if(vertical>1e-6)limit=Math.min(limit,horizontal*(b.y()>a.y()
+            // 纯升降的水平速度由当前前视坡度控制；将两端永久写零会让升降后的水平段无法起步。
+            if(vertical>1e-6&&horizontal>1e-6)limit=Math.min(limit,horizontal*(b.y()>a.y()
                     ?NavigationTerrainRoute.CLIMB_SPEED:NavigationTerrainRoute.DESCENT_SPEED)/vertical);
             speeds[i-1]=Math.min(speeds[i-1],limit);speeds[i]=Math.min(speeds[i],limit);
         }
@@ -71,7 +72,7 @@ final class NavigationTerrainFollower {
         while(segment+2<points.size()&&lengths[segment+1]<=progress)segment++;
         double look=Math.clamp(lookMin+speed*20,lookMin,lookMax);
         var target=pointAt(progress+look,next);
-        for(int i=0;i<8&&!route.volume().clear(pos,target);i++) {
+        for(int i=0;i<8&&!clearAcross(pos,target,next);i++) {
             look*=.5;target=pointAt(progress+look,next);
         }
         double span=lengths[segment+1]-lengths[segment];
@@ -91,9 +92,47 @@ final class NavigationTerrainFollower {
         }
         if(next!=null)limit=Math.min(limit,Math.sqrt(continuationSpeed*continuationSpeed
                 +2*NavigationController.BRAKE_ACCELERATION*remaining));
+        limit=Math.min(limit,speedAcross(pos,target,next));
         remaining+=continuationLength;
         double altitude=pointAt(progress+Math.max(look,speed*40),next).y();
-        return new Sample(target,altitude,remaining,limit,curves[segment],route.volume().clear(pos,target));
+        return new Sample(target,altitude,remaining,limit,curves[segment],clearAcross(pos,target,next));
+    }
+
+    /**
+     * 功能：跨接缝前视逐小段使用能完整覆盖该段的地形快照，不将旧快照外的已验证续段判成障碍。
+     * 无 MC API，服务端跟随调用；每段仍调用 Volume.clear 的禁区及超覆盖检查，不能拼接不相邻的安全点。
+     * 排查：仅两个端点分别安全不够，整条连线的每个小段必须由至少一份快照完整证明安全。
+     */
+    private boolean clearAcross(NavigationTerrainRoute.Point from,NavigationTerrainRoute.Point to,
+                                NavigationTerrainRoute.Result next) {
+        int steps=Math.max(1,(int)Math.ceil(from.distance(to)/(NavigationTerrainRoute.CELL*.5)));
+        var previous=from;
+        for(int i=1;i<=steps;i++){
+            var point=NavigationTerrainRoute.interpolate(from,to,(double)i/steps);
+            if(!route.volume().clear(previous,point)&&(next==null||!next.volume().clear(previous,point)))return false;
+            previous=point;
+        }
+        return true;
+    }
+
+    /**
+     * 功能：只读取已覆盖且安全的小段限速，避免旧快照越界被当成洞内十八公里限速。
+     * 无 MC API；重叠区取两份有效快照的较低限速，未知区域仍为零，不放宽顶棚或障碍约束。
+     */
+    private double speedAcross(NavigationTerrainRoute.Point from,NavigationTerrainRoute.Point to,
+                               NavigationTerrainRoute.Result next) {
+        int steps=Math.max(1,(int)Math.ceil(from.distance(to)/(NavigationTerrainRoute.CELL*.5)));
+        double limit=cruise;var previous=from;
+        for(int i=1;i<=steps;i++){
+            var point=NavigationTerrainRoute.interpolate(from,to,(double)i/steps);
+            boolean currentClear=route.volume().clear(previous,point);
+            boolean nextClear=next!=null&&next.volume().clear(previous,point);
+            if(!currentClear&&!nextClear)return 0;
+            if(currentClear)limit=Math.min(limit,route.volume().speed(previous,point));
+            if(nextClear)limit=Math.min(limit,next.volume().speed(previous,point));
+            previous=point;
+        }
+        return limit;
     }
 
     /** 功能：在当前有序轨迹及下一段的开头插值，不做全局最近点跳跃；无 MC API。 */
@@ -120,6 +159,9 @@ final class NavigationTerrainFollower {
         return NavigationRoute.distance(pos.horizontal(),route.path().getLast().horizontal())<Math.max(2,speed*3)
                 &&lengths[lengths.length-1]-progress<Math.max(4,speed*4);
     }
+
+    /** 功能：返回本航段已推进的三维弧长，供无进展重规划检测；无 MC API，不计单纯偏航。 */
+    double progress() { return progress; }
 
     /** 功能：计算水平三点曲率，符号与原导航控制器一致；纯垂直段不产生偏航前馈。 */
     private static double curvature(NavigationTerrainRoute.Point a,NavigationTerrainRoute.Point b,NavigationTerrainRoute.Point c) {
