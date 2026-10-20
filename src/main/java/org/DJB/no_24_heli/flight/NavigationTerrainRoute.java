@@ -22,6 +22,12 @@ final class NavigationTerrainRoute {
     private static final double COVERED_WEIGHT = 3, ENTRY_COST = 400;
     /** 单次局部搜索最多展开四十万个节点，不突破用户的 pathMaxNodes。 */
     private static final int MAX_NODES = 400_000;
+    /** 搜索时允许沿父节点跨格直连，最远一百二十八格；避免把缓坡的同步升降算成逐格陡爬。 */
+    private static final double SHORTCUT_DISTANCE = 128;
+    /** 加权启发式优先获得可飞路线，权重 1.15；不承诺严格时间最优，净空和风险代价保持不变。 */
+    private static final double HEURISTIC_WEIGHT = 1.15;
+    /** 转角最多切二十四格并保留相邻直线六成，轨迹按两格以内加密供连续前视。 */
+    private static final double TURN_CUT = 24, SPACING = 2;
     /** 三维坐标以实体原点为准，单位格；无 MC API、无可变字段。 */
     record Point(double x, double y, double z) {
         /** 功能：投影为原禁区规划坐标；无 MC API、无副作用。 */
@@ -111,7 +117,13 @@ final class NavigationTerrainRoute {
         /** 功能：整段只要经过顶棚就提前采用洞内限速；不能只看露天的入口前点和出口后点。 */
         double speed(Point a,Point b) {
             int steps=Math.max(1,(int)Math.ceil(a.distance(b)/(CELL*.5)));
-            for(int i=0;i<=steps;i++)if(covered(interpolate(a,b,(double)i/steps)))return Math.min(cruise,COVERED_SPEED);
+            int last=cell(a);
+            if(!free(last))return Math.min(cruise,COVERED_SPEED);
+            for(int i=1;i<=steps;i++) {
+                int next=cell(interpolate(a,b,(double)i/steps));
+                if(!free(next)||boxCovered(last,next))return Math.min(cruise,COVERED_SPEED);
+                last=next;
+            }
             return cruise;
         }
         /**
@@ -140,33 +152,61 @@ final class NavigationTerrainRoute {
                     for(int ix=Math.min(ax,bx);ix<=Math.max(ax,bx);ix++)if(!free[index(ix,iy,iz)])return false;
             return true;
         }
-        /** 功能：连续段飞行时间加顶棚风险；用于平滑时禁止抄近路改穿洞，单位 tick。 */
+        /** 功能：顶棚判定与净空使用同一超覆盖格集合，斜穿边角也按洞内限速和风险计价；无 MC API。 */
+        private boolean boxCovered(int a,int b) {
+            int ax=a%nx,ay=a/(nx*nz),az=a/nx%nz,bx=b%nx,by=b/(nx*nz),bz=b/nx%nz;
+            for(int iy=Math.min(ay,by);iy<=Math.max(ay,by);iy++)
+                for(int iz=Math.min(az,bz);iz<=Math.max(az,bz);iz++)
+                    for(int ix=Math.min(ax,bx);ix<=Math.max(ax,bx);ix++)if(covered[index(ix,iy,iz)])return true;
+            return false;
+        }
+        /**
+         * 功能：连续段飞行时间加顶棚风险，搜索、父节点直连和平滑统一使用，单位 tick。
+         * 无 MC API；后台调用。整段采用跟随器相同的最低限速，顶棚部分另加风险，每次进入单独收费。
+         * 排查：不能只给洞内采样降速却让跟随器在整条长段限速，否则穿洞时间会被低估。
+         */
         double cost(Point a,Point b) {
             int steps=Math.max(1,(int)Math.ceil(a.distance(b)/(CELL*.5)));
-            double total=0; Point last=a; boolean wasCovered=covered(a);
+            int last=cell(a),roofSteps=0,entries=0;
+            if(!free(last))return Double.POSITIVE_INFINITY;
+            boolean wasCovered=covered[last];
             for(int i=1;i<=steps;i++) {
-                Point p=interpolate(a,b,(double)i/steps); boolean roof=covered(p)||covered(last);
-                total+=travel(last,p,roof?Math.min(cruise,COVERED_SPEED):cruise)*(roof?COVERED_WEIGHT:1);
-                if(!wasCovered&&covered(p))total+=ENTRY_COST;
-                wasCovered=covered(p);last=p;
+                if(Thread.currentThread().isInterrupted())return Double.POSITIVE_INFINITY;
+                int next=cell(interpolate(a,b,(double)i/steps));
+                if(!free(next))return Double.POSITIVE_INFINITY;
+                boolean roof=boxCovered(last,next);
+                if(roof)roofSteps++;
+                if(!wasCovered&&roof)entries++;
+                wasCovered=roof;last=next;
             }
-            return total;
+            double speed=roofSteps>0?Math.min(cruise,COVERED_SPEED):cruise;
+            return travel(a,b,speed)*(1+(COVERED_WEIGHT-1)*roofSteps/steps)+ENTRY_COST*entries;
         }
     }
 
     /** 受体素总数限制的索引最小堆，每格至多一个开放项，不使用无界重复队列。 */
     private final int[] heap,position,parent;
-    /** g 与 f 以 tick 为单位；所有边权非负，水平距离/巡航速度是相容下界。 */
+    /** g 与 f 以 tick 为单位；边权非负，水平时间下界乘 1.15 后用于优先获得可飞路线。 */
     private final double[] cost,score;
     /** 堆中有效项数量，仅当前工作线程修改。 */
     private int size;
+    /** 起点高度格及每层格数；时间相同时优先保持原高度，避免露天空域无收益地起伏。 */
+    private final int startLevel,layerCells;
     /** 功能：为本次有界三维搜索分配数组，无 MC API、无外部副作用。 */
-    private NavigationTerrainRoute(int cells) {
+    private NavigationTerrainRoute(int cells,int layerCells,int begin) {
+        this.layerCells=layerCells;startLevel=begin/layerCells;
         heap=new int[cells];position=new int[cells];parent=new int[cells];cost=new double[cells];score=new double[cells];
         Arrays.fill(position,-1);Arrays.fill(parent,-1);Arrays.fill(cost,Double.POSITIVE_INFINITY);
     }
+    /** 功能：只在整机直线走廊已验证且无顶棚时交付快速路线；失败要求扩大采集范围，不猜测侧方地形。 */
+    static Result direct(Volume v,Point start,NavigationRoute.Point goal) {
+        if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,0);
+        Point end=new Point(goal.x(),start.y,goal.z());
+        if(!v.covered(end)&&v.clear(start,end)&&v.speed(start,end)==v.cruise)return success(v,List.of(start,end),0);
+        return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
+    }
     /**
-     * 功能：二十六邻三维 A* 同时比较侧绕、升降与穿洞，出口必须在已确认无顶棚的位置。
+     * 功能：二十六邻三维 A* 加父节点可见直连，同时比较侧绕、缓坡升降与穿洞，出口必须无顶棚。
      * 无 MC API；后台调用；输入为独占快照和真实起终点，终点高度自由选择，不擅自自动降落。
      * 返回：完整三维航路或精度/预算失败；副作用仅局部数组。
      * 排查：局部矩形外可能仍有路，GRID_RESOLUTION 绝不等同真实封闭。
@@ -175,13 +215,16 @@ final class NavigationTerrainRoute {
         if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,0);
         int begin=v.cell(start),goalCell=v.cell(new Point(goal.x(),start.y,goal.z()));
         if(!v.free(begin)||goalCell<0)return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
-        NavigationTerrainRoute open=new NavigationTerrainRoute(v.free.length);
-        open.cost[begin]=0;open.parent[begin]=begin;open.offer(begin,heuristic(start,goal,v.cruise));
+        // 露天空域整段验证后直接交付，不为平直航线分配搜索堆或展开三维网格。
+        Result direct=direct(v,start,goal);
+        if(direct.status()!=NavigationRoute.Status.GRID_RESOLUTION)return direct;
+        NavigationTerrainRoute open=new NavigationTerrainRoute(v.free.length,v.nx*v.nz,begin);
+        open.cost[begin]=0;open.parent[begin]=begin;open.offer(begin,HEURISTIC_WEIGHT*heuristic(start,goal,v.cruise));
         int expanded=0,limit=Math.min(MAX_NODES,v.settings.maxNodes());
         while(open.size>0) {
             if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,expanded);
             if(expanded++>=limit)return failure(NavigationRoute.Status.NODE_LIMIT,v,expanded-1);
-            int at=open.poll();Point p=v.point(at);
+            int at=open.poll();Point p=at==begin?start:v.point(at);
             if(at%(v.nx*v.nz)==goalCell%(v.nx*v.nz)&&!v.covered[at]) {
                 Point end=new Point(goal.x(),p.y,goal.z());
                 if(v.clear(p,end)&&!v.covered(end))return open.finish(v,at,start,end,expanded);
@@ -191,13 +234,19 @@ final class NavigationTerrainRoute {
                 if(dx==0&&dy==0&&dz==0||ix+dx<0||iy+dy<0||iz+dz<0||ix+dx>=v.nx||iy+dy>=v.ny||iz+dz>=v.nz)continue;
                 int next=v.index(ix+dx,iy+dy,iz+dz);
                 if(!v.free[next]||open.position[next]==-2||!v.boxClear(at,next))continue;
-                boolean roof=v.covered[at]||v.covered[next];Point q=v.point(next);
-                double weight=travel(p,q,roof?Math.min(v.cruise,COVERED_SPEED):v.cruise)*(roof?COVERED_WEIGHT:1);
-                if(!v.covered[at]&&v.covered[next])weight+=ENTRY_COST;
-                double candidate=open.cost[at]+weight;
+                Point q=v.point(next);
+                double candidate=open.cost[at]+v.cost(p,q);int predecessor=at;
+                int ancestor=open.parent[at];Point origin=ancestor==begin?start:v.point(ancestor);
+                // 在搜索竞争阶段就比较同步升降时间；只在终点之后平滑无法纠正已经选错的绕山方向。
+                if(ancestor!=at&&origin.distance(q)<=SHORTCUT_DISTANCE
+                        &&open.cost[ancestor]+travel(origin,q,v.cruise)<=Math.min(candidate,open.cost[next])+1e-6
+                        &&v.clear(origin,q)) {
+                    double shortcut=open.cost[ancestor]+v.cost(origin,q);
+                    if(shortcut<=candidate) {candidate=shortcut;predecessor=ancestor;}
+                }
                 if(candidate>=open.cost[next])continue;
-                open.cost[next]=candidate;open.parent[next]=at;
-                open.offer(next,candidate+heuristic(q,goal,v.cruise));
+                open.cost[next]=candidate;open.parent[next]=predecessor;
+                open.offer(next,candidate+HEURISTIC_WEIGHT*heuristic(q,goal,v.cruise));
             }
         }
         return failure(NavigationRoute.Status.GRID_RESOLUTION,v,expanded);
@@ -209,7 +258,7 @@ final class NavigationTerrainRoute {
         Collections.reverse(raw);raw.set(0,start);
         if(raw.getLast().distance(end)>1e-6)raw.add(end);
         List<Point> output=new ArrayList<>();output.add(start);
-        int anchor=0;double total=0;
+        int anchor=0;
         while(anchor+1<raw.size()) {
             if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,expanded);
             int best=anchor+1;double original=0;
@@ -219,15 +268,61 @@ final class NavigationTerrainRoute {
                 if(v.clear(raw.get(anchor),raw.get(next))&&v.cost(raw.get(anchor),raw.get(next))<=original+1e-6)best=next;
             }
             if(!v.clear(raw.get(anchor),raw.get(best)))return failure(NavigationRoute.Status.TRAJECTORY_UNSAFE,v,expanded);
-            total+=v.cost(raw.get(anchor),raw.get(best));
             // 搜索窗口仅限制运算，不应把同一直线每一百二十八格拆成需要减速的假转角。
             if(output.size()>1) {
                 Point before=output.get(output.size()-2),last=output.getLast(),next=raw.get(best);
-                if(Math.abs(before.distance(last)+last.distance(next)-before.distance(next))<1e-6)output.removeLast();
+                if(Math.abs(before.distance(last)+last.distance(next)-before.distance(next))<1e-6
+                        &&v.clear(before,next)&&v.cost(before,next)<=v.cost(before,last)+v.cost(last,next)+1e-6)
+                    output.removeLast();
             }
             output.add(raw.get(best));anchor=best;
         }
+        return success(v,output,expanded);
+    }
+    /**
+     * 功能：验证三维转弯曲线后加密轨迹，保留窄角原折线；无 MC API，后台执行。
+     * 每条曲线的整段机体净空及风险代价均检查，不能通过放宽包络来提高连贯性。
+     * 返回：完整轨迹；取消不交付半条路线。排查：窄洞无法圆角时由跟随器降低转角速度。
+     */
+    private static Result success(Volume v,List<Point> raw,int expanded) {
+        List<Point> output=new ArrayList<>();output.add(raw.getFirst());
+        for(int i=1;i+1<raw.size();i++) {
+            if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,expanded);
+            Point a=raw.get(i-1),corner=raw.get(i),b=raw.get(i+1);
+            double cut=Math.min(TURN_CUT,Math.min(a.distance(corner),corner.distance(b))*.4);
+            boolean accepted=false;
+            for(int attempt=0;attempt<5&&cut>=SPACING;attempt++,cut*=.5) {
+                Point entry=interpolate(corner,a,cut/corner.distance(a));
+                Point exit=interpolate(corner,b,cut/corner.distance(b));
+                List<Point> curve=new ArrayList<>();curve.add(entry);
+                int steps=Math.max(4,(int)Math.ceil(cut*2/SPACING));
+                double cost=0;boolean safe=true;
+                for(int n=1;n<=steps;n++) {
+                    double t=(double)n/steps;
+                    Point p=interpolate(interpolate(entry,corner,t),interpolate(corner,exit,t),t);
+                    Point last=curve.getLast();
+                    if(!v.clear(last,p)) {safe=false;break;}
+                    cost+=v.cost(last,p);curve.add(p);
+                }
+                if(!safe||cost>v.cost(entry,corner)+v.cost(corner,exit)+1e-6
+                        ||!v.clear(output.getLast(),entry))continue;
+                append(output,entry);output.addAll(curve.subList(1,curve.size()));accepted=true;break;
+            }
+            if(!accepted)append(output,corner);
+        }
+        append(output,raw.getLast());
+        double total=0;
+        for(int i=1;i<output.size();i++) {
+            if(!v.clear(output.get(i-1),output.get(i)))return failure(NavigationRoute.Status.TRAJECTORY_UNSAFE,v,expanded);
+            total+=v.cost(output.get(i-1),output.get(i));
+        }
+        if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,expanded);
         return new Result(NavigationRoute.Status.SUCCESS,output,v,expanded,total);
+    }
+    /** 功能：以不超过两格的间距追加直线，重复点不产生零长航段；无 MC API。 */
+    private static void append(List<Point> output,Point end) {
+        Point a=output.getLast();int steps=(int)Math.ceil(a.distance(end)/SPACING);
+        for(int i=1;i<=steps;i++)output.add(interpolate(a,end,(double)i/steps));
     }
     /** 功能：水平和垂直运动可同时进行，取较慢轴的时间；无 MC API，单位 tick。 */
     private static double travel(Point a,Point b,double cruise) {
@@ -247,14 +342,21 @@ final class NavigationTerrainRoute {
     private void offer(int cell,double priority) {
         score[cell]=priority;int at=position[cell];
         if(at<0) {at=size++;heap[at]=cell;position[cell]=at;}
-        while(at>0) {int p=(at-1)/2;if(score[heap[p]]<=priority)break;swap(at,p);at=p;}
+        while(at>0) {int p=(at-1)/2;if(!less(heap[at],heap[p]))break;swap(at,p);at=p;}
     }
     /** 功能：弹出最小 f 值并关闭该格；无 MC API。 */
     private int poll() {
         int result=heap[0];swap(0,--size);position[result]=-2;int at=0;
-        while(at*2+1<size) {int child=at*2+1;if(child+1<size&&score[heap[child+1]]<score[heap[child]])child++;
-            if(score[heap[at]]<=score[heap[child]])break;swap(at,child);at=child;}
+        while(at*2+1<size) {int child=at*2+1;if(child+1<size&&less(heap[child+1],heap[child]))child++;
+            if(!less(heap[child],heap[at]))break;swap(at,child);at=child;}
         return result;
+    }
+    /** 功能：先比较时间与风险，再按原高度和前进进度打破同值，减少无收益升降及等值展开；无 MC API。 */
+    private boolean less(int a,int b) {
+        int priority=Double.compare(score[a],score[b]);
+        if(priority!=0)return priority<0;
+        int heightA=Math.abs(a/layerCells-startLevel),heightB=Math.abs(b/layerCells-startLevel);
+        return heightA!=heightB?heightA<heightB:cost[a]>cost[b];
     }
     /** 功能：交换堆元素并同步反向索引；无 MC API。 */
     private void swap(int a,int b) {int cell=heap[a];heap[a]=heap[b];heap[b]=cell;position[heap[a]]=a;position[heap[b]]=b;}

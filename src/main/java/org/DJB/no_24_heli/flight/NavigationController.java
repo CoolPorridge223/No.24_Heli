@@ -12,8 +12,10 @@ public final class NavigationController {
     private static final double ACCELERATION = .004, DECELERATION = .008;
     /** 杆量每 tick 最大变化；姿态指令最大俯仰 30 度、侧倾 25 度。 */
     private static final double INPUT_STEP = .025, PITCH_LIMIT = 30, BANK_LIMIT = 25;
-    /** 速度闭环增益和位置末端增益；按原 20Hz 积分器设计，不使用渲染帧时钟。 */
-    private static final double VELOCITY_GAIN = .10, ARRIVAL_GAIN = .025;
+    /** 速度闭环增益；按原 20Hz 积分器设计，不使用渲染帧时钟。 */
+    private static final double VELOCITY_GAIN = .10;
+    /** 到点按半值制动能力提前减速，留出二十四 tick 的闭环及姿态响应；近点自然形成位置反馈。 */
+    private static final double ARRIVAL_BRAKE = .004, ARRIVAL_RESPONSE = 24;
     /** 当前连续目标速度和上次虚拟杆量；不会因网络中性包或状态切换而归零。 */
     private double commandedSpeed, pitchInput, rollInput, pedalInput;
 
@@ -34,7 +36,8 @@ public final class NavigationController {
         boolean arriving = remaining < 3;
         if (limit > 0 && !s.navAligned && Math.abs(error) < 8) s.navAligned = true;
         double alignment = arriving ? 1 : Math.max(.2, Math.cos(Math.toRadians(error)));
-        double desired = s.navAligned || arriving ? Math.min(limit, remaining * ARRIVAL_GAIN) * alignment : 0;
+        double desired = s.navAligned || arriving
+                ? Math.min(limit, stoppingSpeed(remaining)) * alignment : 0;
         commandedSpeed += Math.clamp(desired - commandedSpeed, -DECELERATION, ACCELERATION);
         if (limit == 0) commandedSpeed = 0; // 安全制动只改变目标，不抹掉飞机惯性。
         double vx = distance < .01 ? 0 : dx / distance * commandedSpeed;
@@ -63,6 +66,15 @@ public final class NavigationController {
 
     /** 功能：取得连续速度目标用于诊断状态；无 MC API，无副作用。 */
     public double commandedSpeed() { return commandedSpeed; }
+    /**
+     * 功能：按剩余水平路程倒推能停稳的速度，包含惯性制动和闭环反应时间；无 MC API，单位格/tick。
+     * 服务端调用；前视目标不能代替最终停车点，已就绪续段的接缝不能作为零速目标。
+     * 排查：高速越点查真实水平距离和制动余量，不能直接清零实际速度或扩大到点半径掩盖超调。
+     */
+    private static double stoppingSpeed(double remaining) {
+        double response=ARRIVAL_BRAKE*ARRIVAL_RESPONSE;
+        return Math.sqrt(response*response+2*ARRIVAL_BRAKE*Math.max(0,remaining))-response;
+    }
     /** 功能：限幅角差到 [-180,180)，避免跨北向时错误长转；无副作用。 */
     private static double wrap(double angle) { return ((angle + 180) % 360 + 360) % 360 - 180; }
     /** 功能：限制控制信号单 tick 变化；无 MC API，无副作用。 */

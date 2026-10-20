@@ -90,8 +90,15 @@ public class HelicopterEntity extends Entity {
     private int airborneTicks;
     private boolean entityContactsEnabled;
     private double lerpX,lerpY,lerpZ;
+    /** 客户端目标偏航，单位度；收到高精度 Flight.Yaw 后不再接受字节角覆盖。 */
     private float lerpYaw;
     private int lerpTicks;
+    /** 高精度 Flight 姿态每两 tick 同步，偏航插值与原版位置包的低精度字节角分开。 */
+    private static final int YAW_INTERPOLATION_TICKS=2;
+    /** 当前偏航过渡剩余 tick，与位置插值独立；仅客户端维护，不同步或持久化。 */
+    private int yawLerpTicks;
+    /** 已收到本实体首次高精度偏航快照，首次到达前保留原版生成包朝向。 */
+    private boolean preciseYaw;
     public HelicopterEntity(EntityType<?> type,World world){super(type,world);intersectionChecked=true;applyDifficulty(HeliConfig.INSTANCE.difficulty);}
     @Override protected void initDataTracker(DataTracker.Builder builder){builder.add(STATUS,new NbtCompound());}
     @Override public boolean canHit(){return true;}
@@ -101,6 +108,11 @@ public class HelicopterEntity extends Entity {
     @Override protected Box calculateBoundingBox(){return HelicopterCollision.bounds(this);}
     /** 原版偏航赋值不更新盒，因此补充刷新；父类构造尚未生成位置时不访问未初始化的 FlightState。 */
     @Override public void setYaw(float yaw){super.setYaw(yaw);if(flight!=null)setBoundingBox(calculateBoundingBox());}
+    /**
+     * 功能：按最短角差提供逐帧偏航，机模、乘员、地图和相机共用；不修改服务端权威角度。
+     * 引用 net.minecraft.util.math.MathHelper#lerpAngleDegrees 跨越 0/360 度时保持连续，避免反向整圈插值。
+     */
+    @Override public float getYaw(float delta){return MathHelper.lerpAngleDegrees(delta,prevYaw,getYaw());}
     /** 环境流体只检查机舱，避免尾桨擦水导致整机被认定浸水；原盒在 finally 恢复。 */
     @Override public boolean updateMovementInFluid(net.minecraft.registry.tag.TagKey<net.minecraft.fluid.Fluid> fluid,double speed){
         Box broad=getBoundingBox();setBoundingBox(HelicopterCollision.cabinBounds(this));
@@ -305,7 +317,8 @@ public class HelicopterEntity extends Entity {
             smoothPitch=MathHelper.lerp(.45f,smoothPitch,(float)flight.pitch);smoothRoll=MathHelper.lerp(.45f,smoothRoll,(float)flight.roll);
             visualPitch=MathHelper.lerp(.4f,visualPitch,smoothPitch);visualRoll=MathHelper.lerp(.4f,visualRoll,smoothRoll);
             setBoundingBox(calculateBoundingBox());
-            if(lerpTicks>0){setPosition(getX()+(lerpX-getX())/lerpTicks,getY()+(lerpY-getY())/lerpTicks,getZ()+(lerpZ-getZ())/lerpTicks);setYaw(getYaw()+MathHelper.wrapDegrees(lerpYaw-getYaw())/lerpTicks);lerpTicks--;}
+            if(lerpTicks>0){setPosition(getX()+(lerpX-getX())/lerpTicks,getY()+(lerpY-getY())/lerpTicks,getZ()+(lerpZ-getZ())/lerpTicks);lerpTicks--;}
+            if(yawLerpTicks>0){setYaw(MathHelper.wrapDegrees(getYaw()+MathHelper.wrapDegrees(lerpYaw-getYaw())/yawLerpTicks));yawLerpTicks--;}
             return;
         }
         previousGearExtension=gearExtension;gearExtension=MathHelper.lerp(.15f,gearExtension,flight.gear?1:0);
@@ -586,7 +599,14 @@ public class HelicopterEntity extends Entity {
     }
     /** 正常乘降的出口由动画预检，同侧下机不再穿过机身寻找另一侧。 */
     @Override public Vec3d updatePassengerForDismount(LivingEntity passenger){return cabin.exitPosition(passenger);}
-    @Override public void updateTrackedPositionAndAngles(double x,double y,double z,float yaw,float pitch,int steps){lerpX=x;lerpY=y;lerpZ=z;lerpYaw=yaw;lerpTicks=Math.max(1,steps);}
+    /**
+     * 功能：接收原版实体位置插值目标；Flight 高精度姿态已到达后，不再用字节偏航覆盖它。
+     * 引用 net.minecraft.entity.Entity#updateTrackedPositionAndAngles；客户端主线程调用，不改变权威物理。
+     */
+    @Override public void updateTrackedPositionAndAngles(double x,double y,double z,float yaw,float pitch,int steps){
+        lerpX=x;lerpY=y;lerpZ=z;lerpTicks=Math.max(1,steps);
+        if(!preciseYaw){lerpYaw=yaw;yawLerpTicks=Math.max(1,steps);}
+    }
     @Override public void onTrackedDataSet(TrackedData<?> data){super.onTrackedDataSet(data);if(STATUS.equals(data)&&getWorld().isClient)loadFlight(dataTracker.get(STATUS));}
 
     /** 存档版本 3：显式字段，旧存档缺少部件字段时默认完整，损毁状态绝不重置。 */
@@ -634,6 +654,11 @@ public class HelicopterEntity extends Entity {
         flight.abandonedTicks=Math.clamp(n.getInt("AbandonedTicks"),0,1000000);
         double tiltLimit=n.getBoolean("Wreck")?180:60;
         flight.rpm=number(n,"Rpm",0,0,1);flight.collective=number(n,"Collective",0,0,1);flight.pitch=number(n,"Pitch",0,-tiltLimit,tiltLimit);flight.roll=number(n,"Roll",0,-tiltLimit,tiltLimit);flight.yaw=number(n,"Yaw",getYaw(),-360,360);flight.yawRate=number(n,"YawRate",0,-20,20);
+        if(getWorld().isClient&&n.contains("Yaw")){
+            lerpYaw=(float)flight.yaw;
+            if(!preciseYaw){setYaw(lerpYaw);prevYaw=getYaw();preciseYaw=true;}
+            yawLerpTicks=YAW_INTERPOLATION_TICKS;
+        }
         flight.fuel=number(n,"Fuel",0,0,100000);flight.rotor=number(n,"Rotor",100,0,100);flight.tail=number(n,"Tail",100,0,100);flight.engine=number(n,"Engine",100,0,100);flight.tank=number(n,"Tank",100,0,100);flight.hull=number(n,"Hull",100,0,100);
         flight.vx=number(n,"Vx",0,-3,3);flight.vy=number(n,"Vy",0,-3,3);flight.vz=number(n,"Vz",0,-3,3);flight.targetAltitude=number(n,"TargetAltitude",getY(),-2048,2048);flight.targetSpeed=number(n,"TargetSpeed",0,0,3);
         flight.running=n.getBoolean("Running");flight.armed=n.getBoolean("Armed");flight.altitudeHold=n.getBoolean("Altitude");flight.trim=n.contains("Trim")?n.getBoolean("Trim"):!flight.hardcoreMode;flight.cruise=n.getBoolean("Cruise");flight.gear=!n.contains("Gear")||n.getBoolean("Gear");flight.wreck=n.getBoolean("Wreck");flight.rope=n.getBoolean("Rope");flight.paint=Math.clamp(n.contains("Paint")?n.getInt("Paint"):FlightState.POLICE_PAINT,0,FlightState.POLICE_PAINT);ropeLength=Math.clamp(n.getInt("RopeLength"),0,24);

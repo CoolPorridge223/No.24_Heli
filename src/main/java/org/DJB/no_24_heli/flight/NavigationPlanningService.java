@@ -35,7 +35,7 @@ public final class NavigationPlanningService {
 
     /**
      * 功能：把已完成的地形快照送入同一有界工作队列；不新增线程或绕开取消机制。
-     * 无 MC API；服务端提交、后台只读，快照不含世界或实体；队列满由驾驶器悬停重试。
+     * 无 MC API；服务端提交、后台只读，快照不含世界或实体；队列满保留可用航段并限频重试。
      */
     static Future<NavigationTerrainRoute.Result> submitTerrain(NavigationTerrainSnapshot snapshot) {
         return EXECUTOR.submit(snapshot::plan);

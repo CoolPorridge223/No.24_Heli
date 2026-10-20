@@ -123,14 +123,15 @@ public final class HeliView {
                 (float)Math.PI-(float)Math.toRadians(lookYaw),(float)Math.toRadians(-lookPitch-org.DJB.no_24_heli.client.render.CabinPassengerRenderer.nod(
                         heli,(net.minecraft.entity.LivingEntity)focus,delta)),0));
     }
-    public static float[] rotation(HelicopterEntity heli, float cameraYaw, float cameraPitch, boolean inverse) {
+    /** 功能：第三人称锁定跟随使用与机模相同的逐帧姿态，保留 350 ms 镜头阻尼；仅渲染线程调用。 */
+    public static float[] rotation(HelicopterEntity heli, float cameraYaw, float cameraPitch, boolean inverse,float delta) {
         if (!following) return new float[]{cameraYaw, cameraPitch};
         long now = Util.getMeasuringTimeMs();
         if (!initialized) { yaw = cameraYaw; pitch = cameraPitch; frameTime = now; initialized = true; }
         float blend = (float)(1 - Math.exp(-MathHelper.clamp(now - frameTime, 0, 100) / 350.0));
         frameTime = now;
-        float targetYaw = heli.getYaw() + (inverse ? 180 : 0);
-        float targetPitch = (float)MathHelper.clamp(12 - heli.flight.pitch * .35, -35, 55) * (inverse ? -1 : 1);
+        float targetYaw = heli.getYaw(delta) + (inverse ? 180 : 0);
+        float targetPitch = (float)MathHelper.clamp(12 - MathHelper.lerp(delta,heli.previousVisualPitch,heli.visualPitch) * .35, -35, 55) * (inverse ? -1 : 1);
         yaw += MathHelper.wrapDegrees(targetYaw - yaw) * blend;
         pitch += (targetPitch - pitch) * blend;
         return new float[]{yaw, pitch};
