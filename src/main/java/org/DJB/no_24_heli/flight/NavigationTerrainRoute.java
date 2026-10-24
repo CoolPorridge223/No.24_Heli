@@ -79,15 +79,7 @@ final class NavigationTerrainRoute {
             int pad=(int)Math.ceil(ENVELOPE/CELL);
             for(int iz=pad;iz<nz-pad;iz++) for(int ix=pad;ix<nx-pad;ix++) {
                 if(Thread.currentThread().isInterrupted())return;
-                var a=new NavigationRoute.Point(x+(ix-.5)*CELL,z+(iz-.5)*CELL);
-                // 外接圆覆盖整格四角；不使用当前偏航包围盒，防止转向时净空突然缩小。
-                boolean legal=true;
-                for(var circle:circles) {
-                    double dx=Math.max(0,Math.max(a.x()-circle.x(),circle.x()-a.x()-CELL));
-                    double dz=Math.max(0,Math.max(a.z()-circle.z(),circle.z()-a.z()-CELL));
-                    if(Math.hypot(dx,dz)<=circle.radius()+Math.max(ENVELOPE,settings.clearance())) { legal=false; break; }
-                }
-                if(!legal)continue;
+                // 方块仍按整格膨胀；禁飞圆改为每条实际线段精确检查，避免四格栅格吞掉合法贴边终点。
                 for(int iy=pad;iy<ny-pad;iy++) {
                     int at=index(ix,iy,iz);
                     free[at]=count(sum,sx,layer,ix-pad,iy-pad,iz-pad,ix+pad+1,iy+pad+1,iz+pad+1)==0;
@@ -132,7 +124,7 @@ final class NavigationTerrainRoute {
          * 返回：全段安全；无副作用；未知格、禁区或中断均拒绝，不能跳过不安全段。
          */
         boolean clear(Point a,Point b) {
-            if(!NavigationRoute.clear(a.horizontal(),b.horizontal(),circles,settings))return false;
+            if(!airspaceClear(a,b))return false;
             int steps=Math.max(1,(int)Math.ceil(a.distance(b)/(CELL*.5)));
             Point last=a;
             for(int i=0;i<=steps;i++) {
@@ -143,6 +135,13 @@ final class NavigationTerrainRoute {
                 last=p;
             }
             return true;
+        }
+        /** 功能：精确检查整条线段与整机扩张禁飞圆；无 MC API，不附加体素四角的额外膨胀。 */
+        private boolean airspaceClear(Point a,Point b) {
+            for(var circle:circles)
+                if(NavigationRoute.segmentDistance(a.horizontal(),b.horizontal(),circle)
+                        <=circle.radius()+Math.max(ENVELOPE,settings.clearance()))return false;
+            return !Thread.currentThread().isInterrupted();
         }
         /** 功能：检查相邻配置格包围体，覆盖斜穿边缘时所有正交邻格；无 MC API。 */
         boolean boxClear(int a,int b) {
@@ -198,6 +197,21 @@ final class NavigationTerrainRoute {
         heap=new int[cells];position=new int[cells];parent=new int[cells];cost=new double[cells];score=new double[cells];
         Arrays.fill(position,-1);Arrays.fill(parent,-1);Arrays.fill(cost,Double.POSITIVE_INFINITY);
     }
+    /**
+     * 功能：沿全局引导顺序选择本侧可见的局部终点，首次被禁区遮挡即停止，不跳到圆的另一侧。
+     * 无 MC API；服务端创建地形请求时调用，返回单调前进的引导索引，不修改输入列表。
+     * 重规划时 first 是未抵达的旧局部终点；即使当前位置因漂移暂不可直达，也保留该绕行目标。
+     */
+    static int goalNode(NavigationRoute.Point start,List<NavigationRoute.Point> route,int first,double look,
+                        List<NavigationRoute.Circle> circles,NavigationRoute.Settings settings) {
+        var from=start;double distance=0;int selected=first;
+        for(int at=first;at<route.size();at++) {
+            double segment=NavigationRoute.distance(from,route.get(at));
+            if(at>first&&(distance+segment>look||!NavigationRoute.clear(start,route.get(at),circles,settings)))break;
+            distance+=segment;from=route.get(at);selected=at;
+        }
+        return selected;
+    }
     /** 功能：只在整机直线走廊已验证且无顶棚时交付快速路线；失败要求扩大采集范围，不猜测侧方地形。 */
     static Result direct(Volume v,Point start,NavigationRoute.Point goal) {
         if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,0);
@@ -214,7 +228,9 @@ final class NavigationTerrainRoute {
     static Result plan(Volume v,Point start,NavigationRoute.Point goal) {
         if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,0);
         int begin=v.cell(start),goalCell=v.cell(new Point(goal.x(),start.y,goal.z()));
-        if(!v.free(begin)||goalCell<0)return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
+        if(!v.free(begin)||goalCell<0||!v.airspaceClear(start,start)
+                ||!v.airspaceClear(new Point(goal.x(),start.y,goal.z()),new Point(goal.x(),start.y,goal.z())))
+            return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
         // 露天空域整段验证后直接交付，不为平直航线分配搜索堆或展开三维网格。
         Result direct=direct(v,start,goal);
         if(direct.status()!=NavigationRoute.Status.GRID_RESOLUTION)return direct;
@@ -225,7 +241,8 @@ final class NavigationTerrainRoute {
             if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,expanded);
             if(expanded++>=limit)return failure(NavigationRoute.Status.NODE_LIMIT,v,expanded-1);
             int at=open.poll();Point p=at==begin?start:v.point(at);
-            if(at%(v.nx*v.nz)==goalCell%(v.nx*v.nz)&&!v.covered[at]) {
+            // 真实终点可能在合法的半格内而格心落入禁区，允许从相邻格完整验证后接入终点。
+            if(NavigationRoute.distance(p.horizontal(),goal)<=CELL*Math.sqrt(2)&&!v.covered[at]) {
                 Point end=new Point(goal.x(),p.y,goal.z());
                 if(v.clear(p,end)&&!v.covered(end))return open.finish(v,at,start,end,expanded);
             }
@@ -235,6 +252,7 @@ final class NavigationTerrainRoute {
                 int next=v.index(ix+dx,iy+dy,iz+dz);
                 if(!v.free[next]||open.position[next]==-2||!v.boxClear(at,next))continue;
                 Point q=v.point(next);
+                if(!v.airspaceClear(p,q))continue;
                 double candidate=open.cost[at]+v.cost(p,q);int predecessor=at;
                 int ancestor=open.parent[at];Point origin=ancestor==begin?start:v.point(ancestor);
                 // 在搜索竞争阶段就比较同步升降时间；只在终点之后平滑无法纠正已经选错的绕山方向。

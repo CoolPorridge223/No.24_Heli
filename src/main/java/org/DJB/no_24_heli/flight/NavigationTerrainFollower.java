@@ -10,6 +10,8 @@ import java.util.List;
 final class NavigationTerrainFollower {
     /** 每次最多投影相邻六十四个两格采样段，不按整条路线寻找最近点。 */
     private static final int WINDOW=64;
+    /** 高度转折点进入半格邻域后才允许前视越过，避免提前下降或爬升抵消当前升降。 */
+    private static final double ALTITUDE_TURN_DISTANCE=.5;
     /** 本机当前路线、弧长、速度包络和水平曲率；仅所属服务端线程修改进度。 */
     private NavigationTerrainRoute.Result route;
     private double[] lengths,speeds,curves;
@@ -58,7 +60,7 @@ final class NavigationTerrainFollower {
     Sample sample(NavigationTerrainRoute.Point pos,double speed,double lookMin,double lookMax,
                   NavigationTerrainRoute.Result next) {
         var points=route.path();double best=Double.POSITIVE_INFINITY,selected=progress;
-        double maximum=progress+Math.max(8,speed*3);
+        double maximum=altitudeHorizon(pos,progress+Math.max(8,speed*3),null);
         for(int i=segment;i+1<points.size()&&i<segment+WINDOW&&lengths[i]<=maximum;i++) {
             var a=points.get(i);var b=points.get(i+1);
             double dx=b.x()-a.x(),dy=b.y()-a.y(),dz=b.z()-a.z(),square=dx*dx+dy*dy+dz*dz;
@@ -70,7 +72,8 @@ final class NavigationTerrainFollower {
         }
         progress=Math.max(progress,selected);
         while(segment+2<points.size()&&lengths[segment+1]<=progress)segment++;
-        double look=Math.clamp(lookMin+speed*20,lookMin,lookMax);
+        double look=Math.min(Math.clamp(lookMin+speed*20,lookMin,lookMax),
+                altitudeHorizon(pos,progress+lookMax,next)-progress);
         var target=pointAt(progress+look,next);
         for(int i=0;i<8&&!clearAcross(pos,target,next);i++) {
             look*=.5;target=pointAt(progress+look,next);
@@ -94,8 +97,32 @@ final class NavigationTerrainFollower {
                 +2*NavigationController.BRAKE_ACCELERATION*remaining));
         limit=Math.min(limit,speedAcross(pos,target,next));
         remaining+=continuationLength;
-        double altitude=pointAt(progress+Math.max(look,speed*40),next).y();
-        return new Sample(target,altitude,remaining,limit,curves[segment],clearAcross(pos,target,next));
+        // 高度与水平前视必须指向同一个已验证点；缩短前视后不能继续追逐远端反坡高度。
+        return new Sample(target,target.y(),remaining,limit,curves[segment],clearAcross(pos,target,next));
+    }
+
+    /**
+     * 功能：将投影及前视限制在尚未经过的第一个高度转折处；无 MC API，服务端跟随调用。
+     * 平台延续上一段坡向，续段接缝同样检查；到达转折点后解除限制，不要求高度精确相等。
+     * 排查：谷底/山脊卡住先查前视是否跨过反坡，不能靠将最小前视调大越过障碍。
+     */
+    private double altitudeHorizon(NavigationTerrainRoute.Point pos,double maximum,
+                                   NavigationTerrainRoute.Result next) {
+        var points=route.path();
+        double direction=0,along=lengths[segment];
+        var previous=points.get(segment);
+        int count=points.size()+(next==null?0:next.path().size()-1);
+        for(int i=segment+1;i<count&&along<=maximum;i++) {
+            var point=i<points.size()?points.get(i):next.path().get(i-points.size()+1);
+            double slope=point.y()-previous.y();
+            if(Math.abs(slope)>1e-6) {
+                if(direction*slope<0&&along>=progress&&pos.distance(previous)>ALTITUDE_TURN_DISTANCE)
+                    return Math.min(maximum,along);
+                direction=slope;
+            }
+            along+=previous.distance(point);previous=point;
+        }
+        return maximum;
     }
 
     /**
@@ -155,8 +182,10 @@ final class NavigationTerrainFollower {
 
     /** 功能：接缝附近即可交接，保留真实速度；最终导航点仍由驾驶器单独停稳确认。 */
     boolean atEnd(NavigationTerrainRoute.Point pos,double speed) {
-        // 高度前馈可能已开始下一段的升降，不能要求重新回到接缝的旧高度才交接。
+        // 前视可已进入续段，但尚余明显升降弧长时不能仅因水平重合就跳过山脊或谷底。
         return NavigationRoute.distance(pos.horizontal(),route.path().getLast().horizontal())<Math.max(2,speed*3)
+                &&(Math.abs(pos.y()-route.path().getLast().y())<ALTITUDE_TURN_DISTANCE
+                ||lengths[lengths.length-1]-progress<ALTITUDE_TURN_DISTANCE)
                 &&lengths[lengths.length-1]-progress<Math.max(4,speed*4);
     }
 

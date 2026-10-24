@@ -125,9 +125,11 @@ public final class NavigationPilot {
         HeliConfig config=HeliConfig.INSTANCE;
         // 用稳定的实体尺寸；平移后 AABB 两端相减的浮点噪声不能触发整条航路失效。
         double halfWidth=h.getWidth()/2.0;
-        var currentSettings=new NavigationRoute.Settings(config.gridCellSize,
-                Math.hypot(halfWidth,halfWidth),
-                config.pathSafetyMargin,config.pathBoundaryMargin,config.pathMaxCells,config.pathMaxNodes);
+        double horizontalRadius=Math.hypot(halfWidth,halfWidth);
+        // 二维引导与三维净空使用同一整机禁区余量，避免先接受贴边目标、飞到半途才判定无路。
+        var currentSettings=new NavigationRoute.Settings(config.gridCellSize,horizontalRadius,
+                Math.max(config.pathSafetyMargin,NavigationTerrainRoute.ENVELOPE-horizontalRadius),
+                config.pathBoundaryMargin,config.pathMaxCells,config.pathMaxNodes);
         boolean newTarget=goalX!=goal.x()||goalZ!=goal.z()||!currentSettings.equals(settings);
         boolean changed=newTarget||revision!=airspace.revision();
         if(changed){
@@ -278,14 +280,8 @@ public final class NavigationPilot {
                 ||terrainRoute!=null&&terrainGoalNode==route.size()-1){chunkLoader.step();return terrainRoute!=null;}
         if(terrainSnapshot==null){
             var start=terrainRoute==null?terrainPosition(h):terrainRoute.path().getLast();
-            var from=start.horizontal();double distance=0;
             int first=Math.min(terrainRoute==null?node:terrainGoalNode+1,route.size()-1);
-            planningGoalNode=first;
-            for(int at=first;at<route.size();at++){
-                double segment=NavigationRoute.distance(from,route.get(at));
-                if(distance+segment>TERRAIN_LOOK&&at>first)break;
-                distance+=segment;from=route.get(at);planningGoalNode=at;
-            }
+            planningGoalNode=NavigationTerrainRoute.goalNode(start.horizontal(),route,first,TERRAIN_LOOK,circles,settings);
             terrainSnapshot=new NavigationTerrainSnapshot(world,start,route.get(planningGoalNode),
                     circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0,!wideTerrain);
             // 超出体素预算时缩短一次采集范围，区块加载距离不再限制整条导航任务。
@@ -315,6 +311,16 @@ public final class NavigationPilot {
         terrainFollower=new NavigationTerrainFollower();
         terrainFollower.bind(result,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0);
         noProgressSince=-1;progressCheckpoint=0;
+    }
+
+    /**
+     * 功能：障碍或卡滞重规划时保留尚未抵达的局部目标，禁止从整段旧起点重新选取引导点。
+     * 无 MC API；仅服务端主线程调用。取消旧快照和续段，但不清除全局路线或真实速度。
+     * 排查：绕禁区中途掉头时检查 node 是否仍指向已飞过的点；新任务仍由 reset 完整清空。
+     */
+    private void replanTerrain(){
+        if(terrainRoute!=null)node=Math.max(node,terrainGoalNode);
+        cancelTerrain();
     }
 
     /** 功能：仅保留当前、续段及在途采集的区块票；主线程调用，已飞过的区块可以正常卸载。 */
@@ -409,15 +415,16 @@ public final class NavigationPilot {
                 if(blockedAt<0)blockedAt=world.getTime();
                 // 短暂横穿的实体只减速等待，连续四秒确实堵塞才丢弃已计算的后续路线。
                 if(world.getTime()-blockedAt>=REPLAN_TICKS*2&&!terrainRetryPending&&terrainRetryAt!=Long.MAX_VALUE){
-                    cancelTerrain();terrainRetryAt=world.getTime()+REPLAN_TICKS;phase=Phase.REPLANNING;
+                    replanTerrain();terrainRetryAt=world.getTime()+REPLAN_TICKS;phase=Phase.REPLANNING;
                 }
             }
         }
-        limit=Math.min(limit,NavigationRoute.speedLimit(pos,s.vx,s.vz,circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0));
         // 最终停车按真实水平距离限速，三维剩余弧长中的升降距离不能延迟水平制动。
         double remaining=terrainGoalNode==route.size()-1?Math.min(sample.remaining(),distance):sample.remaining();
         // 最终点越过后仍保留低速返回权限，续段接缝不作为到点减速目标。
         if(terrainGoalNode==route.size()-1&&remaining<4){remaining=Math.max(remaining,distance);limit=Math.max(limit,.12);}
+        // 近点修正不能覆盖禁区惯性制动限速。
+        limit=Math.min(limit,NavigationRoute.speedLimit(pos,s.vx,s.vz,circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0));
         if(!forwardClear||!driftClear||!altitudeClear)limit=0;
         if(replanIfStalled(h,world,forwardClear&&driftClear&&altitudeClear&&!waitingForChunks)){
             s.targetAltitude=h.getY();controller.step(s,h.getX(),h.getZ(),pos,0,0,0);return;
@@ -452,7 +459,7 @@ public final class NavigationPilot {
         if(stallReplans>=MAX_STALL_REPLANS){
             cancelTerrain();stalled=true;phase=Phase.FAILED;notify(h,"route_stalled_stopped");return true;
         }
-        stallReplans++;cancelTerrain();terrainRetryAt=now+REPLAN_TICKS;
+        stallReplans++;replanTerrain();terrainRetryAt=now+REPLAN_TICKS;
         phase=Phase.REPLANNING;notify(h,"route_stalled_retry");return true;
     }
     /** 小段扫掠避免斜向航线的大包围盒把旁侧障碍误报为整条通道堵塞。 */

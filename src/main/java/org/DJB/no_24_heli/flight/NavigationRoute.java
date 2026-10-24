@@ -143,9 +143,14 @@ public final class NavigationRoute {
                 regions.startEnclosed(),regions.goalEnclosed(),settings);
         NavigationGrid.Build built=NavigationGrid.build(start,goal,zones,settings,budget);
         if(built.status()!=Status.SUCCESS) return result(built.status(),List.of(),budget,false,false,settings);
-        NavigationGrid grid=built.grid(); int startCell=grid.cell(start),goalCell=grid.cell(goal);
-        if(grid.blocked(startCell)||grid.blocked(goalCell))
-            return result(Status.GRID_RESOLUTION,List.of(),budget,false,false,settings);
+        NavigationGrid grid=built.grid();
+        var startConnection=grid.connect(start,zones,settings,budget);
+        if(startConnection.status()!=Status.SUCCESS)
+            return result(startConnection.status(),List.of(),budget,false,false,settings);
+        var goalConnection=grid.connect(goal,zones,settings,budget);
+        if(goalConnection.status()!=Status.SUCCESS)
+            return result(goalConnection.status(),List.of(),budget,false,false,settings);
+        int startCell=startConnection.cell(),goalCell=goalConnection.cell();
         NavigationAStar.Search search=NavigationAStar.search(grid,startCell,goalCell,budget);
         if(search.status()!=Status.SUCCESS) return result(search.status(),List.of(),budget,false,false,settings);
         if(!search.targetReached()) return result(Status.GRID_RESOLUTION,List.of(),budget,

@@ -21,6 +21,8 @@ final class NavigationGrid {
     }
     /** 构建结果；失败 grid 为 null，仅 SUCCESS 分支读取网格。 */
     record Build(NavigationRoute.Status status,NavigationGrid grid) {}
+    /** 真实端点到安全格心的连接结果；失败不提供可搜索的格索引。 */
+    record Connection(NavigationRoute.Status status,int cell) {}
     /**
      * 单次几何与节点预算；无 MC API，每次规划独占，工作线程响应中断。
      * 排查：几何循环耗尽与 A* 耗尽分别报告，不将失败冒充禁区封闭。
@@ -114,6 +116,32 @@ final class NavigationGrid {
     /** 功能：返回格心水平航点；无 MC API、无副作用。 */
     NavigationRoute.Point center(int index) {
         return new NavigationRoute.Point(minX+(index%width+0.5)*cellSize,minZ+(index/width+0.5)*cellSize);
+    }
+    /**
+     * 功能：端点所在格被圆边缘擦到时，在两格邻域寻找完整可见的安全格心，不移动真实端点。
+     * 无 MC API；后台调用，最多检查二十五格且共用几何预算；仅连接段安全才允许接入搜索。
+     * 排查：贴边终点不能直接解除所在整格阻挡，否则相邻搜索边可能穿过禁区。
+     */
+    Connection connect(NavigationRoute.Point point,List<NavigationRoute.Circle> zones,
+                       NavigationRoute.Settings settings,Budget budget) {
+        int origin=cell(point);
+        if(!blocked(origin))return new Connection(NavigationRoute.Status.SUCCESS,origin);
+        int best=-1;double nearest=Double.POSITIVE_INFINITY;
+        for(int dz=-2;dz<=2;dz++)for(int dx=-2;dx<=2;dx++) {
+            int x=origin%width+dx,z=origin/width+dz;
+            if(x<0||z<0||x>=width||z>=height)continue;
+            int candidate=z*width+x;if(blocked(candidate))continue;
+            var target=center(candidate);double distance=NavigationRoute.distance(point,target);
+            if(distance>=nearest)continue;
+            boolean clear=true;
+            for(var circle:zones) {
+                var status=budget.geometry();
+                if(status!=NavigationRoute.Status.SUCCESS)return new Connection(status,-1);
+                if(!NavigationRoute.followingSegmentClear(point,target,circle,settings)){clear=false;break;}
+            }
+            if(clear){best=candidate;nearest=distance;}
+        }
+        return new Connection(best<0?NavigationRoute.Status.GRID_RESOLUTION:NavigationRoute.Status.SUCCESS,best);
     }
     /** 功能：查询障碍掩码；无 MC API、无副作用。 */
     boolean blocked(int index) { return blocked[index]; }
