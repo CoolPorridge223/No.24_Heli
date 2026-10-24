@@ -86,6 +86,7 @@ public class No_24_heli implements ModInitializer {
     /** 生命周期入口：先加载配置，再注册专项内容与网络，顺序影响配方/进度/接收器可用性。 */
     @Override public void onInitialize() {
         HeliConfig.load();
+        org.DJB.no_24_heli.entity.CabinPlayerState.initialize();
         org.DJB.no_24_heli.registry.ModItems.register();
         org.DJB.no_24_heli.registry.ModParachutes.initialize();
         org.DJB.no_24_heli.registry.ModAdvancements.initialize();
@@ -172,6 +173,8 @@ public class No_24_heli implements ModInitializer {
         // 飞行输入：按当前载具分派；无载具时只允许“抓住附近绳段”，不创建任何飞行状态。
         PayloadTypeRegistry.playC2S().register(ControlPayload.ID,ControlPayload.CODEC);
         ServerPlayNetworking.registerGlobalReceiver(ControlPayload.ID,(packet,context)->context.server().execute(()->{
+            // 拖拽与趴地期间不接收救援绳或飞控意图，防止通过自定义乘骑绕过短时行动限制。
+            if(org.DJB.no_24_heli.entity.CabinPlayerState.locked(context.player()))return;
             if(context.player().getVehicle() instanceof HelicopterEntity heli) heli.control(context.player(),packet);
             else if(context.player().getVehicle() instanceof RopeSeatEntity rope)rope.control(context.player(),packet);
             else if(packet.valid()&&(packet.actions()&ControlPayload.EXIT_ROPE)!=0&&!context.player().hasVehicle()&&!context.player().isSpectator()){

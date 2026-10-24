@@ -4,6 +4,7 @@
   "package": "org.DJB.no_24_heli.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "CabinPlayerStateMixin",
     "HelicopterMovementMixin",
     "HelicopterDismountMixin",
     "HelicopterRaycastMixin",

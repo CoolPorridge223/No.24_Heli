@@ -190,7 +190,7 @@ public class HelicopterEntity extends Entity {
         return !flight.wreck && getPassengerList().size() < HelicopterCabin.SEATS
                 && (!(passenger instanceof PlayerEntity player) || cabin.canReach(player)
                 && (cabin.seat(player) >= 0 || cabin.canPass(cabin.accessDoor(player))
-                && cabin.freeSeat(cabin.accessSide(player)) >= 0));
+                && cabin.occupant(cabin.accessDoor(player)) == null));
     }
     /** net.minecraft.entity.Entity#addPassenger 在原版存档恢复和真实挂载时维护固定座号。 */
     @Override protected void addPassenger(Entity passenger) { super.addPassenger(passenger); cabin.added(passenger); }

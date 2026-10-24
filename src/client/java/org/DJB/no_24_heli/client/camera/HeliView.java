@@ -63,6 +63,13 @@ public final class HeliView {
         } else previous = null;
     }
 
+    /** 动作结束恢复原透视，并修正动作期间新登机保存的正面视角，避免日后下机恢复到临时镜头。 */
+    public static void finishCabinScene(MinecraftClient client, Perspective perspective) {
+        client.options.setPerspective(perspective);
+        if (mounted != null) previous = perspective;
+        following = false; initialized = false; cockpitInitialized = false;
+    }
+
     /** 中键只切换相机跟随，不改玩家朝向，以免生成虚假的操纵输入。 */
     public static void toggleFollow() {
         if(MinecraftClient.getInstance().options.getPerspective().isFirstPerson()){following=false;return;}

@@ -187,6 +187,7 @@ public class No_24_heliClient implements ClientModInitializer {
         // 客户端每 tick：先迁移旧按键和推进相机/地图/音频，再按乘骑状态分派输入；最后只发意图。
         ClientTickEvents.END_CLIENT_TICK.register(client->{
             migrateTrimKey(client);migrateViewKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);FlightVoiceManager.tick(client);
+            org.DJB.no_24_heli.client.camera.CabinActionView.tick(client);
             while(VIEW.wasPressed()){
                 if(client.currentScreen==null&&client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity)
                     HeliView.togglePerspective(client);

@@ -19,6 +19,7 @@ import net.minecraft.util.math.RotationAxis;
 import net.minecraft.util.math.Vec3d;
 import org.DJB.no_24_heli.entity.HelicopterCabin;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.entity.CabinPlayerState;
 
 /**
  * 职责：左右抬脚跨入后坐下、起身迈下与空中跃出，三种镜头复用同一骨骼和位置。
@@ -46,6 +47,7 @@ public final class CabinPassengerRenderer {
     public static float yaw(HelicopterEntity heli, LivingEntity rider, float delta) {
         int motion = heli.cabin.motion(rider);
         if (motion == HelicopterCabin.SEATED) return 0;
+        if (motion == HelicopterCabin.PULL) return heli.cabin.accessSide(rider) == 0 ? 90 : -90;
         float p = heli.cabin.progress(rider, delta);
         float turn = motion == HelicopterCabin.BOARD ? 1 - MathHelper.clamp((p - .55f) / .45f, 0, 1)
                 : MathHelper.clamp(p / .45f, 0, 1);
@@ -89,11 +91,38 @@ public final class CabinPassengerRenderer {
             model.rightArm.pitch = model.leftArm.pitch = -.8f * (float) Math.sin(p * Math.PI);
             model.rightLeg.pitch -= .65f; model.leftLeg.pitch -= .15f;
         }
+        if (motion == HelicopterCabin.PULL) {
+            model.head.pitch = -.3f; model.head.yaw = 0;
+            model.body.pitch = 0;
+            model.rightArm.pitch = model.leftArm.pitch = -1.45f + .5f * p;
+            model.rightArm.yaw = -.15f; model.leftArm.yaw = .15f;
+            model.rightLeg.pitch = -.35f * (1 - p); model.leftLeg.pitch = -.18f * (1 - p);
+        }
         if (model instanceof PlayerEntityModel<?> player) {
             player.rightPants.copyTransform(model.rightLeg); player.leftPants.copyTransform(model.leftLeg);
             player.rightSleeve.copyTransform(model.rightArm); player.leftSleeve.copyTransform(model.leftArm);
             player.jacket.copyTransform(model.body);
         }
+    }
+
+    /** 拉人者双手前伸后拉，趴地者双臂摊开；原版 setAngles 后覆盖并同步衣物层，离开动作自然恢复。 */
+    public static void actionPose(PlayerEntityModel<?> model, AbstractClientPlayerEntity player, float delta) {
+        CabinPlayerState state = (CabinPlayerState) player;
+        HelicopterEntity heli = state.cabinPullTarget();
+        if (!state.cabinStunned() && heli == null) return;
+        model.head.pitch = state.cabinStunned() ? -.65f : 0; model.head.yaw = model.head.roll = 0;
+        model.body.pitch = model.body.yaw = model.body.roll = 0;
+        model.rightLeg.pitch = state.cabinStunned() ? .06f : -.18f;
+        model.leftLeg.pitch = state.cabinStunned() ? -.08f : .25f;
+        model.rightLeg.yaw = model.leftLeg.yaw = model.rightLeg.roll = model.leftLeg.roll = 0;
+        float reach = state.cabinStunned() ? -.22f : -1.3f + .55f * heli.cabin.progress(heli.cabin.pulledOccupant(player), delta);
+        model.rightArm.pitch = model.leftArm.pitch = reach;
+        model.rightArm.yaw = -.15f; model.leftArm.yaw = .15f;
+        model.rightArm.roll = state.cabinStunned() ? .35f : .08f;
+        model.leftArm.roll = -model.rightArm.roll;
+        model.hat.copyTransform(model.head); model.jacket.copyTransform(model.body);
+        model.rightSleeve.copyTransform(model.rightArm); model.leftSleeve.copyTransform(model.leftArm);
+        model.rightPants.copyTransform(model.rightLeg); model.leftPants.copyTransform(model.leftLeg);
     }
 
     /**

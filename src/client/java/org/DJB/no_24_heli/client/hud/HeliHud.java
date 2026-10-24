@@ -118,9 +118,12 @@ public final class HeliHud {
                 ?doorTarget.isCabinGrounded()
                     &&doorTarget.cabin.motion(mc.player)==org.DJB.no_24_heli.entity.HelicopterCabin.SEATED
                 :mc.player.getVehicle() instanceof RopeSeatEntity?doorTarget.cabin.freeRopeSeat()>=0
-                :doorTarget.cabin.freeSeat(doorTarget.cabin.accessSide(mc.player))>=0);
+                :doorTarget.cabin.occupant(doorTarget.cabin.accessDoor(mc.player))==null||doorTarget.cabin.canTakeOver(mc.player));
+        boolean takeoverHint = doorTarget != null && !aboard && !mc.player.hasVehicle()
+                && doorTarget.cabin.occupant(doorTarget.cabin.accessDoor(mc.player)) != null;
         if(doorHint)drawKeyHint(ctx,org.DJB.no_24_heli.client.input.CabinDoorClient.keyName(),
-                "hud.no_24_heli.rope_board_before",aboard?"hud.no_24_heli.cabin_exit_after":"hud.no_24_heli.cabin_board_after");
+                "hud.no_24_heli.rope_board_before",aboard?"hud.no_24_heli.cabin_exit_after"
+                        :takeoverHint?"hud.no_24_heli.cabin_takeover_after":"hud.no_24_heli.cabin_board_after");
         if(!(mc.player.getVehicle() instanceof HelicopterEntity h))return;
         // 机内的全部飞行读数、机组、导航、部件与警告由实体仪表板呈现，不叠加屏幕 HUD。
         if(mc.options.getPerspective().isFirstPerson())return;

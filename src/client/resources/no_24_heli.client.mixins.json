@@ -4,6 +4,7 @@
   "package": "org.DJB.no_24_heli.mixin.client",
   "compatibilityLevel": "JAVA_21",
   "client": [
+    "CabinActionRendererMixin",
     "HelicopterHitboxMixin",
     "PilotVisionMixin",
     "PilotLightmapMixin",

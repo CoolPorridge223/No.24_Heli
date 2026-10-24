@@ -127,9 +127,9 @@ public final class ParachuteEntity extends Entity {
         return canStartFlight(player) && hasFreefallHeight(player);
     }
 
-    /** 载人阶段共用的穿戴与运动资格；net.minecraft.entity.player.PlayerEntity 提供飞行、流体和乘骑状态。 */
+    /** 载人阶段共用的穿戴与运动资格；拖拽/眩晕期间禁止转入伞载体，其他资格保持原规则。 */
     private static boolean canStartFlight(PlayerEntity player) {
-        return player.isAlive() && !player.isSpectator() && !player.hasVehicle() && !player.isOnGround()
+        return !CabinPlayerState.locked(player) && player.isAlive() && !player.isSpectator() && !player.hasVehicle() && !player.isOnGround()
                 && !player.isTouchingWater() && !player.isInLava() && !player.isFallFlying()
                 && !player.getAbilities().flying && ParachuteItem.isPacked(player.getEquippedStack(EquipmentSlot.CHEST));
     }

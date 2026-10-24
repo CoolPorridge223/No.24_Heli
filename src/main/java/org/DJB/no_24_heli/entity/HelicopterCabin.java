@@ -17,7 +17,7 @@ import net.minecraft.world.RaycastContext;
 import org.DJB.no_24_heli.No_24_heli;
 
 /**
- * 职责：固定座号与乘客列表分离，服务端裁决同侧乘降、门时序和出口空间，客户端只读同一动画时间线。
+ * 职责：固定座号与乘客列表分离，服务端裁决最近门乘降、占座拖拽、门时序和出口空间，客户端只读同一动画时间线。
  * 引用 MC API：
  *   - net.minecraft.entity.Entity#startRiding/stopRiding：真实乘骑与离座；
  *   - net.minecraft.entity.EntityPose.STANDING、World#getBlockCollisions：检查门外站立净空；
@@ -35,8 +35,9 @@ public final class HelicopterCabin {
     public static final double DOOR_BACK = -1.15, REAR_DOOR_FRONT = -.38,
             FRONT_DOOR_BACK = -.31, DOOR_FRONT = .50, DOOR_ANGLE = 78;
     public static final int DOOR_TICKS = 10, BOARD_TICKS = 24, EXIT_TICKS = 20, JUMP_TICKS = 12;
-    /** 动作编号：静坐、迈入、地面走下、空中跃出。 */
-    public static final int SEATED = 0, BOARD = 1, EXIT = 2, JUMP = 3;
+    /** 动作编号：静坐、迈入、地面走下、空中跃出、被拖出；拖拽先等门全开再播放 1.5 秒。 */
+    public static final int SEATED = 0, BOARD = 1, EXIT = 2, JUMP = 3, PULL = 4;
+    public static final int PULL_TICKS = 30;
     /** 同侧出口从近到远找可站立点，单位格；升降范围容纳台阶、薄停机坪及收架后的低机身。 */
     private static final double[] EXIT_DISTANCES = {2.05, 2.4, 2.75}, EXIT_OFFSETS = {0, -.35, .35};
     private static final double EXIT_STEP_UP = 1.1, EXIT_STEP_DOWN = 1.5, EXIT_FLOOR_GAP = .02;
@@ -57,6 +58,8 @@ public final class HelicopterCabin {
     private final Vec3d[] outside = new Vec3d[SEATS];
     /** Y 下绳先等待本座门打开，服务端再次检查悬停后转移；不跨存档恢复请求。 */
     private final boolean[] ropeExits = new boolean[SEATS];
+    /** 每座唯一拉人者 UUID；动作完成前原乘员继续占座，杜绝重复按键或第三人插队。 */
+    private final UUID[] pullers = new UUID[SEATS];
     /** 门号与座号一致，四门独立；世界总 tick 时间戳避免实体重追踪时重新播放。 */
     private final boolean[] doors = new boolean[SEATS];
     /** 每扇门最后一次目标变化的世界 tick，用于反向插值关闭；初始视为已完全关闭。 */
@@ -120,7 +123,7 @@ public final class HelicopterCabin {
         return seat >= 0 ? side(seat) : localPosition(entity).x >= 0 ? 0 : 1;
     }
 
-    /** 舱内使用本座门，绳顶按后排优先选择空座门；普通舱外优先同侧前座对应门。 */
+    /** 舱内使用本座门，绳顶保留后排优先；舱外按真实门面中心距离选门，不因占座改选别座。 */
     public int accessDoor(Entity entity) {
         int seat = seat(entity);
         if (seat >= 0) return seat;
@@ -128,12 +131,20 @@ public final class HelicopterCabin {
             int free = freeRopeSeat();
             return free >= 0 ? free : 1;
         }
-        int side = accessSide(entity), free = freeSeat(side);
-        return free >= 0 ? free : side;
+        Vec3d local = localPosition(entity);
+        int side = accessSide(entity), rear = side + 2;
+        Vec3d frontCenter = new Vec3d(side == 0 ? .94 : -.94, 0, (doorBack(side) + doorFront(side)) / 2);
+        Vec3d rearCenter = new Vec3d(side == 0 ? .94 : -.94, 0, (doorBack(rear) + doorFront(rear)) / 2);
+        return local.squaredDistanceTo(frontCenter) <= local.squaredDistanceTo(rearCenter) ? side : rear;
     }
 
     /** 外部操作限定在侧门附近三格内，排除机鼻、长尾、旁观者和其他载具。 */
     public boolean canReach(PlayerEntity player) {
+        return !CabinPlayerState.locked(player) && canReachPosition(player);
+    }
+
+    /** 拖拽续帧只跳过本动作的输入锁，仍复核与普通登机相同的存活、载具和门外位置边界。 */
+    private boolean canReachPosition(PlayerEntity player) {
         if (heli.flight.wreck || player.isSpectator() || !player.isAlive()) return false;
         if (heli.hasPassenger(player)) return true;
         // mount 已验证绳顶资格后预占空座；原版 startRiding 再次检查时不能把最后一座的预占当成满员。
@@ -174,6 +185,7 @@ public final class HelicopterCabin {
     public void interact(PlayerEntity player) {
         if (heli.getWorld().isClient || !canReach(player)) return;
         if (heli.hasPassenger(player)) heli.requestDismount(player);
+        else if (!(player.getVehicle() instanceof RopeSeatEntity) && occupants[accessDoor(player)] != null) beginTakeOver(player);
         else board(player);
     }
 
@@ -186,13 +198,81 @@ public final class HelicopterCabin {
         doors[door] = open;
     }
 
-    /** 普通上机自动打开同侧对应门，前排优先；绳顶独立按后排优先分配，并复核顶部范围。 */
+    /** 普通上机固定使用最近门的对应座；占座时仅 F 入口可以发起拖拽，右键不强行换人。 */
     public boolean board(PlayerEntity player) {
         if (!canReach(player) || heli.hasPassenger(player)) return false;
         if (player.getVehicle() instanceof RopeSeatEntity) return boardFromRope(player);
-        int side = accessSide(player), seat = freeSeat(side);
-        if (seat < 0) { tell(player, "side_full"); return false; }
+        int seat = accessDoor(player);
+        if (occupants[seat] != null) { tell(player, "seat_occupied"); return false; }
         return mount(player, seat, true);
+    }
+
+    /** 服务端与 HUD 共用占座拖拽资格；只处理停稳在陆地、坐稳且存活的玩家，不影响空中离机。 */
+    public boolean canTakeOver(PlayerEntity player) {
+        if (!canReach(player) || player.hasVehicle() || !heli.isCabinGrounded() || heli.isTouchingWater()
+                || heli.getVelocity().horizontalLengthSquared() > .01
+                || heli.flight.vx * heli.flight.vx + heli.flight.vz * heli.flight.vz > .01
+                || Math.abs(heli.flight.vy) > .1) return false;
+        int seat = accessDoor(player);
+        return occupant(seat) instanceof PlayerEntity victim && victim.isAlive() && !victim.isSpectator()
+                && motions[seat] == SEATED && !ropeExits[seat] && pullers[seat] == null;
+    }
+
+    /** 拉人者的同步 ID 必须与本座 UUID 和 PULL 动作同时成立；不信任单独的客户端状态。 */
+    public boolean isPulling(Entity player, int seat) {
+        return seat >= 0 && seat < SEATS && motions[seat] == PULL && player.getUuid().equals(pullers[seat]);
+    }
+
+    /** 返回本座被拖者，供拉人者的手臂和正面镜头复用同一进度；未在动作中返回 null。 */
+    public Entity pulledOccupant(Entity player) {
+        for (int seat = 0; seat < SEATS; seat++) if (isPulling(player, seat)) return occupant(seat);
+        return null;
+    }
+
+    /** 开门前先确认门外落点；两端角色不换座，服务端等拖拽完成才释放原乘员并挂载新玩家。 */
+    private void beginTakeOver(PlayerEntity player) {
+        if (!canTakeOver(player)) { tell(player, "takeover_unavailable"); return; }
+        int seat = accessDoor(player);
+        pullers[seat] = player.getUuid();
+        Vec3d target = findExit(occupant(seat), seat, false);
+        if (target == null) { pullers[seat] = null; tell(player, "door_exit_blocked"); return; }
+        setDoor(seat, true); outside[seat] = target; motions[seat] = PULL;
+        started[seat] = Math.max(heli.getWorld().getTime(), doorChanged[seat] + DOOR_TICKS);
+        ((CabinPlayerState) player).cabinPull(heli.getId(), seat);
+        if (seat == 0) { heli.stopAutopilot(); heli.flight.cancelAutoFlight(); heli.flight.clearInputs(); }
+        heli.syncCabin();
+    }
+
+    /** 取消时保留原座并关门；玩家追踪字段也同时释放，避免离开范围/断线后残留动作。 */
+    private void cancelTakeOver(int seat) {
+        PlayerEntity player = pullers[seat] == null ? null : heli.getWorld().getPlayerByUuid(pullers[seat]);
+        if (player != null) ((CabinPlayerState) player).cabinPull(-1, -1);
+        pullers[seat] = null; motions[seat] = SEATED; outside[seat] = null;
+        setDoor(seat, false); heli.syncCabin();
+    }
+
+    /**
+     * 服务端逐 tick 复核双方、停稳状态及地面落点；中途失效取消，成功离座后才开始三秒趴地计时。
+     * net.minecraft.entity.Entity#stopRiding 完成真实离座，随后 mount 保持原固定座号，不提升其他乘员。
+     */
+    private void tickTakeOver(Entity victim, int seat) {
+        PlayerEntity player = pullers[seat] == null ? null : heli.getWorld().getPlayerByUuid(pullers[seat]);
+        if (player == null || !player.isAlive() || player.isSpectator() || player.hasVehicle() || !victim.isAlive()
+                || heli.flight.wreck || !heli.isCabinGrounded() || heli.isTouchingWater()
+                || !canReachPosition(player) || accessDoor(player) != seat
+                || heli.flight.vx * heli.flight.vx + heli.flight.vz * heli.flight.vz > .01 || Math.abs(heli.flight.vy) > .1) {
+            cancelTakeOver(seat); return;
+        }
+        if (progress(victim, 0) < 1) return;
+        Vec3d local = findExit(victim, seat, false);
+        if (local == null) { tell(player, "door_exit_blocked"); cancelTakeOver(seat); return; }
+        outside[seat] = local;
+        // removed 会清空本座拖拽身份；先保存操作者，解除后再进入常规登机动画。
+        ((CabinPlayerState) player).cabinPull(-1, -1);
+        victim.stopRiding(); victim.refreshPositionAfterTeleport(toWorld(local)); victim.setVelocity(Vec3d.ZERO);
+        ((CabinPlayerState) victim).cabinStun(heli.getWorld().getTime() + CabinPlayerState.STUN_TICKS,
+                heli.getYaw() + (side(seat) == 0 ? -90 : 90));
+        mount(player, seat, true);
     }
 
     /** 绳顶 F/E 均后排优先，后排满后进入任意前排空座；自动打开对应门，坐稳后关门。 */
@@ -204,7 +284,8 @@ public final class HelicopterCabin {
 
     /** 权威端先预占座位，开门期间保持入口脚位；门完全打开才开始迈入，失败时撤销预占。 */
     public boolean mount(Entity entity, int seat, boolean animate) {
-        if (heli.getWorld().isClient || heli.flight.wreck || seat < 0 || seat >= SEATS || occupants[seat] != null) return false;
+        if (heli.getWorld().isClient || heli.flight.wreck || seat < 0 || seat >= SEATS || occupants[seat] != null
+                || CabinPlayerState.locked(entity)) return false;
         Vec3d entry=localPosition(entity);
         boolean rope=entity.getVehicle() instanceof RopeSeatEntity;
         occupants[seat] = entity.getUuid();
@@ -225,12 +306,12 @@ public final class HelicopterCabin {
         return false;
     }
 
-    /** 原版存档恢复/命令挂载回调：已有 UUID 保持原座，新乘客占第一个空位；不挪动其他乘员。 */
+    /** 原版存档恢复/命令挂载回调：已有 UUID 保持原座，新玩家按最近门分配，其他实体占首个空位。 */
     public void added(Entity entity) {
         if (heli.getWorld().isClient || seat(entity) >= 0) return;
         if(entity instanceof PlayerEntity){
-            int seat=freeSeat(accessSide(entity));
-            if(seat>=0)occupants[seat]=entity.getUuid();
+            int seat=accessDoor(entity);
+            if(occupants[seat]==null)occupants[seat]=entity.getUuid();
         }else for (int i = 0; i < SEATS; i++) if (occupants[i] == null) { occupants[i] = entity.getUuid(); break; }
         heli.syncCabin();
     }
@@ -240,6 +321,7 @@ public final class HelicopterCabin {
         if (heli.getWorld().isClient) return;
         int seat = seat(entity);
         if (seat < 0) return;
+        if (pullers[seat] != null) cancelTakeOver(seat);
         occupants[seat] = null; motions[seat] = SEATED; outside[seat] = null; ropeExits[seat] = false;
         if (seat == 0 && airborne && !heli.flight.wreck && occupant(1) instanceof PlayerEntity
                 && motions[1] == SEATED) {
@@ -257,7 +339,8 @@ public final class HelicopterCabin {
     public float progress(Entity entity, float delta) {
         int seat = seat(entity);
         if (seat < 0 || motions[seat] == SEATED) return 1;
-        int duration = motions[seat] == BOARD ? BOARD_TICKS : motions[seat] == JUMP ? JUMP_TICKS : EXIT_TICKS;
+        int duration = motions[seat] == BOARD ? BOARD_TICKS : motions[seat] == JUMP ? JUMP_TICKS
+                : motions[seat] == PULL ? PULL_TICKS : EXIT_TICKS;
         return MathHelper.clamp((heli.getWorld().getTime() - started[seat] + delta) / duration, 0, 1);
     }
 
@@ -272,6 +355,10 @@ public final class HelicopterCabin {
         Vec3d seated = seatPosition(seat);
         if (motions[seat] == SEATED || outside[seat] == null) return seated;
         float p = progress(entity, delta);
+        if (motions[seat] == PULL) {
+            double drag = smooth(MathHelper.clamp((p - .18) / .82, 0, 1));
+            return seated.lerp(outside[seat], drag);
+        }
         double t = motions[seat] == BOARD ? p : 1 - p;
         Vec3d threshold = new Vec3d(side(seat) == 0 ? .90 : -.90, .38, seated.z);
         Vec3d point = t < .55 ? outside[seat].lerp(threshold, smooth(t / .55))
@@ -364,7 +451,8 @@ public final class HelicopterCabin {
         for (HelicopterCollision.Shape part : HelicopterCollision.shapes(heli))
             if (part.intersects(standing)) return false;
         for (Entity other : heli.getWorld().getOtherEntities(passenger, standing.expand(HelicopterCollision.QUERY_RADIUS),
-                other -> !other.isSpectator() && !other.isRemoved() && !heli.isConnectedThroughVehicle(other))) {
+                other -> !other.isSpectator() && !other.isRemoved() && !heli.isConnectedThroughVehicle(other)
+                        && !other.getUuid().equals(pullers[seat]))) {
             if (other instanceof HelicopterEntity aircraft) {
                 for (HelicopterCollision.Shape part : HelicopterCollision.shapes(aircraft))
                     if (part.intersects(standing)) return false;
@@ -447,7 +535,11 @@ public final class HelicopterCabin {
         for (int seat = 0; seat < SEATS; seat++) {
             Entity entity = occupant(seat);
             // 原版不把离线玩家作为乘员实体保存；重载后没有实际乘员的 UUID 必须释放。
-            if(entity==null){occupants[seat]=null;motions[seat]=SEATED;outside[seat]=null;ropeExits[seat]=false;continue;}
+            if(entity==null){
+                if (pullers[seat] != null) cancelTakeOver(seat);
+                occupants[seat]=null;motions[seat]=SEATED;outside[seat]=null;ropeExits[seat]=false;continue;
+            }
+            if (motions[seat] == PULL) { tickTakeOver(entity, seat); continue; }
             if (ropeExits[seat] && canPass(seat) && entity instanceof PlayerEntity player) {
                 ropeExits[seat] = false; heli.rappel(player);
                 if (!heli.hasPassenger(entity)) continue;
@@ -483,6 +575,7 @@ public final class HelicopterCabin {
         for (int i = 0; i < SEATS; i++) if (occupants[i] != null) {
             NbtCompound seat = new NbtCompound(); seat.putUuid("Occupant", occupants[i]);
             seat.putInt("Motion", motions[i]); seat.putLong("Started", started[i]);
+            if (pullers[i] != null) seat.putUuid("Puller", pullers[i]);
             if (outside[i] != null) {
                 seat.putDouble("X", outside[i].x); seat.putDouble("Y", outside[i].y); seat.putDouble("Z", outside[i].z);
             }
@@ -496,7 +589,7 @@ public final class HelicopterCabin {
     /** 系统边界：旧存档无 Cabin 时由乘员恢复回调分配；重复 UUID/非法动画丢弃并记日志。 */
     public void read(NbtCompound nbt) {
         NbtCompound cabin = nbt.getCompound("Cabin");
-        Arrays.fill(occupants, null); Arrays.fill(motions, SEATED); Arrays.fill(outside, null);
+        Arrays.fill(occupants, null); Arrays.fill(motions, SEATED); Arrays.fill(outside, null); Arrays.fill(pullers, null);
         for (int i = 0; i < SEATS; i++) {
             NbtCompound seat = cabin.getCompound("Seat" + i);
             if (!seat.containsUuid("Occupant")) continue;
@@ -505,11 +598,13 @@ public final class HelicopterCabin {
             occupants[i] = id; started[i] = seat.getLong("Started");
             int motion = seat.getInt("Motion");
             double x = seat.getDouble("X"), y = seat.getDouble("Y"), z = seat.getDouble("Z");
-            if (motion < SEATED || motion > JUMP || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
+            if (motion < SEATED || motion > PULL || motion == PULL && !seat.containsUuid("Puller")
+                    || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
                     || Math.abs(x) > 3 || Math.abs(y) > 3 || Math.abs(z) > 2.5) {
                 No_24_heli.LOGGER.warn("丢弃非法的直升机乘降动作：{}", id); continue;
             }
             motions[i] = motion; outside[i] = new Vec3d(x, y, z);
+            if (motion == PULL) pullers[i] = seat.getUuid("Puller");
         }
         // 兼容旧绳索指定副驾，避免只有副驾的旧飞机在重载后误获得驾驶员。
         if (!nbt.contains("Cabin") && nbt.containsUuid("RopeCopilot")) occupants[1] = nbt.getUuid("RopeCopilot");
@@ -526,6 +621,7 @@ public final class HelicopterCabin {
         for (int seat = 0; seat < SEATS; seat++) if (motions[seat] != SEATED) doors[seat] = false;
         Arrays.fill(motions, SEATED); Arrays.fill(outside, null);
         Arrays.fill(ropeExits, false);
+        Arrays.fill(pullers, null);
         Arrays.fill(doorChanged, heli.getWorld().getTime() - DOOR_TICKS);
     }
 

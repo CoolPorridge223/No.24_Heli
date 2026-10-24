@@ -92,6 +92,12 @@ public abstract class HeliCrewRendererMixin {
         matrices.translate(0, HIP_HEIGHT, 0);
         matrices.scale(SEATED_SCALE, SEATED_SCALE, SEATED_SCALE);
         matrices.translate(0, -HIP_HEIGHT, 0);
+        if (heli.cabin.motion(entity) == org.DJB.no_24_heli.entity.HelicopterCabin.PULL) {
+            float fall = MathHelper.clamp((heli.cabin.progress(entity, delta) - .25f) / .75f, 0, 1);
+            matrices.translate(0, HIP_HEIGHT - .55 * fall, 0);
+            matrices.multiply(RotationAxis.POSITIVE_X.rotationDegrees(-85 * fall));
+            matrices.translate(0, -HIP_HEIGHT, 0);
+        }
     }
 
     /**
@@ -119,6 +125,9 @@ public abstract class HeliCrewRendererMixin {
             shift = At.Shift.AFTER))
     private void alignLegs(LivingEntity entity, float yaw, float delta, MatrixStack matrices,
             VertexConsumerProvider vertices, int light, CallbackInfo ci) {
+        if (entity instanceof net.minecraft.client.network.AbstractClientPlayerEntity player
+                && model instanceof net.minecraft.client.render.entity.model.PlayerEntityModel<?> playerModel)
+            CabinPassengerRenderer.actionPose(playerModel, player, delta);
         if (!(entity.getVehicle() instanceof HelicopterEntity heli) || !(model instanceof BipedEntityModel<?> biped)) return;
         CabinPassengerRenderer.pose(biped, heli, entity, delta);
         if (CabinPassengerRenderer.holdsStick(heli,entity) && model instanceof net.minecraft.client.render.entity.model.PlayerEntityModel<?> playerModel) {

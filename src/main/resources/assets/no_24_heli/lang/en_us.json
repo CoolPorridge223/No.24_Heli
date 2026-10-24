@@ -238,5 +238,8 @@
   "message.no_24_heli.side_full": "Seats on this side are full; board from the other side",
   "message.no_24_heli.door_exit_blocked": "The exit on this side is blocked",
   "hud.no_24_heli.rear_left": "Rear left",
-  "hud.no_24_heli.rear_right": "Rear right"
+  "hud.no_24_heli.rear_right": "Rear right",
+  "hud.no_24_heli.cabin_takeover_after": "to pull out the occupant and take this seat",
+  "message.no_24_heli.seat_occupied": "This door's seat is occupied; press the boarding key to take it",
+  "message.no_24_heli.takeover_unavailable": "Wait until the helicopter is stationary on land and the occupant is seated"
 }
