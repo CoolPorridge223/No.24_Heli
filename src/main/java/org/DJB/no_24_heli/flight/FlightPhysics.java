@@ -164,8 +164,7 @@ public final class FlightPhysics {
         double drag = horizontalDrag(c.hardcore(), !grounded && s.gear);
         s.vx *= drag; s.vz *= drag; s.vy *= .985;
         if (c.wind && !grounded) {
-            double gust = rain ? .0015 : .0005;
-            s.vx += Math.sin(tick*.013)*gust; s.vz += Math.cos(tick*.009)*gust;
+            s.vx += windX(rain,tick); s.vz += windZ(rain,tick);
         }
         if (s.rotor < 65 && s.rpm > .3) {
             double shake = (1-s.rotor/100)*.0025*s.rpm;
@@ -180,6 +179,12 @@ public final class FlightPhysics {
         double leak = s.tank < 80 ? (80-s.tank)*.0015 : 0;
         s.fuel=Math.max(0,s.fuel-consumption-leak);
     }
+
+    /** 功能：读取当前东西向阵风加速度，格/tick²；纯计算，物理与自动起降补偿共用，不改变天气强度。 */
+    public static double windX(boolean rain,long tick) { return Math.sin(tick*.013)*(rain?.0015:.0005); }
+
+    /** 功能：读取当前南北向阵风加速度，格/tick²；纯计算，是否启用风及是否接地由调用方判断。 */
+    public static double windZ(boolean rain,long tick) { return Math.cos(tick*.009)*(rain?.0015:.0005); }
     /** 跳机后先保持三秒高度，再丢失动力并持续倾斜；驾驶员重新登机可中断失控过程。 */
     public static void handleAbandonment(FlightState s, HeliConfig c, boolean grounded, boolean hasPilot, double altitude) {
         if(c.unassisted()){

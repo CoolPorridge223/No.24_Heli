@@ -318,9 +318,15 @@ public final class NavigationPilot {
      * 无 MC API；仅服务端主线程调用。取消旧快照和续段，但不清除全局路线或真实速度。
      * 排查：绕禁区中途掉头时检查 node 是否仍指向已飞过的点；新任务仍由 reset 完整清空。
      */
-    private void replanTerrain(){
+    private void replanTerrain(HelicopterEntity h,long now){
+        // 搜索成功不等于脱困；持续受阻与安全通道内卡滞共用重试上限，实际前进后才清零。
+        if(stallReplans>=MAX_STALL_REPLANS){
+            cancelTerrain();stalled=true;phase=Phase.FAILED;notify(h,"route_stalled_stopped");return;
+        }
+        stallReplans++;
         if(terrainRoute!=null)node=Math.max(node,terrainGoalNode);
         cancelTerrain();
+        terrainRetryAt=now+REPLAN_TICKS;phase=Phase.REPLANNING;notify(h,"route_stalled_retry");
     }
 
     /** 功能：仅保留当前、续段及在途采集的区块票；主线程调用，已飞过的区块可以正常卸载。 */
@@ -371,7 +377,7 @@ public final class NavigationPilot {
             controller.step(s,h.getX(),h.getZ(),pos,0,0,0);return;
         }
         var here=terrainPosition(h);
-        if(terrainNext!=null&&terrainFollower.atEnd(here,speed)){
+        if(terrainNext!=null&&terrainFollower.atEnd(here,speed,terrainNext)){
             node=terrainGoalNode+1;useTerrain(terrainNext,nextGoalNode);terrainNext=null;
             retainChunks();prepareTerrain(h,world);
         }
@@ -415,7 +421,8 @@ public final class NavigationPilot {
                 if(blockedAt<0)blockedAt=world.getTime();
                 // 短暂横穿的实体只减速等待，连续四秒确实堵塞才丢弃已计算的后续路线。
                 if(world.getTime()-blockedAt>=REPLAN_TICKS*2&&!terrainRetryPending&&terrainRetryAt!=Long.MAX_VALUE){
-                    replanTerrain();terrainRetryAt=world.getTime()+REPLAN_TICKS;phase=Phase.REPLANNING;
+                    replanTerrain(h,world.getTime());
+                    s.targetAltitude=h.getY();controller.step(s,h.getX(),h.getZ(),pos,0,0,0);return;
                 }
             }
         }
@@ -447,7 +454,7 @@ public final class NavigationPilot {
     private boolean replanIfStalled(HelicopterEntity h,ServerWorld world,boolean clear){
         if(terrainRoute==null||terrainRetryPending||terrainRetryAt==Long.MAX_VALUE||!clear
                 ||terrainNext==null&&terrainGoalNode<route.size()-1
-                &&terrainFollower.atEnd(terrainPosition(h),Math.hypot(h.flight.vx,h.flight.vz))){
+                &&terrainFollower.atEnd(terrainPosition(h),Math.hypot(h.flight.vx,h.flight.vz),null)){
             noProgressSince=-1;return false;
         }
         double progress=terrainFollower.progress();long now=world.getTime();
@@ -456,11 +463,7 @@ public final class NavigationPilot {
             progressCheckpoint=progress;noProgressSince=now;return false;
         }
         if(now-noProgressSince<STALL_TICKS)return false;
-        if(stallReplans>=MAX_STALL_REPLANS){
-            cancelTerrain();stalled=true;phase=Phase.FAILED;notify(h,"route_stalled_stopped");return true;
-        }
-        stallReplans++;replanTerrain();terrainRetryAt=now+REPLAN_TICKS;
-        phase=Phase.REPLANNING;notify(h,"route_stalled_retry");return true;
+        replanTerrain(h,now);return true;
     }
     /** 小段扫掠避免斜向航线的大包围盒把旁侧障碍误报为整条通道堵塞。 */
     private boolean corridorClear(ServerWorld world,HelicopterEntity h,Box base,Vec3d delta){

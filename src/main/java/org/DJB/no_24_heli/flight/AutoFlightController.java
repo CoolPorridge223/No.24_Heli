@@ -24,17 +24,19 @@ public final class AutoFlightController {
      * 和 net.minecraft.world.World 采样后传入，本方法不写世界。
      *
      * 端侧/线程：仅逻辑服务端，每 tick 一次。
-     * 参数：x/y/z 为当前实体原点；grounded 为真实方块支撑。
+     * 参数：x/y/z 为当前实体原点；grounded 为真实方块支撑；windX/Z 为本 tick 实际阵风加速度。
      * 副作用：修改总距、周期变距、脚蹬、目标高度、起落架和 autoPhase；不直接改位置/速度。
      * 排查：起飞总距为 0 查 autoPhase/armed；降落不下降查 landingBlocked 与 settle 条件；
      *      终点悬停不结束查 y 与 autoY 的 0.25 格窗口及垂速。
      */
-    public static void step(FlightState s,double x,double y,double z,boolean grounded){
+    public static void step(FlightState s,double x,double y,double z,boolean grounded,double windX,double windZ){
         // 起降期间始终由高度闭环控制总距；起飞离开实际方块支撑后自动收架，降落阶段始终放架。
         s.trim=true;s.altitudeHold=true;s.cruise=false;s.gear=grounded||s.autoPhase==3;
         // 水平锚点 PD：位置误差乘 0.008、当前速度乘 0.15，限幅 ±0.015 格/tick²，避免修正过冲。
-        double ax=FlightPhysics.clamp((s.autoX-x)*.008-s.vx*.15,-.015,.015);
-        double az=FlightPhysics.clamp((s.autoZ-z)*.008-s.vz*.15,-.015,.015);
+        // 风在阻力之后加入，提前抵消其加速度；保留十二厘米落点要求，不靠放宽支撑判定消除暂停。
+        double drag=FlightPhysics.horizontalDrag(s.hardcoreMode,!grounded&&s.gear);
+        double ax=FlightPhysics.clamp((s.autoX-x)*.008-s.vx*.15-windX/drag,-.015,.015);
+        double az=FlightPhysics.clamp((s.autoZ-z)*.008-s.vz*.15-windZ/drag,-.015,.015);
         double yaw=Math.toRadians(s.yaw);
         // 把世界系加速度转成机头/侧向杆量；30°/32° 对应俯仰和横滚的最大控制角。
         s.cyclicPitch=(float)(-Math.toDegrees(Math.atan2(-Math.sin(yaw)*ax+Math.cos(yaw)*az,FlightPhysics.GRAVITY))/30);

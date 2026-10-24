@@ -67,17 +67,20 @@ final class NavigationTerrainFollower {
             double t=Math.clamp(((pos.x()-a.x())*dx+(pos.y()-a.y())*dy+(pos.z()-a.z())*dz)/square,0,1);
             double along=Math.clamp(lengths[i]+Math.sqrt(square)*t,progress,maximum);
             t=Math.clamp((along-lengths[i])/Math.sqrt(square),0,1);
-            double deviation=pos.distance(NavigationTerrainRoute.interpolate(a,b,t));
-            if(deviation<best) {best=deviation;selected=lengths[i]+Math.sqrt(square)*t;}
+            var projection=NavigationTerrainRoute.interpolate(a,b,t);
+            double deviation=pos.distance(projection);
+            // 只推进到当前位置能安全接回的轨迹，避免隔着山体或禁区跳到回程段后再也无法返回。
+            if(deviation<best&&clearAcross(pos,projection,next)) {best=deviation;selected=lengths[i]+Math.sqrt(square)*t;}
         }
         progress=Math.max(progress,selected);
         while(segment+2<points.size()&&lengths[segment+1]<=progress)segment++;
         double look=Math.min(Math.clamp(lookMin+speed*20,lookMin,lookMax),
                 altitudeHorizon(pos,progress+lookMax,next)-progress);
-        var target=pointAt(progress+look,next);
-        for(int i=0;i<8&&!clearAcross(pos,target,next);i++) {
-            look*=.5;target=pointAt(progress+look,next);
+        var target=reachableTarget(pos,pointAt(progress+look,next),next);
+        for(int i=0;i<8&&target==null;i++) {
+            look*=.5;target=reachableTarget(pos,pointAt(progress+look,next),next);
         }
+        if(target==null)target=pointAt(progress+look,next);
         double span=lengths[segment+1]-lengths[segment];
         double fraction=Math.clamp((progress-lengths[segment])/span,0,1);
         double limit=speeds[segment]*(1-fraction)+speeds[segment+1]*fraction;
@@ -99,6 +102,22 @@ final class NavigationTerrainFollower {
         remaining+=continuationLength;
         // 高度与水平前视必须指向同一个已验证点；缩短前视后不能继续追逐远端反坡高度。
         return new Sample(target,target.y(),remaining,limit,curves[segment],clearAcross(pos,target,next));
+    }
+
+    /**
+     * 功能：为坡面和绕障回接寻找可执行的水平/高度组合；无 MC API，仅在已验证的快照内调整。
+     * 远端高度在原地不可达时逐次缩小高差，可先平移离开山坡再下降，或移出顶棚后爬升。
+     * 垂直调节段、调节后的水平段及实际斜向连线均须安全；找不到就缩短前视，绝不放宽机体净空。
+     */
+    private NavigationTerrainRoute.Point reachableTarget(NavigationTerrainRoute.Point pos,
+            NavigationTerrainRoute.Point target,NavigationTerrainRoute.Result next) {
+        for(int attempt=0;attempt<=8;attempt++) {
+            double y=attempt==8?pos.y():pos.y()+(target.y()-pos.y())/Math.scalb(1,attempt);
+            var adjusted=new NavigationTerrainRoute.Point(target.x(),y,target.z());
+            var vertical=new NavigationTerrainRoute.Point(pos.x(),y,pos.z());
+            if(clearAcross(pos,vertical,next)&&clearAcross(vertical,adjusted,next)&&clearAcross(pos,adjusted,next))return adjusted;
+        }
+        return null;
     }
 
     /**
@@ -181,7 +200,10 @@ final class NavigationTerrainFollower {
     }
 
     /** 功能：接缝附近即可交接，保留真实速度；最终导航点仍由驾驶器单独停稳确认。 */
-    boolean atEnd(NavigationTerrainRoute.Point pos,double speed) {
+    boolean atEnd(NavigationTerrainRoute.Point pos,double speed,NavigationTerrainRoute.Result next) {
+        // 已通过当前末端并安全进入续段时立即交接，不能要求飞机倒飞回旧接缝的两格半径内。
+        if(next!=null&&lengths[lengths.length-1]-progress<ALTITUDE_TURN_DISTANCE
+                &&clearAcross(route.path().getLast(),pos,next))return true;
         // 前视可已进入续段，但尚余明显升降弧长时不能仅因水平重合就跳过山脊或谷底。
         return NavigationRoute.distance(pos.horizontal(),route.path().getLast().horizontal())<Math.max(2,speed*3)
                 &&(Math.abs(pos.y()-route.path().getLast().y())<ALTITUDE_TURN_DISTANCE

@@ -418,7 +418,9 @@ public class HelicopterEntity extends Entity {
                 if(flight.autoPhase==3&&!flight.landingBlocked&&isOnGround()){
                     flight.cancelAutoFlight();flight.running=false;flight.collective=0;flight.altitudeHold=false;flight.clearInputs();
                     if(pilot() instanceof PlayerEntity p)message(p,"auto_landed");
-                }else AutoFlightController.step(flight,getX(),getY(),getZ(),grounded);
+                }else AutoFlightController.step(flight,getX(),getY(),getZ(),grounded,
+                        physicsConfig.wind&&!grounded?FlightPhysics.windX(rain,getWorld().getTime()):0,
+                        physicsConfig.wind&&!grounded?FlightPhysics.windZ(rain,getWorld().getTime()):0);
             }
         }
         if(flight.autopilot){
