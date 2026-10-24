@@ -1,14 +1,23 @@
 /** 文件：直升机同步和持久化状态；端侧：COMMON，服务端权威；实体：no_24_heli:helicopter。 */
 package org.DJB.no_24_heli.flight;
 
-/** 不依赖客户端的飞行状态；速度单位为格/tick，姿态单位为度。 */
+/**
+ * 不依赖客户端的飞行状态；速度单位为格/tick，姿态单位为度。
+ * 该对象同时承担服务端权威计算与 DataTracker/存档快照载体，新增字段必须明确是否同步、是否持久化。
+ * 端侧：COMMON，服务端写入；客户端只读快照，不反向写回权威状态。
+ */
 public final class FlightState {
+    /** 旋翼转速与总距均为 0..1；姿态/偏航率单位为度、度/tick；速度单位为格/tick。 */
     public double rpm, collective, pitch, roll, yaw, yawRate, vx, vy, vz;
+    /** 燃油与世界可消耗量，以及主旋翼/尾桨/引擎/油箱/机身耐久，正常范围 0..100；燃油上限见 HeliConfig。 */
     public double fuel, rotor = 100, tail = 100, engine = 100, tank = 100, hull = 100;
+    /** 高度保持目标世界 Y、巡航目标水平速度；两者都只是控制目标，不代表实际位置或速度。 */
     public double targetAltitude, targetSpeed;
     /** 高度保持下正在手动升降或松键制动；仅服务端瞬态，不同步、不存档，制动后捕获新高度。 */
     public boolean altitudeAdjusting;
+    /** 引擎运行、旋翼已武装、高度保持、配平、巡航；起落架默认放下，残骸不参与飞行控制。 */
     public boolean running, armed, altitudeHold, trim, cruise, gear = true;
+    /** 残骸标记和绳索部署开关；残骸复用原实体保存，不能按普通载具删除。 */
     public boolean wreck, rope;
     /** 起飞升力不足警告；服务端按部件、旋翼处天气和地面支撑实时重算，随快照同步，旧数据默认关闭。 */
     public boolean takeoffPowerLow;
@@ -32,11 +41,13 @@ public final class FlightState {
     public int autoPhase;
     /** 自动降落平地或通道失效时暂停；随快照同步，取消任务或重载后清除，不覆盖原降落目标。 */
     public boolean landingBlocked;
+    /** 一键起降锚点，单位格；autoY 是开始降落时确定的最终目标，降落暂停不能覆盖它。 */
     public double autoX,autoZ,autoY;
     /** 记录导航初次航向对准状态；允许在已验证通道内边低速平移边转向，不作为起步门槛。 */
     public boolean navAligned;
     /** 电台只同步槽位和切歌序号；-1为关闭，0–7对应用户自己提供的八首MP3。 */
     public int radioTrack=-1,radioRevision;
+    /** 切歌发生时的世界 tick，客户端据此从当前进度接入而不是从头播放。 */
     public long radioStartedTick;
     /** 无驾驶员的连续飞行 tick，保存以避免重载反复刷新悬停保护。 */
     public int abandonedTicks;

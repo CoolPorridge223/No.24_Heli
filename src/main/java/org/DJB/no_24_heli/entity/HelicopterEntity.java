@@ -1,3 +1,4 @@
+/** 文件：直升机实体，负责注册属性、飞行物理编排、碰撞、交互、乘员与存档；端侧：COMMON；实体：no_24_heli:helicopter。 */
 package org.DJB.no_24_heli.entity;
 
 import org.DJB.no_24_heli.No_24_heli;
@@ -36,7 +37,15 @@ import net.minecraft.util.math.*;
 import net.minecraft.world.*;
 import java.util.List;
 
-/** 服务端权威载具：负责物理、碰撞、交互、乘员、保存以及客户端状态快照。 */
+/**
+ * 职责：服务端权威载具，负责注册属性、飞行物理编排、分部碰撞、交互、乘员、保存和客户端状态快照。
+ * 引用：net.minecraft.entity.Entity 提供生命周期、move 与乘骑；
+ *      DataTracker 同步 Flight NBT；HelicopterCabin/FlightPhysics/HelicopterCollision 分别处理座位、物理与几何。
+ * 生命周期：由 EntityType 创建，世界主线程每 tick 调 tick()；只读写所属世界状态。
+ * 端侧/线程：COMMON，逻辑服务端权威；客户端只做位置/姿态插值和读取快照，不写权威物理。
+ * 排查：实体不出现查注册；不同步查 STATUS/DataTracker；抖动或穿墙查 tick 是否重复写速度、是否绕过 move；
+ *      乘降异常查 HelicopterCabin；事故漏判查 blockImpact 记录和移动后的复查顺序。
+ */
 public class HelicopterEntity extends Entity {
     /** 双座整体朝机头前移 0.12 格；座椅、乘员、握杆手臂和第一人称眼位共用此偏移。 */
     public static final double SEAT_FORWARD_OFFSET=.12;
@@ -44,25 +53,33 @@ public class HelicopterEntity extends Entity {
     private static final double ROTOR_WEATHER_HEIGHT=2.71;
     /** F 与 Shift 共用空中离机确认，60 tick 即三秒；同 tick 的重复输入不算第二次按下。 */
     private static final int EXIT_CONFIRM_TICKS=60;
+    /** DataTracker 中的 Flight NBT 快照；服务端每 2 tick 或离散乘降时刷新，客户端只读。 */
     private static final TrackedData<NbtCompound> STATUS=DataTracker.registerData(HelicopterEntity.class,TrackedDataHandlerRegistry.NBT_COMPOUND);
+    /** 每架飞机独立的导航任务状态与后台 Future 生命周期，卸载/销毁时必须 reset。 */
     private final NavigationPilot navigation=new NavigationPilot();
+    /** 权威飞行状态；所有物理、辅助、损伤和任务字段都在服务端写入。 */
     public final FlightState flight=new FlightState();
+    /** 19 格货仓：0 号是燃料槽，其余为普通货物；随实体原版库存 NBT 保存。 */
     public final SimpleInventory cargo=new SimpleInventory(19);
     /** 桨叶角度单位为度；实体快照同步相位，使停转桨叶的选取与显示仍一致。 */
     public float rotorAngle,previousRotorAngle;
     /** 实体自身的只读几何快照，位置、姿态、收放或桨盘状态变化时失效；不持久化。 */
     volatile HelicopterCollision.Cache collisionCache;
+    /** 客户端双层平滑后的可见姿态与起落架展开量；服务端物理只读不写这些值。 */
     public float visualPitch,visualRoll,gearExtension=1;
     /** 保存上一 tick 的第二级平滑结果，渲染帧再次插值，避免 20 Hz 阶梯跳变。 */
     public float previousVisualPitch,previousVisualRoll,previousGearExtension=1;
     /** 云台视觉角仅客户端平滑；单位：度，与机体同样做 tick/帧双级插值。 */
     public float visualLightYaw,previousLightYaw,visualLightPitch=-65,previousLightPitch=-65;
+    /** 第一级姿态平滑缓存；视觉层再插值一次，避免服务端 20 Hz 步进直接进入模型。 */
     private float smoothPitch,smoothRoll;
+    /** 空中离机二次确认窗口，值为允许再次确认的世界 tick；任何离座都会清除。 */
     private final java.util.Map<java.util.UUID,Long> exitWarnings=new java.util.HashMap<>();
     /** 刚离机的乘员保留两秒本机碰撞豁免，世界 tick 到期即移除；避免乘骑清零速度与出舱过渡造成自撞。 */
     private final java.util.Map<java.util.UUID,Long> departingPassengers=new java.util.HashMap<>();
     /** 离机碰撞豁免持续四十个服务端 tick，仅作用于离开的那一架飞机。 */
     private static final int DEPARTURE_GRACE_TICKS=40;
+    /** 部署时确定的绳长，单位格；飞行中保持初始长度，不随每 tick 地面探测伸缩。 */
     public int ropeLength;
     /** 当前部署的唯一绳实体；运行时缓存跨越查询半径，卸载后按同一 UUID 等待恢复。 */
     private RopeSeatEntity activeRope;
@@ -70,10 +87,12 @@ public class HelicopterEntity extends Entity {
     private int ropeCarrierId=-1;
     /** 固定四座及四扇铰接门；权威状态随 Flight 快照同步，两端只共享乘降时序。 */
     public final HelicopterCabin cabin = new HelicopterCabin(this);
+    /** 电台、连续轴、离散动作和引擎切换的最后处理 tick；分开限流，避免同 tick 的包互相吞掉。 */
     private long lastRadio=-100;
     private long lastInput=-100,lastActions=-100,lastEngine=-100;
     /** 灯具开关独立限流五 tick，瞄准每 tick 最多一次；不阻塞引擎或飞行辅助。 */
     private long lastLightToggle=-100,lastLightAim=-100;
+    /** 普通碰撞伤害、维修、实体撞击的冷却 tick；高速事故检查和旋翼规则不受这些冷却豁免。 */
     private int collisionCooldown,repairCooldown,entityImpactCooldown;
     /** 本 tick 真实受阻部位与被阻挡速度，单位格/tick；由有向盒扫掠记录，逻辑服务端结算。 */
     private HelicopterCollision.Part blockImpactPart=HelicopterCollision.Part.CABIN;
@@ -88,7 +107,9 @@ public class HelicopterEntity extends Entity {
     public static final double ENTITY_DAMAGE_SPEED=.5;
     /** 连续离开方块支撑三 tick 后才启用实体事故，防止放置接地前误判。 */
     private int airborneTicks;
+    /** 本 tick 是否启用实体撞击结算；离地三 tick 或旋翼已转起才为 true。 */
     private boolean entityContactsEnabled;
+    /** 客户端位置插值目标与剩余 tick；由原版实体追踪包写入，不参与服务端物理。 */
     private double lerpX,lerpY,lerpZ;
     /** 客户端目标偏航，单位度；收到高精度 Flight.Yaw 后不再接受字节角覆盖。 */
     private float lerpYaw;
@@ -99,7 +120,9 @@ public class HelicopterEntity extends Entity {
     private int yawLerpTicks;
     /** 已收到本实体首次高精度偏航快照，首次到达前保留原版生成包朝向。 */
     private boolean preciseYaw;
+    /** 由 EntityType 构造；intersectionChecked 允许自定义命中盒，难度只初始化辅助默认值。 */
     public HelicopterEntity(EntityType<?> type,World world){super(type,world);intersectionChecked=true;applyDifficulty(HeliConfig.INSTANCE.difficulty);}
+    /** 注册同步 NBT；初始为空，首次 saveFlight 后才包含完整飞行快照。 */
     @Override protected void initDataTracker(DataTracker.Builder builder){builder.add(STATUS,new NbtCompound());}
     @Override public boolean canHit(){return true;}
     /** 实体碰撞由分部有向盒处理；原版不得把整机候选大盒变成隐形墙。 */
@@ -192,9 +215,22 @@ public class HelicopterEntity extends Entity {
     public boolean isCabinGrounded() { return isOnGround() || hasBlockSupport() || isTouchingWater(); }
     /** 离散舱门/座位动作立即同步，避免等待原有每两 tick 的飞行快照。 */
     public void syncCabin() { if (!getWorld().isClient) dataTracker.set(STATUS, saveFlight()); }
+    /** 返回 null，避免原版载具移动包接管权威位置；驾驶权由固定 0 号座位另行判断。 */
     @Override public LivingEntity getControllingPassenger(){return null;}
 
-    /** 操作权限只属于第一座乘员；副驾驶可以开货仓和使用已部署绳索。 */
+    /**
+     * 功能：处理一个来自乘员的操作包，连续轴与离散动作分开限流，并按座位复核驾驶权。
+     *
+     * 引用 MC API：
+     *   - net.minecraft.entity.player.PlayerEntity#hasPassenger 等由 net.minecraft.entity.Entity 提供，
+     *     确认发包者仍在机上；
+     *   - net.minecraft.util.math.MathHelper 用于探照灯角度和输入限幅。
+     *
+     * 端侧/线程：仅逻辑服务端主线程；客户端只发送意图，不能指定坐标或直接改飞行状态。
+     * 参数：p 为已通过 valid() 的载荷；非法动作位/非有限轴在入口被丢弃。
+     * 副作用：更新输入、辅助开关、引擎、起落架、绳索、探照灯、自动驾驶和菜单；不直接改位置。
+     * 排查：操纵无响应查是否主驾/动作状态；开关被吞查离散动作 5 tick 限流；接管异常查 lastInput 分支。
+     */
     public void control(PlayerEntity player,ControlPayload p){
         if(!p.valid()||!hasPassenger(player)||flight.wreck)return;
         long tick=getWorld().getTime();
@@ -305,9 +341,23 @@ public class HelicopterEntity extends Entity {
         if(!getWorld().spawnEntity(seat))return null;
         activeRope=seat;return seat;
     }
+    /**
+     * 功能：服务端每 tick 主编排；客户端分支只做位置/姿态插值与视觉平滑。
+     *
+     * 引用 MC API：
+     *   - net.minecraft.entity.Entity#tick()：实体生命周期入口；
+     *   - net.minecraft.entity.Entity#move(MovementType, Vec3d)：处理真实位移和方块碰撞；
+     *   - net.minecraft.entity.data.DataTracker#set：同步 Flight 快照。
+     *
+     * 端侧/线程：世界主线程；服务端段写权威状态，客户端段不得写物理。
+     * 副作用：推进座位、物理、碰撞、伤害、绳索、雷达、空域和同步；不直接 setPos 绕过 move。
+     * 排查：抖动查客户端是否写速度/服务端是否重复积分；穿墙查 move 前后顺序；
+     *      事故漏判查 blockImpact 是否在 move 后结算；乘降卡住查 cabin.tick 的兜底下机。
+     */
     @Override public void tick(){
         super.tick();cabin.tick();previousRotorAngle=rotorAngle;rotorAngle+=(float)(flight.rpm*65);
         if(rotorAngle>=360){rotorAngle-=360;previousRotorAngle-=360;}
+        // 客户端分支：只消费已同步的 Flight 快照，做两级插值；绝不写速度、姿态权威值或乘降状态。
         if(getWorld().isClient){
             previousLightYaw=visualLightYaw;previousLightPitch=visualLightPitch;
             visualLightYaw=MathHelper.lerp(.55f,visualLightYaw,flight.searchlightYaw);
@@ -321,6 +371,7 @@ public class HelicopterEntity extends Entity {
             if(yawLerpTicks>0){setYaw(MathHelper.wrapDegrees(getYaw()+MathHelper.wrapDegrees(lerpYaw-getYaw())/yawLerpTicks));yawLerpTicks--;}
             return;
         }
+        // 服务端权威段：先清冷却/过期输入，再按“任务复核 → 物理积分 → move → 碰撞/伤害 → 同步”顺序执行。
         previousGearExtension=gearExtension;gearExtension=MathHelper.lerp(.15f,gearExtension,flight.gear?1:0);
         // 创造飞行只对当前乘员关闭，不修改 allowFlying，下机仍可照常使用创造飞行。
         for(Entity passenger:getPassengerList())if(passenger instanceof net.minecraft.server.network.ServerPlayerEntity player&&player.getAbilities().flying){
@@ -350,7 +401,7 @@ public class HelicopterEntity extends Entity {
         boolean rain=isRotorInRain();
         airborneTicks=grounded?0:Math.min(3,airborneTicks+1);
         entityContactsEnabled=(airborneTicks>=3||flight.rpm>.05)&&!flight.wreck;
-        // 起降阶段每tick复核动力、驾驶员和模式；不会因为客户端断线而保留无人起飞任务。
+        // 自动任务与弃机：起降每 tick 复核动力、驾驶员和模式；自动驾驶只在有人、离地且动力可用时运行。
         boolean takeoffObstructed=false;
         if(flight.autoPhase!=0){
             if(!(pilot() instanceof PlayerEntity)||flight.hardcoreMode||!flight.running||flight.engine<=0||flight.rotor<40||flight.fuel<=0||flight.wreck||isTouchingWater())flight.cancelAutoFlight();
@@ -374,6 +425,7 @@ public class HelicopterEntity extends Entity {
             if(!(pilot() instanceof PlayerEntity)||grounded||!flight.running||flight.engine<=0||flight.fuel<=0||flight.wreck)stopAutopilot();
             else navigation.step(this);
         }
+        // 物理积分：先清本 tick 的撞击记录，再按弃机/输入/动力/姿态顺序推进；姿态限位必须在 move 前完成。
         blockImpactSpeed=0;mainRotorBlockImpact=false;mainRotorBlockSpeed=0;
         HelicopterCollision.Pose previousPose=HelicopterCollision.pose(this);
         FlightPhysics.handleAbandonment(flight,physicsConfig,grounded,pilot() instanceof PlayerEntity,getY());
@@ -391,10 +443,12 @@ public class HelicopterEntity extends Entity {
         if(Math.abs(MathHelper.wrapDegrees(allowedPose.yaw()-flight.yaw))>.001)flight.yawRate=0;
         flight.yaw=allowedPose.yaw();flight.pitch=allowedPose.pitch();flight.roll=allowedPose.roll();
         setYaw((float)flight.yaw);
+        // 位移与碰撞：只通过 Entity#move 写世界位置，不能 setPos 绕过方块/实体碰撞；moved 供扫掠复核。
         Vec3d before=getPos(),velocity=new Vec3d(flight.vx,flight.vy,flight.vz);setVelocity(velocity);
         move(MovementType.SELF,velocity);Vec3d moved=getPos().subtract(before);
         if(isOnGround()&&!hasBlockSupport())setOnGround(false);
         if(!flight.wreck){
+            // 移动后才结算真实接触：旋翼、机身、实体、水面和绳索依次处理，避免提前清速度掩盖事故。
             HelicopterCollision.spinningContact(this);
             if(mainRotorBlockImpact){
                 if(flight.rpm>=ROTOR_BREAK_RPM)flight.rotor=0;
@@ -442,10 +496,11 @@ public class HelicopterEntity extends Entity {
         if(verticalCollision&&velocity.y<0)flight.gear=true;
         if(horizontalCollision){if(Math.abs(velocity.x-moved.x)>.001)flight.vx=0;if(Math.abs(velocity.z-moved.z)>.001)flight.vz=0;}
         if(verticalCollision)flight.vy=0;
+        // 残骸沉降：只按实际支撑点倾倒，接地当 tick 清除水平动量，避免残骸继续滑行。
         if(flight.wreck)HelicopterCollision.settleWreck(this,verticalCollision&&velocity.y<0);
-        // 碰撞后当 tick 立即清除残骸水平动量，避免下一 tick 接地前再滑动一段。
         if(flight.wreck&&isOnGround()){flight.vx=0;flight.vz=0;}
         setVelocity(flight.vx,flight.vy,flight.vz);fallDistance=0;
+        // 周期同步：雷达每 10 tick、空域/停机坪目录每 20 tick、飞行快照每 2 tick；频率不能互相替代。
         if(age%10==0&&hasPassengers()&&getWorld() instanceof net.minecraft.server.world.ServerWorld radarWorld){
             var contacts=radarWorld.getOtherEntities(this,new Box(getX()-512,radarWorld.getBottomY(),getZ()-512,getX()+512,radarWorld.getTopY(),getZ()+512),
                 e->!hasPassenger(e)&&!e.isSpectator()&&(e instanceof PlayerEntity||e instanceof HelicopterEntity other&&!other.flight.wreck)
@@ -503,7 +558,18 @@ public class HelicopterEntity extends Entity {
         }
         if(flight.hull<=0)destroy(explosive);
     }
-    /** 近战与投射物以真实射线命中部位定位；来源位置只用于非定向环境或爆炸伤害。 */
+    /**
+     * 功能：按真实射线命中的分部结算伤害；非定向环境/爆炸才用来源位置就近选部位。
+     *
+     * 引用 MC API：
+     *   - net.minecraft.entity.damage.DamageSource 提供攻击者、投射物和爆炸标签；
+     *   - net.minecraft.entity.projectile.ProjectileEntity 的上一/当前 tick 位置用于扫掠射线；
+     *   - net.minecraft.entity.player.PlayerEntity#getRotationVector 读取当前权威朝向。
+     *
+     * 端侧/线程：仅逻辑服务端。返回：是否实际接受伤害；乘员/旁观者/已残骸/非法数值直接拒绝。
+     * 副作用：扣部件/机身耐久，可能触发 destroy；基础伤害放大为原值两倍。
+     * 排查：打不中查射线与分部盒；误伤自己查乘员归属；伤害不扣查冷却或 wreck。
+     */
     @Override public boolean damage(DamageSource source,float amount){
         if(getWorld().isClient||isInvulnerableTo(source)||flight.wreck||!Float.isFinite(amount))return false;
         // 近战、投射物以及可归因于机上乘员的攻击均忽略，外部攻击仍正常结算。
@@ -523,7 +589,15 @@ public class HelicopterEntity extends Entity {
         var part=hit!=null?hit.part():source.getPosition()!=null?HelicopterCollision.nearestPart(this,source.getPosition()):HelicopterCollision.Part.CABIN;
         damagePart(part,Math.max(0,amount)*2,source.isIn(net.minecraft.registry.tag.DamageTypeTags.IS_EXPLOSION));return true;
     }
-    /** 残骸复用实体并持久化，不会凭空消失；货物只在解体时掉落一次。 */
+    /**
+     * 功能：只执行一次事故结算：授予坠机进度、保留残骸实体、散落货物、按配置爆炸并伤害乘员。
+     *
+     * 引用 MC API：net.minecraft.entity.ItemEntity 的 ItemScatterer.spawn 掉落库存；
+     *      net.minecraft.world.World#createExplosion 生成配置化爆炸；removeAllPassengers 解除全部乘骑。
+     * 端侧/线程：仅逻辑服务端主线程。
+     * 副作用：flight.wreck 置位、任务/绳索停止、库存清空、实体继续作为残骸；不删除实体。
+     * 排查：残骸消失查是否误调 discard；货物重复掉落查 destroy 是否重入；漏爆炸查 explosive 参数。
+     */
     private void destroy(boolean explosive){
         if(flight.wreck)return;
         // 必须是事故发生时的真实驾驶员且本 tick 曾离地；乘客、停机地面损坏不算驾驶坠机。
@@ -537,6 +611,15 @@ public class HelicopterEntity extends Entity {
         if(explosive){boolean blocks=HeliConfig.INSTANCE.explosionBlockDamage;getWorld().createExplosion(this,getX(),getY()+.5,getZ(),(float)HeliConfig.INSTANCE.explosionPower,blocks,blocks?World.ExplosionSourceType.TNT:World.ExplosionSourceType.NONE);}
         dataTracker.set(STATUS,saveFlight());
     }
+    /**
+     * 功能：右键机身/残骸的统一服务端交互，按手持物和潜行状态分派乘降、维修、涂装、牵引、货仓和回收。
+     *
+     * 引用 MC API：net.minecraft.entity.player.PlayerEntity#interact 是原版实体交互入口；
+     *      net.minecraft.item.ItemStack/Items 判断维修包、染料、拴绳；ActionResult 决定客户端摆臂/消耗。
+     * 端侧/线程：客户端只返回 SUCCESS 让原版继续，所有状态修改在服务端；主线程。
+     * 副作用：可能登机、打开容器、消耗物品、改涂装/燃油、生成村民座位、回收整机；失败不改状态。
+     * 排查：右键无反应查客户端提前返回/准星；维修无效查冷却和耐久上限；回收失败查 canRecover 条件。
+     */
     @Override public ActionResult interact(PlayerEntity player,Hand hand){
         if(isRemoved())return ActionResult.FAIL;
         if(getWorld().isClient)return ActionResult.SUCCESS;
@@ -758,7 +841,15 @@ public class HelicopterEntity extends Entity {
         stopAutopilot();navigation.reset();flight.cancelAutoFlight();flight.waypoint=!p.clear();flight.waypointX=p.x();flight.waypointZ=p.z();
         message(player,p.clear()?"waypoint_clear":"waypoint_set");dataTracker.set(STATUS,saveFlight());
     }
-    /** F/Shift 共用下机流程；空中先立即警告，三秒内再次按下才自动开门并跃出。 */
+    /**
+     * 功能：F/Shift 共用下机入口；地面直接开门走下，空中先警告并在 60 tick 内二次确认才跃出。
+     *
+     * 引用 MC API：无直接调用；实际开门/离座交给 {@link HelicopterCabin#beginExit}，
+     *      解除乘骑仍由原版 net.minecraft.entity.Entity#stopRiding 完成。
+     * 端侧/线程：仅逻辑服务端；客户端只发送 ControlPayload.DISMOUNT 意图。
+     * 副作用：记录确认窗口或启动离机；地面出口被卡住时由舱位组件直接下载具，不会保留座位。
+     * 排查：首次按无反应查 isCabinGrounded；二次按仍不走查动作状态/座位；同 tick 重复请求不算确认。
+     */
     public void requestDismount(PlayerEntity player){
         if(flight.wreck||!hasPassenger(player)||cabin.motion(player)!=HelicopterCabin.SEATED)return;
         long now=getWorld().getTime();Long until=exitWarnings.get(player.getUuid());

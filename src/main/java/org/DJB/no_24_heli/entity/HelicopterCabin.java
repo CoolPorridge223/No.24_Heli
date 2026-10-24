@@ -17,10 +17,15 @@ import net.minecraft.world.RaycastContext;
 import org.DJB.no_24_heli.No_24_heli;
 
 /**
- * 职责：固定座号与乘客列表分离，服务端裁决同侧乘降，客户端只读同一动画时间线。
- * 引用 net.minecraft.entity.Entity#startRiding 完成真实乘骑，NbtCompound 保存 UUID 座位及门状态。
+ * 职责：固定座号与乘客列表分离，服务端裁决同侧乘降、门时序和出口空间，客户端只读同一动画时间线。
+ * 引用 MC API：
+ *   - net.minecraft.entity.Entity#startRiding/stopRiding：真实乘骑与离座；
+ *   - net.minecraft.entity.EntityPose.STANDING、World#getBlockCollisions：检查门外站立净空；
+ *   - net.minecraft.nbt.NbtCompound：保存座位 UUID、动作与门状态。
  * 生命周期：每架飞机一个实例，世界主线程 tick；渲染线程仅读取插值坐标。
- * 排查：错座查 UUID 快照；门打不开查距离/侧别；动画跳变查世界 tick 和同步时间。
+ * 端侧/线程：COMMON，逻辑服务端权威；客户端不写座位、门或动作状态。
+ * 排查：错座查 UUID 快照；门打不开查距离/侧别/门进度；动画跳变查世界 tick 和同步时间；
+ *      地面仍无法下机查 findExit 与 findFallbackExit/forceDismount 的兜底路径。
  */
 public final class HelicopterCabin {
     /** 0 左前主驾、1 右前副驾、2 左后、3 右后；后排距前排 0.74 格，避开向机尾收窄的舱壁。 */
@@ -35,16 +40,28 @@ public final class HelicopterCabin {
     /** 同侧出口从近到远找可站立点，单位格；升降范围容纳台阶、薄停机坪及收架后的低机身。 */
     private static final double[] EXIT_DISTANCES = {2.05, 2.4, 2.75}, EXIT_OFFSETS = {0, -.35, .35};
     private static final double EXIT_STEP_UP = 1.1, EXIT_STEP_DOWN = 1.5, EXIT_FLOOR_GAP = .02;
+    /**
+     * 机门被地形或实体卡住时的兜底搜索：本侧优先，再试对侧；距离和前后偏移比正常下机更宽。
+     * 纵向多留 2.5 格，覆盖机身停在台阶、斜坡、浅坑或收架后的低姿态。单位：格。
+     */
+    private static final double[] FALLBACK_DISTANCES = {2.05, 2.4, 2.75, 3.2, 3.8},
+            FALLBACK_OFFSETS = {0, -.35, .35, -.7, .7};
+    private static final double FALLBACK_STEP_UP = 2.0, FALLBACK_STEP_DOWN = 4.0;
     /** 权威座位身份；动作在保持真实乘骑期间完成，结束离座才释放席位。 */
     private final UUID[] occupants = new UUID[SEATS];
+    /** 每座当前动作（SEATED/BOARD/EXIT/JUMP）；同时驱动服务端时序和客户端插值。 */
     private final int[] motions = new int[SEATS];
+    /** 动作开始的世界 tick；门未全开时先等待，之后再按动作时长推进。 */
     private final long[] started = new long[SEATS];
+    /** 动画入口/出口的机身局部坐标；null 表示静坐或没有待用落点。 */
     private final Vec3d[] outside = new Vec3d[SEATS];
     /** Y 下绳先等待本座门打开，服务端再次检查悬停后转移；不跨存档恢复请求。 */
     private final boolean[] ropeExits = new boolean[SEATS];
     /** 门号与座号一致，四门独立；世界总 tick 时间戳避免实体重追踪时重新播放。 */
     private final boolean[] doors = new boolean[SEATS];
+    /** 每扇门最后一次目标变化的世界 tick，用于反向插值关闭；初始视为已完全关闭。 */
     private final long[] doorChanged = {-DOOR_TICKS, -DOOR_TICKS, -DOOR_TICKS, -DOOR_TICKS};
+    /** 所属飞机；舱位组件不持有世界或玩家引用，跨维度/卸载随实体失效。 */
     private final HelicopterEntity heli;
 
     /** 由所属实体构造；不访问尚未初始化的 net.minecraft.entity.Entity 数据追踪器。 */
@@ -266,12 +283,19 @@ public final class HelicopterCabin {
     /** 平滑步进函数；参数为归一化时间，避免端点速度突变。 */
     private static double smooth(double t) { return t * t * (3 - 2 * t); }
 
-    /** 确认离机后自动开门，等待门全开再起身；动画期间保留座位，目标受阻时保持坐稳。 */
+    /**
+     * 功能：确认离机后自动开门，等待门全开再起身；动画期间保留座位。
+     * 地面或水面出口被地形卡住时不再播放动画，直接按原版下载具离开，避免乘员被困；
+     * 空中没有安全落点仍保留座位并提示，不能把跃出改成自由落体。
+     * 引用 net.minecraft.entity.player.PlayerEntity 只传玩家；服务端调用。
+     */
     public void beginExit(PlayerEntity player, boolean airborne) {
         int seat = seat(player);
         if (seat < 0 || motions[seat] != SEATED) return;
         Vec3d target = findExit(player, seat, airborne);
         if (target == null) {
+            // 地面/水面的“门被卡住”不应把玩家锁在座位上；空中仍必须保留二次确认后的安全跃出。
+            if (!airborne) { forceDismount(player, seat); return; }
             tell(player, "door_exit_blocked"); return;
         }
         ropeExits[seat] = false;
@@ -312,7 +336,7 @@ public final class HelicopterCabin {
                 if (hit.getType() == HitResult.Type.MISS) continue;
                 target = new Vec3d(target.x, hit.getPos().y + EXIT_FLOOR_GAP, target.z);
             }
-            if (exitClear(passenger, seat, target))
+            if (exitClear(passenger, seat, side(seat), target))
                 return target.subtract(heli.getPos()).rotateY((float) Math.toRadians(heli.getYaw()));
         }
         return null;
@@ -321,12 +345,13 @@ public final class HelicopterCabin {
     /**
      * 功能：检查站立空间和门槛至落点的外侧通道，只排除本机乘员，其他直升机按真实分部盒检查。
      * 引用 net.minecraft.world.World#getBlockCollisions/#getOtherEntities 查询环境，WorldBorder.contains 拦住边界。
+     * 参数 side 由调用方显式给出：正常下机使用本座侧，兜底下机可能搜索对侧，不能再用座位侧反推门槛位置。
      * 服务端只读；不使用乘坐中的旧包围盒，不允许为了换落点穿过真实墙壁或停在打开的门板中。
      */
-    private boolean exitClear(Entity passenger, int seat, Vec3d target) {
+    private boolean exitClear(Entity passenger, int seat, int side, Vec3d target) {
         var dimensions = passenger.getDimensions(EntityPose.STANDING);
         Box standing = dimensions.getBoxAt(target);
-        Vec3d threshold = toWorld(new Vec3d(side(seat) == 0 ? 1.3 : -1.3, .4, seatPosition(seat).z));
+        Vec3d threshold = toWorld(new Vec3d(side == 0 ? 1.3 : -1.3, .4, seatPosition(seat).z));
         threshold = new Vec3d(threshold.x, Math.max(threshold.y, target.y), threshold.z);
         Vec3d outside = new Vec3d(target.x, threshold.y, target.z);
         Box passage = dimensions.getBoxAt(threshold).stretch(outside.subtract(threshold));
@@ -350,7 +375,71 @@ public final class HelicopterCabin {
     }
 
     /**
-     * 服务端完成乘降；离机前复查移动后的落点，障碍出现则回到座位并明确提示。
+     * 功能：在机身两侧按由近到远的距离寻找可站立落点，供机门被卡住时直接下机。
+     *
+     * 引用 MC API：
+     *   - net.minecraft.world.World#raycast(RaycastContext)：按真实方块碰撞顶面确定脚位，
+     *     水面跳过地面探测，与正常下机共用同一高度语义；
+     *   - net.minecraft.world.World#isChunkLoaded(BlockPos)：未加载区块不能作为落点判定依据。
+     *
+     * 端侧/线程：仅逻辑服务端，主线程只读世界。
+     * 返回：机身局部坐标；两侧都找不到可用落点时返回 null，由调用方使用原版包围盒顶部落点。
+     * 排查：本侧被堵时会先尝试对侧；落点仍被拒查 exitClear 的站立、门槛、方块和实体检查。
+     */
+    private Vec3d findFallbackExit(Entity passenger, int seat) {
+        int preferred = side(seat);
+        // 先本侧、后对侧：对侧只用于兜底，正常下机仍然不会跨侧。
+        for (int attempt = 0; attempt < 2; attempt++) {
+            int exitSide = attempt == 0 ? preferred : 1 - preferred;
+            for (double distance : FALLBACK_DISTANCES) for (double offset : FALLBACK_OFFSETS) {
+                Vec3d local = new Vec3d(exitSide == 0 ? distance : -distance, .10, seatPosition(seat).z + offset);
+                Vec3d target = toWorld(local);
+                if (!heli.getWorld().isChunkLoaded(BlockPos.ofFloored(target))) continue;
+                if (!heli.isTouchingWater()) {
+                    var hit = heli.getWorld().raycast(new RaycastContext(
+                            new Vec3d(target.x, heli.getY() + FALLBACK_STEP_UP, target.z),
+                            new Vec3d(target.x, heli.getY() - FALLBACK_STEP_DOWN, target.z),
+                            RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, passenger));
+                    if (hit.getType() == HitResult.Type.MISS) continue;
+                    target = new Vec3d(target.x, hit.getPos().y + EXIT_FLOOR_GAP, target.z);
+                }
+                if (exitClear(passenger, seat, exitSide, target))
+                    return target.subtract(heli.getPos()).rotateY((float) Math.toRadians(heli.getYaw()));
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 功能：跳过开门、抬脚和走下动画，直接解除乘骑并放到兜底落点，保证乘员不会被困在机舱。
+     *
+     * 引用 MC API：
+     *   - net.minecraft.entity.Entity#stopRiding()：原版下载具入口，触发乘员移除和离机碰撞豁免；
+     *   - net.minecraft.entity.Entity#refreshPositionAfterTeleport：立即同步最终脚位，避免停留在
+     *     updatePassengerForDismount 返回的固定门侧位置；
+     *   - net.minecraft.entity.Entity#getBoundingBox：扩展搜索也失败时取包围盒顶面中心作最后落点。
+     *
+     * 端侧/线程：仅逻辑服务端。参数 seat 为当前座号；调用后该座立即空出。
+     * 副作用：解除乘骑、关闭对应舱门并同步舱位快照；不播放下机动画、不清除玩家速度。
+     * 排查：玩家仍留在舱内查 stopRiding 是否被其它逻辑重新挂载；落点悬空查扩展搜索与包围盒顶面。
+     */
+    private void forceDismount(Entity entity, int seat) {
+        Vec3d local = findFallbackExit(entity, seat);
+        if (local == null) {
+            // 与 net.minecraft.entity.Entity#updatePassengerForDismount 的默认落点一致：包围盒顶面中心。
+            // 额外抬起 EXIT_FLOOR_GAP，避免脚位正好贴在旋翼/蒙皮顶面产生一帧相交。
+            // 只作为扩展搜索也失败时的最后保险，保证玩家一定离开载具。
+            local = new Vec3d(0, heli.getBoundingBox().maxY - heli.getY() + EXIT_FLOOR_GAP, 0);
+        }
+        entity.stopRiding();
+        entity.refreshPositionAfterTeleport(toWorld(local));
+        setDoor(seat, false);
+        heli.syncCabin();
+    }
+
+    /**
+     * 服务端完成乘降；离机前复查移动后的落点。
+     * 地面动画期间地形变化导致落点消失时直接按原版下载具离开，不再退回座位；空中仍回到座位并提示。
      * net.minecraft.entity.Entity#stopRiding 最终解除乘骑，登机坐稳及地面/空中离机后都关闭对应舱门。
      */
     public void tick() {
@@ -368,6 +457,8 @@ public final class HelicopterCabin {
             if (motion == BOARD) { motions[seat] = SEATED; setDoor(seat, false); heli.syncCabin(); continue; }
             Vec3d local = findExit(entity, seat, motion == JUMP);
             if (local == null) {
+                // 地面下机动画已结束但出口被新地形占住：直接离开，避免玩家把座位当成永久牢笼。
+                if (motion != JUMP) { forceDismount(entity, seat); continue; }
                 motions[seat] = SEATED; setDoor(seat, false);
                 if (entity instanceof PlayerEntity player) tell(player, "door_exit_blocked");
                 heli.syncCabin(); continue;

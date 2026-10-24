@@ -57,10 +57,21 @@ import org.lwjgl.glfw.GLFW;
 import java.util.HashMap;
 import java.util.Map;
 
-/** 客户端仅采集输入并展示服务器状态；驾驶者身份由服务器再次验证。 */
+/**
+ * 职责：客户端入口，注册按键、实体/方块渲染器、HUD、客户端网络接收、音源和每 tick 输入采集。
+ * 引用 MC API：net.minecraft.client.MinecraftClient 提供本地玩家/世界；
+ *      KeyBindingHelper 注册可重绑按键；ClientPlayNetworking 只发送 C2S 意图；
+ *      EntityRendererRegistry/HudRenderCallback 注册表现层，不能写权威飞行状态。
+ * 生命周期：Fabric 客户端初始化调用一次 onInitializeClient，之后由 END_CLIENT_TICK 每 tick 采集输入。
+ * 端侧/线程：CLIENT 客户端主线程；公共端不得引用本类。
+ * 排查：按键无响应查注册/焦点/GUI；动画不更新查网络接收是否切回客户端线程；
+ *      本地与服务端状态不一致查是否在客户端直接改实体字段。
+ */
 @Environment(EnvType.CLIENT)
 public class No_24_heliClient implements ClientModInitializer {
+    /** 注册一个可重绑键盘键，翻译键统一为 key.no_24_heli.<name>。 */
     private static KeyBinding bind(String name,int key){return KeyBindingHelper.registerKeyBinding(new KeyBinding("key.no_24_heli."+name,InputUtil.Type.KEYSYM,key,"category.no_24_heli"));}
+    /** 常规飞行与乘降按键；离散动作按位打包后随 ControlPayload 发送，默认值迁移只做一次。 */
     private static final KeyBinding START=bind("engine",GLFW.GLFW_KEY_R), ALT=bind("altitude",GLFW.GLFW_KEY_H), TRIM=bind("trim",GLFW.GLFW_KEY_J), CRUISE=bind("cruise",GLFW.GLFW_KEY_I), GEAR=bind("gear",GLFW.GLFW_KEY_G), ROPE=bind("rope",GLFW.GLFW_KEY_B), EXIT=bind("rappel",GLFW.GLFW_KEY_Y), MENU=bind("service",GLFW.GLFW_KEY_O), SEARCHLIGHT=bind("searchlight",GLFW.GLFW_KEY_N), MAP=bind("map",GLFW.GLFW_KEY_M), AUTO=bind("autopilot",GLFW.GLFW_KEY_U), AUTO_FLIGHT=bind("auto_flight",GLFW.GLFW_KEY_K), LEFT=bind("pedal_left",GLFW.GLFW_KEY_Z), RIGHT=bind("pedal_right",GLFW.GLFW_KEY_X);
     /** 可重绑的灯具云台方向键，只有灯开启且没有界面时发送；不写入飞行四轴。 */
     private static final KeyBinding LIGHT_LEFT=bind("light_left",GLFW.GLFW_KEY_LEFT),LIGHT_RIGHT=bind("light_right",GLFW.GLFW_KEY_RIGHT),
@@ -72,6 +83,7 @@ public class No_24_heliClient implements ClientModInitializer {
     public static boolean followMouseMatches(int button){return FOLLOW.matchesMouse(button);}
     public static boolean followKeyMatches(int key,int scan){return FOLLOW.matchesKey(key,scan);}
     public static boolean mapKeyMatches(int key,int scan){return MAP.matchesKey(key,scan);}
+    /** Tab 电台圆盘的按下边沿状态；长按不能在松手后反复重开。 */
     private boolean tabHeld;
     /** 绳上 E 只发送按下边沿，长按不能在到顶时自动入舱。 */
     private boolean ropeBoardHeld;
@@ -110,7 +122,9 @@ public class No_24_heliClient implements ClientModInitializer {
             Files.writeString(marker, "trim-default=J");
         } catch (java.io.IOException e) { No_24_heli.LOGGER.warn("无法保存按键迁移标记", e); }
     }
+    /** 附近直升机的连续旋翼音源，按实体 ID 复用；实体卸载或声音结束后清理。 */
     private final Map<Integer,RotorSound> sounds=new HashMap<>();
+    /** 读取按键按下边沿并转成动作位；循环消耗同 tick 的重复按下，避免漏掉快速点按。 */
     private static int pressed(KeyBinding key,int bit){int result=0;while(key.wasPressed())result=bit;return result;}
     /** 将入口置于水平中央的空行，避开原版标题和已有按钮。 */
     private static int settingsButtonY(net.minecraft.client.gui.screen.Screen screen,int width,int height){
@@ -123,7 +137,15 @@ public class No_24_heliClient implements ClientModInitializer {
         }
         return 32;
     }
+    /**
+     * 功能：客户端初始化入口，注册渲染器/方块实体渲染/HUD/界面/网络接收和每 tick 输入循环。
+     * 端侧/线程：CLIENT 初始化线程；网络回调必须再切回客户端主线程。
+     * 副作用：只注册表现层和接收器，不创建世界实体或修改服务端状态。
+     * 排查：黑屏/模型缺失查渲染器注册与 @Environment；HUD 不显示查 HudRenderCallback；
+     *      按钮重复查 ScreenEvents 是否移除旧按钮。
+     */
     @Override public void onInitializeClient(){
+        // 渲染与输入模块各自维护缓存，入口只做一次性注册；资源重载由各模块自行处理。
         org.DJB.no_24_heli.client.render.PilotEquipmentClient.register();
         org.DJB.no_24_heli.client.render.HelicopterMesh.register();
         org.DJB.no_24_heli.client.render.SearchlightRenderer.register();
@@ -136,6 +158,7 @@ public class No_24_heliClient implements ClientModInitializer {
         EntityRendererRegistry.register(No_24_heli.ROPE,RopeRenderer::new);
         HandledScreens.register(No_24_heli.SCREEN,HeliScreen::new);
         HudRenderCallback.EVENT.register(HeliHud::draw);
+        // S2C 接收器统一回到客户端主线程；网络线程直接读实体缓存会与其他 tick 竞争。
         ClientPlayNetworking.registerGlobalReceiver(RadarContactsPayload.ID,(packet,context)->context.client().execute(()->{
             HeliRadar.targets();HeliRadar.receive(packet);
         }));
@@ -161,6 +184,7 @@ public class No_24_heliClient implements ClientModInitializer {
                         button -> client.setScreen(new HeliSettingsScreen(screen))).dimensions(width/2-100, settingsButtonY(screen,width,height), 200, 20).build());
             }
         });
+        // 客户端每 tick：先迁移旧按键和推进相机/地图/音频，再按乘骑状态分派输入；最后只发意图。
         ClientTickEvents.END_CLIENT_TICK.register(client->{
             migrateTrimKey(client);migrateViewKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);FlightVoiceManager.tick(client);
             while(VIEW.wasPressed()){
