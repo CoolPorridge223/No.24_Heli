@@ -61,6 +61,8 @@ public final class NavigationPilot {
     private NavigationTerrainFollower terrainFollower;
     private NavigationChunkLoader chunkLoader;
     private int terrainGoalNode,planningGoalNode,nextGoalNode;
+    /** 本次续段从旧路径的重叠点开始；结果接收前不得删除旧尾部，失败仍可沿旧路线制动。 */
+    private int planningJoinIndex;
     /** 直达走廊确有障碍后才扩大绕行采集范围；成功或取消后重新启用快速直达探测。 */
     private boolean wideTerrain;
     /** 动态障碍持续四秒触发重规划；地形失败间隔五秒，安全失败最多重试两次，区块等待不计失败。 */
@@ -85,7 +87,7 @@ public final class NavigationPilot {
     /** 重复失败不每次刷新动作栏；新目标清除该诊断状态。 */
     private NavigationRoute.Status terrainFailure;
     /** 生命周期诊断状态；状态切换绝不清零实际速度，不进入存档和网络协议。 */
-    public enum Phase { IDLE, PLANNING, READY, ACCELERATING, CRUISING, TURNING,
+    public enum Phase { IDLE, PLANNING, READY, CLIMBING, DESCENDING, ACCELERATING, CRUISING, TURNING,
         DECELERATING, ARRIVING, COMPLETED, REPLANNING, FAILED, CANCELLED }
     /** 仅服务端维护的阶段，初始待机，取消后释放轨迹但保留诊断状态。 */
     private Phase phase = Phase.IDLE;
@@ -283,13 +285,23 @@ public final class NavigationPilot {
                 if(result.status()==NavigationRoute.Status.SUCCESS&&result.path().size()>1
                         &&(terrainRoute!=null||result.volume().clear(terrainPosition(h),result.path().getFirst()))){
                     if(terrainRoute==null)useTerrain(result,planningGoalNode);
-                    else {terrainNext=result;nextGoalNode=planningGoalNode;}
+                    else if(!terrainFollower.canReplaceTail(planningJoinIndex)) {
+                        // 采集过慢时飞机可能已靠近接点；不把已飞过或已显示的轨迹倒回去。
+                        terrainSnapshot=null;wideTerrain=false;retainChunks();return true;
+                    }else {
+                        terrainNext=result;nextGoalNode=planningGoalNode;
+                        var prefix=terrainRoute.path().subList(0,planningJoinIndex+1);
+                        terrainRoute=new NavigationTerrainRoute.Result(terrainRoute.status(),prefix,terrainRoute.volume(),
+                                terrainRoute.expanded(),terrainRoute.costTicks());
+                        terrainFollower.replaceTail(terrainRoute);
+                    }
                     terrainFailure=null;terrainSnapshot=null;wideTerrain=false;terrainSafetyRetries=0;
                     terrainRetryPending=false;terrainRetryAt=0;retainChunks();phase=Phase.READY;
                     No_24_heli.LOGGER.info("三维地形规划：飞机={}，节点={}，航点={}，风险加权tick={}",
                             h.getUuid(),result.expanded(),result.path().size(),result.costTicks());
                     if(terrainNext==null)notify(h,"route_success");
-                }else if(terrainSnapshot.directOnly&&result.status()==NavigationRoute.Status.GRID_RESOLUTION){
+                }else if(terrainSnapshot.directOnly&&(result.status()==NavigationRoute.Status.GRID_RESOLUTION
+                        ||result.status()==NavigationRoute.Status.TRAJECTORY_UNSAFE)){
                     wideTerrain=true;terrainSnapshot=null;retainChunks();
                 }else {terrainFailed(h,result.status()==NavigationRoute.Status.SUCCESS
                         ?NavigationRoute.Status.TRAJECTORY_UNSAFE:result.status(),now);
@@ -314,18 +326,22 @@ public final class NavigationPilot {
         if(pending!=null||terrainPending!=null||terrainNext!=null||now<terrainRetryAt
                 ||terrainRoute!=null&&terrainGoalNode==route.size()-1){chunkLoader.step();return terrainRoute!=null;}
         if(terrainSnapshot==null){
-            var start=terrainRoute==null?terrainPosition(h):terrainRoute.path().getLast();
+            planningJoinIndex=terrainRoute==null?0:terrainFollower.overlapIndex();
+            var start=terrainRoute==null?terrainPosition(h):terrainRoute.path().get(planningJoinIndex);
+            var incoming=terrainRoute==null?null:terrainRoute.path().get(planningJoinIndex-1);
             int first=Math.min(terrainRoute==null?node:terrainGoalNode+1,route.size()-1);
             planningGoalNode=NavigationTerrainRoute.goalNode(start.horizontal(),route,first,TERRAIN_LOOK);
             // 已知无限高禁区挡住直线时直接采集绕行空间，省去必然失败的窄走廊扫描。
             wideTerrain|=!NavigationRoute.clear(start.horizontal(),route.get(planningGoalNode),circles,settings);
             terrainSnapshot=new NavigationTerrainSnapshot(world,start,route.get(planningGoalNode),
-                    circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0,!wideTerrain);
+                    circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0,!wideTerrain,
+                    planningGoalNode==route.size()-1,incoming);
             // 超出体素预算时缩短一次采集范围，区块加载距离不再限制整条导航任务。
             while(terrainSnapshot.tooLarge()&&planningGoalNode>first){
                 planningGoalNode--;
                 terrainSnapshot=new NavigationTerrainSnapshot(world,start,route.get(planningGoalNode),
-                        circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0,!wideTerrain);
+                        circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0,!wideTerrain,
+                        planningGoalNode==route.size()-1,incoming);
             }
             if(terrainSnapshot.tooLarge()){
                 terrainSnapshot=null;retainChunks();terrainFailed(h,NavigationRoute.Status.CELL_LIMIT,now);return terrainRoute!=null;
@@ -478,6 +494,8 @@ public final class NavigationPilot {
         if(terrainRoute==null||waitingForChunks||terrainRetryPending)phase=Phase.REPLANNING;
         else if(terrainRetryAt==Long.MAX_VALUE)phase=Phase.FAILED;
         else if(terrainGoalNode==route.size()-1&&distance<8)phase=Phase.ARRIVING;
+        else if(desired-h.getY()>.6)phase=Phase.CLIMBING;
+        else if(desired-h.getY()<-.6)phase=Phase.DESCENDING;
         else if(limit<speed-.03)phase=Phase.DECELERATING;
         else if(controller.commandedSpeed()>speed+.02)phase=Phase.ACCELERATING;
         else if(Math.abs(sample.curvature())>1e-4)phase=Phase.TURNING;

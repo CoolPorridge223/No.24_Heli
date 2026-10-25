@@ -31,12 +31,19 @@ final class NavigationTerrainSnapshot {
     final int nx,ny,nz;
     /** 原始占用数组，一字节一格；完成后不再写，后台构建配置空间。 */
     private final byte[] occupied;
+    /** 已加载方柱的最高地表，未知列为 NaN；供后台计算平均净高，不携带世界引用。 */
+    private final double[] surface;
     /** 纯坐标请求数据，不引用实体、世界、区块。 */
     private final NavigationTerrainRoute.Point start;
     private final NavigationRoute.Point goal;
     private final List<NavigationRoute.Circle> circles;
     private final NavigationRoute.Settings settings;
     private final double cruise;
+    /** 只有全局最终航段允许下降；incoming 是重叠接点之前的切线参考点。 */
+    private final boolean finalGoal;
+    private final NavigationTerrainRoute.Point incoming;
+    /** 最终目标所在方块列的精确高度图值，在全部采集完成后由主线程读取。 */
+    private double goalSurface;
     /** 窄走廊只用于证明直达安全，不在尚未加载的侧方空间搜索绕行。 */
     final boolean directOnly;
     /** 列采集游标及当前列已加载/最高地形缓存；从低到高采集。 */
@@ -52,9 +59,11 @@ final class NavigationTerrainSnapshot {
      * 排查：CELL_LIMIT 需缩短航程或调整预算，不偷偷截掉障碍。
      */
     NavigationTerrainSnapshot(ServerWorld world,NavigationTerrainRoute.Point start,NavigationRoute.Point goal,
-                              List<NavigationRoute.Circle> circles,NavigationRoute.Settings settings,double cruise,boolean directOnly) {
+                              List<NavigationRoute.Circle> circles,NavigationRoute.Settings settings,double cruise,boolean directOnly,
+                              boolean finalGoal,NavigationTerrainRoute.Point incoming) {
         this.start=start;this.goal=goal;this.circles=List.copyOf(circles);this.settings=settings;this.cruise=cruise;
         this.directOnly=directOnly;
+        this.finalGoal=finalGoal;this.incoming=incoming;
         int cell=NavigationTerrainRoute.CELL;
         int margin=directOnly?DIRECT_MARGIN:SIDE_MARGIN;
         x=start.x()+Math.floor(Math.min(0,goal.x()-start.x())/cell)*cell-margin;
@@ -66,6 +75,8 @@ final class NavigationTerrainSnapshot {
         ny=(int)Math.floor((world.getTopY()-cell*.5-y)/cell)+1;
         long count=(long)nx*ny*nz;
         occupied=count<=0||count>settings.maxCells()||count>Integer.MAX_VALUE?null:new byte[(int)count];
+        surface=occupied==null?null:new double[nx*nz];
+        if(surface!=null)java.util.Arrays.fill(surface,Double.NaN);
         emptySections=new boolean[world.countVerticalSections()];
     }
     /** 功能：报告预算失败；无 MC API、无副作用，失败时禁止提交后台。 */
@@ -98,6 +109,7 @@ final class NavigationTerrainSnapshot {
                 level=0;column++;continue;
             }
             if(!loaded)break;
+            surface[column]=top;
             // 占用数组初始为空，已加载列在最高碰撞形状上方可整段跳过，不逐格查询天空。
             if(loaded&&cy-cell*.5>top+2) {level=0;column++;continue;}
             Box box=new Box(cx-cell*.5,cy-cell*.5,cz-cell*.5,cx+cell*.5,cy+cell*.5,cz+cell*.5);
@@ -114,6 +126,7 @@ final class NavigationTerrainSnapshot {
             if(++level>=ny) {level=0;column++;}
         }
         spentNanos+=System.nanoTime()-began;
+        if(complete())goalSurface=world.getTopY(Heightmap.Type.MOTION_BLOCKING,MathHelper.floor(goal.x()),MathHelper.floor(goal.z()));
     }
     /**
      * 功能：检查含邻块碰撞形状的一圈区块并读取当前四格方柱内最高高度。
@@ -154,8 +167,8 @@ final class NavigationTerrainSnapshot {
     }
     /** 功能：后台只读完成数组并建立三维路径；无 MC API，调用后主线程不得再推进本采集器。 */
     NavigationTerrainRoute.Result plan() {
-        var volume=new NavigationTerrainRoute.Volume(x,y,z,nx,ny,nz,occupied,circles,settings,cruise);
-        if(directOnly)return NavigationTerrainRoute.direct(volume,start,goal);
-        return NavigationTerrainRoute.plan(volume,start,goal);
+        var volume=new NavigationTerrainRoute.Volume(x,y,z,nx,ny,nz,occupied,circles,settings,cruise,surface);
+        var result=NavigationTerrainRoute.profile(volume,start,goal,finalGoal,goalSurface,directOnly);
+        return NavigationTerrainRoute.alignEntry(result,incoming);
     }
 }

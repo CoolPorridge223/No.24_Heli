@@ -12,6 +12,8 @@ final class NavigationTerrainFollower {
     private static final int WINDOW=64;
     /** 高度转折点进入半格邻域后才允许前视越过，避免提前下降或爬升抵消当前升降。 */
     private static final double ALTITUDE_TURN_DISTANCE=.5;
+    /** 提前保留九十六格不变，最多重算旧尾部一百二十八格；接收时须仍在八十格显示余量之外。 */
+    private static final double OVERLAP_AHEAD=96,OVERLAP_TAIL=128,REPLACE_AHEAD=80;
     /** 本机当前路线、弧长、速度包络和水平曲率；仅所属服务端线程修改进度。 */
     private NavigationTerrainRoute.Result route;
     private double[] lengths,speeds,curves;
@@ -50,6 +52,27 @@ final class NavigationTerrainFollower {
         }
         for(int i=count-2;i>=0;i--)speeds[i]=Math.min(speeds[i],Math.sqrt(speeds[i+1]*speeds[i+1]
                 +2*NavigationController.BRAKE_ACCELERATION*NavigationRoute.distance(points.get(i).horizontal(),points.get(i+1).horizontal())));
+    }
+
+    /** 功能：仅替换尚未飞到的航段尾部，重建限速但保留单调弧长；无 MC API，不重置真实飞控。 */
+    void replaceTail(NavigationTerrainRoute.Result next) {
+        double previous=progress;
+        bind(next,cruise);
+        progress=Math.min(previous,lengths[lengths.length-1]);
+        while(segment+2<lengths.length&&lengths[segment+1]<=progress)segment++;
+    }
+
+    /** 功能：选择旧尾点前最多一百二十八格的重叠起点，至少保留前方九十六格不变；无 MC API。 */
+    int overlapIndex() {
+        double start=Math.max(progress+OVERLAP_AHEAD,lengths[lengths.length-1]-OVERLAP_TAIL);
+        int at=1;
+        while(at+1<lengths.length&&lengths[at]<start)at++;
+        return at;
+    }
+
+    /** 功能：异步结果只允许截去前方尚未显示的旧尾部，过期接点丢弃重算；无 MC API。 */
+    boolean canReplaceTail(int at) {
+        return at==lengths.length-1||lengths[at]>progress+REPLACE_AHEAD;
     }
 
     /**

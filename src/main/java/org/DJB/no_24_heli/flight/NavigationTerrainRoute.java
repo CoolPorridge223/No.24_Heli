@@ -33,6 +33,12 @@ final class NavigationTerrainRoute {
     private static final double HEURISTIC_WEIGHT = 1.15;
     /** 转角最多切四十八格并保留相邻直线六成，轨迹按两格以内加密供连续前视。 */
     private static final double TURN_CUT = 48, SPACING = 2;
+    /** 巡航参考为局部平均地表上方五十六格；终点优先悬停三十二格，候选严格不超过四十八格。 */
+    static final double CRUISE_CLEARANCE=56, ARRIVAL_CLEARANCE=32;
+    /** 终点高度在默认值上下各十六格内按体素步长寻找完整净空，不突破五十格降落范围。 */
+    private static final int ARRIVAL_RANGE=16;
+    /** 地表均值使用三十二格半径，按十六格步长沿航段取最高均值，避免巡航追随每个小土坡起伏。 */
+    private static final int SURFACE_RADIUS=32, SURFACE_STEP=16;
     /** 三维坐标以实体原点为准，单位格；无 MC API、无可变字段。 */
     record Point(double x, double y, double z) {
         /** 功能：投影为原禁区规划坐标；无 MC API、无副作用。 */
@@ -63,6 +69,8 @@ final class NavigationTerrainRoute {
         private final List<NavigationRoute.Circle> circles;
         private final NavigationRoute.Settings settings;
         private final double cruise;
+        /** 已加载方柱的最高地表；未知列为 NaN，不能参与平均值或终点高度选择。 */
+        private final double[] surface;
 
         /**
          * 功能：以三维前缀和膨胀占用格，保证整格内任意位置和任意机头方向均有整机净空。
@@ -71,9 +79,10 @@ final class NavigationTerrainRoute {
          * 排查：洞口宽度足够却拒绝时检查四格离散造成的额外保守余量，不缩小机体包络。
          */
         Volume(double x, double y, double z, int nx, int ny, int nz, byte[] occupied,
-               List<NavigationRoute.Circle> circles, NavigationRoute.Settings settings, double cruise) {
+               List<NavigationRoute.Circle> circles, NavigationRoute.Settings settings, double cruise, double[] surface) {
             this.x=x; this.y=y; this.z=z; this.nx=nx; this.ny=ny; this.nz=nz;
             this.circles=List.copyOf(circles); this.settings=settings; this.cruise=cruise;
+            this.surface=surface;
             free=new boolean[occupied.length]; covered=new boolean[occupied.length];
             proximity=new byte[occupied.length];
             int sx=nx+1, sz=nz+1, layer=sx*sz;
@@ -119,6 +128,28 @@ final class NavigationTerrainRoute {
         int cell(Point p) {
             int ix=(int)Math.floor((p.x-x)/CELL+.5), iy=(int)Math.floor((p.y-y)/CELL+.5), iz=(int)Math.floor((p.z-z)/CELL+.5);
             return ix<0||iy<0||iz<0||ix>=nx||iy>=ny||iz>=nz?-1:index(ix,iy,iz);
+        }
+        /** 功能：查询局部已知最高地表的平均值；无 MC API，未知列不被当作低地。 */
+        double meanSurface(NavigationRoute.Point p) {
+            int cx=(int)Math.round((p.x()-x)/CELL),cz=(int)Math.round((p.z()-z)/CELL),radius=SURFACE_RADIUS/CELL;
+            double sum=0;int count=0;
+            for(int iz=Math.max(0,cz-radius);iz<=Math.min(nz-1,cz+radius);iz++)
+                for(int ix=Math.max(0,cx-radius);ix<=Math.min(nx-1,cx+radius);ix++) {
+                    double height=surface[iz*nx+ix];
+                    if(Double.isFinite(height)){sum+=height;count++;}
+                }
+            return count==0?Double.NaN:sum/count;
+        }
+        /** 功能：按沿途局部均值确定巡航参考并保留世界顶界整格净空；无 MC API。 */
+        double cruiseAltitude(Point start,NavigationRoute.Point goal) {
+            int steps=Math.max(1,(int)Math.ceil(NavigationRoute.distance(start.horizontal(),goal)/SURFACE_STEP));
+            double altitude=start.y;
+            for(int i=0;i<=steps;i++) {
+                double t=(double)i/steps;
+                double mean=meanSurface(new NavigationRoute.Point(start.x+(goal.x()-start.x)*t,start.z+(goal.z()-start.z)*t));
+                if(Double.isFinite(mean))altitude=Math.max(altitude,mean+CRUISE_CLEARANCE);
+            }
+            return Math.min(altitude,y+(ny-1-Math.ceil(ENVELOPE/CELL))*CELL);
         }
         /** 功能：读取安全配置格；越界为障碍，无 MC API。 */
         boolean free(int at) { return at>=0&&at<free.length&&free[at]; }
@@ -197,6 +228,9 @@ final class NavigationTerrainRoute {
                 if(!wasCovered&&roof)entries++;
                 wasCovered=roof;last=next;
                 proximitySum+=Byte.toUnsignedInt(proximity[next])/100.0;
+                // 巡航净高是软偏好；必要的起降、洞口脱离和世界顶界仍由硬净空决定是否可飞。
+                double ground=surface[(next/nx%nz)*nx+next%nx];
+                if(Double.isFinite(ground))proximitySum+=2*Math.clamp((ground+CRUISE_CLEARANCE-y-next/(nx*nz)*CELL)/CRUISE_CLEARANCE,0,1);
             }
             double speed=roofSteps>0?Math.min(cruise,COVERED_SPEED):cruise;
             double vertical=Math.abs(b.y-a.y)/(b.y>=a.y?CLIMB_SPEED:DESCENT_SPEED);
@@ -239,30 +273,118 @@ final class NavigationTerrainRoute {
         }
         return selected;
     }
-    /** 功能：只在整机直线走廊已验证且无顶棚时交付快速路线；失败要求扩大采集范围，不猜测侧方地形。 */
-    static Result direct(Volume v,Point start,NavigationRoute.Point goal) {
+    /**
+     * 功能：以共享节点预算规划爬升、巡航、最终下降，阶段接点统一圆角化；无 MC API，后台调用。
+     * 终点最高地表由主线程高度图提供；优先上方三十二格，无净空时在十六至四十八格内选择。
+     * 中途航段保持巡航高度；安全失败返回完整失败，绝不交付省略爬升或下降的残缺路线。
+     */
+    static Result profile(Volume v,Point start,NavigationRoute.Point goal,boolean finalGoal,double ground,boolean directOnly) {
         if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,0);
-        Point end=new Point(goal.x(),start.y,goal.z());
+        double altitude=v.cruiseAltitude(start,goal);
+        Point end=new Point(goal.x(),altitude,goal.z());
+        if(finalGoal) {
+            end=null;
+            for(int offset=0;offset<=ARRIVAL_RANGE&&end==null;offset+=CELL) {
+                for(int sign:new int[]{1,-1}) {
+                    Point candidate=new Point(goal.x(),ground+ARRIVAL_CLEARANCE+sign*offset,goal.z());
+                    if(v.clear(candidate,candidate)&&!v.covered(candidate)){end=candidate;break;}
+                }
+            }
+            if(end==null)return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
+            altitude=Math.max(altitude,end.y);
+        }
+        List<Point> stages=List.of(new Point(start.x,altitude,start.z),new Point(goal.x(),altitude,goal.z()),end);
+        List<Point> path=new ArrayList<>();path.add(start);int expanded=0;
+        int budget=Math.min(MAX_NODES,v.settings.maxNodes());
+        for(Point target:stages) {
+            Point from=path.getLast();
+            if(from.distance(target)<1e-6)continue;
+            Result part=directOnly?direct(v,from,target):plan(v,from,target,budget-expanded);
+            expanded+=part.expanded();
+            if(part.status()!=NavigationRoute.Status.SUCCESS)return failure(part.status(),v,expanded);
+            path.addAll(part.path().subList(1,part.path().size()));
+        }
+        return success(v,path,expanded);
+    }
+
+    /**
+     * 功能：从重叠接点按旧航段切线进入续段，跳过旧末端回接折线；无 MC API，后台调用。
+     * 三次曲线两端分别沿入段和出段切线，每个两格以内的小段检查整机净空。
+     * 只替换续段前一百二十八格；找不到安全切线连接就拒绝该续段，不能用尖角强行接上。
+     */
+    static Result alignEntry(Result result,Point incoming) {
+        if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,result.volume(),result.expanded());
+        if(incoming==null||result.status()!=NavigationRoute.Status.SUCCESS||result.path().size()<2)return result;
+        List<Point> path=result.path();Point start=path.getFirst();
+        double length=incoming.distance(start);
+        if(length<1e-6)return result;
+        Point first=path.get(1);
+        double agreement=((start.x-incoming.x)*(first.x-start.x)+(start.y-incoming.y)*(first.y-start.y)
+                +(start.z-incoming.z)*(first.z-start.z))/(length*start.distance(first));
+        if(agreement>1-1e-6)return result;
+        int last=1;double along=0;
+        while(last+1<path.size()&&along+path.get(last-1).distance(path.get(last))<=SHORTCUT_DISTANCE) {
+            along+=path.get(last-1).distance(path.get(last));last++;
+        }
+        // 从较远的接回点开始，给绕山后的大转向足够半径；窄通道逐步缩短控制柄。
+        for(int at=Math.max(1,last-1);at>=1;at-=Math.max(1,(last-1)/16)) {
+            if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,result.volume(),result.expanded());
+            Point end=path.get(at),after=path.get(Math.min(at+1,path.size()-1));
+            if(end.distance(after)<1e-6) {
+                Point before=path.get(at-1);
+                after=new Point(end.x+end.x-before.x,end.y+end.y-before.y,end.z+end.z-before.z);
+            }
+            double handle=Math.min(TURN_CUT,start.distance(end)/3);
+            // 极短终点也保留至少四分之一格的控制柄，避免仅有两个采样点时无法连接。
+            for(int attempt=0;attempt<5&&handle>=.25;attempt++,handle*=.5) {
+                Point c1=new Point(start.x+(start.x-incoming.x)*handle/length,
+                        start.y+(start.y-incoming.y)*handle/length,start.z+(start.z-incoming.z)*handle/length);
+                double outgoing=end.distance(after);
+                Point c2=new Point(end.x-(after.x-end.x)*handle/outgoing,
+                        end.y-(after.y-end.y)*handle/outgoing,end.z-(after.z-end.z)*handle/outgoing);
+                int steps=Math.max(8,(int)Math.ceil((start.distance(c1)+c1.distance(c2)+c2.distance(end))/SPACING));
+                List<Point> output=new ArrayList<>();output.add(start);boolean safe=true;
+                for(int n=1;n<=steps;n++) {
+                    double t=(double)n/steps;
+                    Point a=interpolate(start,c1,t),b=interpolate(c1,c2,t),c=interpolate(c2,end,t);
+                    Point point=interpolate(interpolate(a,b,t),interpolate(b,c,t),t);
+                    if(!result.volume().clear(output.getLast(),point)){safe=false;break;}
+                    append(output,point);
+                }
+                if(!safe)continue;
+                output.addAll(path.subList(at+1,path.size()));
+                double cost=0;
+                for(int i=1;i<output.size();i++)cost+=result.volume().cost(output.get(i-1),output.get(i));
+                if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,result.volume(),result.expanded());
+                return new Result(NavigationRoute.Status.SUCCESS,output,result.volume(),result.expanded(),cost);
+            }
+        }
+        return failure(NavigationRoute.Status.TRAJECTORY_UNSAFE,result.volume(),result.expanded());
+    }
+    /** 功能：只在整机直线走廊已验证且无顶棚时交付快速路线；失败要求扩大采集范围，不猜测侧方地形。 */
+    static Result direct(Volume v,Point start,Point goal) {
+        if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,0);
+        Point end=goal;
         if(!v.covered(end)&&v.clear(start,end)&&v.speed(start,end)==v.cruise)return success(v,List.of(start,end),0);
         return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
     }
     /**
      * 功能：先尝试八邻同高度侧绕，再按共享预算执行二十六邻空间搜索，出口必须无顶棚。
-     * 无 MC API；后台调用；输入为独占快照和真实起终点，终点高度自由选择，不擅自自动降落。
+     * 无 MC API；后台调用；输入为独占快照和三维阶段端点，高度由飞行剖面约束。
      * 返回：完整三维航路或精度/预算失败；副作用仅局部数组。
      * 排查：局部矩形外可能仍有路，GRID_RESOLUTION 绝不等同真实封闭。
      */
-    static Result plan(Volume v,Point start,NavigationRoute.Point goal) {
+    static Result plan(Volume v,Point start,Point goal,int budget) {
         if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,0);
-        int begin=v.cell(start),goalCell=v.cell(new Point(goal.x(),start.y,goal.z()));
+        int begin=v.cell(start),goalCell=v.cell(goal);
         if(!v.free(begin)||goalCell<0||!v.airspaceClear(start,start)
-                ||!v.airspaceClear(new Point(goal.x(),start.y,goal.z()),new Point(goal.x(),start.y,goal.z())))
+                ||!v.airspaceClear(goal,goal))
             return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
         // 露天空域整段验证后直接交付，不为平直航线分配搜索堆或展开三维网格。
         Result direct=direct(v,start,goal);
         if(direct.status()!=NavigationRoute.Status.GRID_RESOLUTION)return direct;
-        int budget=Math.min(MAX_NODES,v.settings.maxNodes());
-        Result level=search(v,start,goal,true,Math.min(PLANAR_NODES,budget/4));
+        Result level=Math.abs(start.y-goal.y)<1e-6?search(v,start,goal,true,Math.min(PLANAR_NODES,budget/4))
+                :failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
         if(level.status()==NavigationRoute.Status.INTERRUPTED)return level;
         if(level.status()==NavigationRoute.Status.SUCCESS&&level.costTicks()<=heuristic(start,goal,v.cruise)*SIDE_DETOUR_RATIO)
             return level;
@@ -278,7 +400,7 @@ final class NavigationTerrainRoute {
      * 无 MC API；后台执行；所有高度都检查同一组无限高圆柱，重叠圆按并集阻挡。
      * 返回完整安全路线或明确失败；同高度阶段失败不能被当作三维不可达。
      */
-    private static Result search(Volume v,Point start,NavigationRoute.Point goal,boolean levelOnly,int limit) {
+    private static Result search(Volume v,Point start,Point goal,boolean levelOnly,int limit) {
         int begin=v.cell(start);
         NavigationTerrainRoute open=new NavigationTerrainRoute(v.free.length,v.nx*v.nz,begin);
         open.cost[begin]=0;open.parent[begin]=begin;open.offer(begin,HEURISTIC_WEIGHT*heuristic(start,goal,v.cruise));
@@ -288,8 +410,8 @@ final class NavigationTerrainRoute {
             if(expanded++>=limit)return failure(NavigationRoute.Status.NODE_LIMIT,v,expanded-1);
             int at=open.poll();Point p=at==begin?start:v.point(at);
             // 真实终点可能在合法的半格内而格心落入禁区，允许从相邻格完整验证后接入终点。
-            if(NavigationRoute.distance(p.horizontal(),goal)<=CELL*Math.sqrt(2)&&!v.covered[at]) {
-                Point end=new Point(goal.x(),p.y,goal.z());
+            if(p.distance(goal)<=CELL*Math.sqrt(3)&&!v.covered[at]) {
+                Point end=goal;
                 if(v.clear(p,end)&&!v.covered(end))return open.finish(v,at,start,end,expanded);
             }
             int ix=at%v.nx,iy=at/(v.nx*v.nz),iz=at/v.nx%v.nz;
@@ -349,6 +471,18 @@ final class NavigationTerrainRoute {
      * 返回：完整轨迹；取消不交付半条路线。排查：窄洞无法圆角时由跟随器降低转角速度。
      */
     private static Result success(Volume v,List<Point> raw,int expanded) {
+        // 阶段拼接前恢复直线长边，不能让两格采样把可用圆角切距限制到不足一格。
+        List<Point> compact=new ArrayList<>();
+        for(Point point:raw) {
+            if(!compact.isEmpty()&&compact.getLast().distance(point)<1e-6)continue;
+            while(compact.size()>1) {
+                Point a=compact.get(compact.size()-2),b=compact.getLast();
+                if(Math.abs(a.distance(b)+b.distance(point)-a.distance(point))>1e-6)break;
+                compact.removeLast();
+            }
+            compact.add(point);
+        }
+        raw=compact;
         List<Point> output=new ArrayList<>();output.add(raw.getFirst());
         for(int i=1;i+1<raw.size();i++) {
             if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,expanded);
@@ -392,9 +526,9 @@ final class NavigationTerrainRoute {
     private static double travel(Point a,Point b,double cruise) {
         return Math.max(Math.hypot(b.x-a.x,b.z-a.z)/cruise,Math.abs(b.y-a.y)/(b.y>=a.y?CLIMB_SPEED:DESCENT_SPEED));
     }
-    /** 功能：终点未指定高度，水平飞行时间是可采纳的一致启发式；无 MC API。 */
-    private static double heuristic(Point p,NavigationRoute.Point goal,double cruise) {
-        return Math.hypot(p.x-goal.x(),p.z-goal.z())/cruise;
+    /** 功能：三维阶段终点的同步飞行时间下界；无 MC API，不漏算爬升或下降距离。 */
+    private static double heuristic(Point p,Point goal,double cruise) {
+        return travel(p,goal,cruise);
     }
     /** 功能：内插三维点；无 MC API、无副作用，调用者限定 t 在 0..1。 */
     static Point interpolate(Point a,Point b,double t) { return new Point(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.z+(b.z-a.z)*t); }
