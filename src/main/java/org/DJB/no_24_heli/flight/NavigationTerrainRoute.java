@@ -33,7 +33,7 @@ final class NavigationTerrainRoute {
     private static final double HEURISTIC_WEIGHT = 1.15;
     /** 转角最多切四十八格并保留相邻直线六成，轨迹按两格以内加密供连续前视。 */
     private static final double TURN_CUT = 48, SPACING = 2;
-    /** 巡航参考为局部平均地表上方五十六格；终点优先悬停三十二格，候选严格不超过四十八格。 */
+    /** 确需避障爬升时参考局部平均地表上方五十六格；终点优先悬停三十二格，候选不超过四十八格。 */
     static final double CRUISE_CLEARANCE=56, ARRIVAL_CLEARANCE=32;
     /** 终点高度在默认值上下各十六格内按体素步长寻找完整净空，不突破五十格降落范围。 */
     private static final int ARRIVAL_RANGE=16;
@@ -140,8 +140,14 @@ final class NavigationTerrainRoute {
                 }
             return count==0?Double.NaN:sum/count;
         }
-        /** 功能：按沿途局部均值确定巡航参考并保留世界顶界整格净空；无 MC API。 */
+        /**
+         * 功能：直达安全时保持原高度，确有地形阻挡才一次选择覆盖本航段的爬升高度；无 MC API。
+         * 禁飞圆不可靠爬升越过，交由同高度绕行；均值参考不足以越过尖峰时逐格验证更高走廊。
+         * 返回高度仍受世界顶界限制；没有安全的原地爬升走廊时保留参考高度交给三维绕障搜索。
+         */
         double cruiseAltitude(Point start,NavigationRoute.Point goal) {
+            Point levelEnd=new Point(goal.x(),start.y,goal.z());
+            if(!airspaceClear(start,levelEnd)||clear(start,levelEnd)&&!covered(levelEnd))return start.y;
             int steps=Math.max(1,(int)Math.ceil(NavigationRoute.distance(start.horizontal(),goal)/SURFACE_STEP));
             double altitude=start.y;
             for(int i=0;i<=steps;i++) {
@@ -149,7 +155,14 @@ final class NavigationTerrainRoute {
                 double mean=meanSurface(new NavigationRoute.Point(start.x+(goal.x()-start.x)*t,start.z+(goal.z()-start.z)*t));
                 if(Double.isFinite(mean))altitude=Math.max(altitude,mean+CRUISE_CLEARANCE);
             }
-            return Math.min(altitude,y+(ny-1-Math.ceil(ENVELOPE/CELL))*CELL);
+            double ceiling=y+(ny-1-Math.ceil(ENVELOPE/CELL))*CELL;
+            altitude=Math.min(altitude,ceiling);
+            for(double candidate=altitude;candidate<=ceiling;candidate+=CELL) {
+                if(Thread.currentThread().isInterrupted())return altitude;
+                Point up=new Point(start.x,candidate,start.z),end=new Point(goal.x(),candidate,goal.z());
+                if(clear(start,up)&&clear(up,end)&&!covered(end))return candidate;
+            }
+            return altitude;
         }
         /** 功能：读取安全配置格；越界为障碍，无 MC API。 */
         boolean free(int at) { return at>=0&&at<free.length&&free[at]; }
@@ -274,7 +287,7 @@ final class NavigationTerrainRoute {
         return selected;
     }
     /**
-     * 功能：以共享节点预算规划爬升、巡航、最终下降，阶段接点统一圆角化；无 MC API，后台调用。
+     * 功能：以共享节点预算规划必要的爬升、定高巡航和最终下降，阶段接点统一圆角化；无 MC API，后台调用。
      * 终点最高地表由主线程高度图提供；优先上方三十二格，无净空时在十六至四十八格内选择。
      * 中途航段保持巡航高度；安全失败返回完整失败，绝不交付省略爬升或下降的残缺路线。
      */

@@ -63,6 +63,11 @@ void main() {
     // 背光字形只保留半毫米基础容差，不能漏过紧贴表面的指针而呈现悬浮文字。
     float tolerance = max(LightMode == 2 || LightMode == 3 ? 0.0005 : 0.08, fwidth(viewPosition.z) * 1.5 / DepthScale);
     if (viewPosition.z < savedZ - tolerance) discard;
+    // 导航为个人目镜覆盖层，颜色与透明度独立于光影材质和雾；场景深度仍遮挡机体及地形。
+    if (LightMode == 6) {
+        fragColor = materialTint;
+        return;
+    }
     float fogVisibility = 1.0 - smoothstep(FogStart, max(FogStart + 0.001, FogEnd), vertexDistance);
     if (LightMode == 2 || LightMode == 3) {
         vec4 glyph = texture(FontAtlas, materialUv);

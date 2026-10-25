@@ -54,7 +54,7 @@ import org.lwjgl.opengl.GL20C;
 import org.lwjgl.opengl.GL30C;
 
 /**
- * 职责：保存实体深度，在光影合成后补充地形与动态模型照明、灯芯和启动仪表的文字背光。
+ * 职责：保存实体深度，在光影合成后补充地形与动态模型照明、灯芯、仪表背光和个人导航线路。
  * 引用：net.minecraft.client.render.model.BakedQuad 保留地形材质；独立灯头透视深度决定逐片元遮挡。
  * 生命周期：分帧收集光锥内几何，灯头移动时更新阴影；世界合成后、手持物前复用显存绘制。
  * 端侧/线程：仅客户端渲染线程；不放置光源方块、不重建区块或写服务端方块光照。
@@ -294,7 +294,7 @@ public final class SearchlightRenderer {
         // 独立于机身视锥；这里只保存主视图，实际光斑须在光影完成世界合成后绘制。
         WorldRenderEvents.AFTER_ENTITIES.register(context->{
             HelicopterMesh.prepare();if(HelicopterMesh.isShadowPass())return;
-            boolean active=!GLOWS.isEmpty()||!LABELS.isEmpty();
+            boolean active=!GLOWS.isEmpty()||!LABELS.isEmpty()||NavigationPathRenderer.isVisible();
             for(var entity:context.world().getEntities())if(entity instanceof HelicopterEntity heli&&heli.flight.searchlight&&!heli.flight.wreck
                     &&context.camera().getPos().squaredDistanceTo(heli.getPos())<VIEW_DISTANCE_SQUARED){active=true;break;}
             if(!active)return;
@@ -419,13 +419,25 @@ public final class SearchlightRenderer {
                         backlitText,TextRenderer.TextLayerType.NORMAL,0,LightmapTextureManager.MAX_LIGHT_COORDINATE);
                 backlitText.flush();
             }
+            NavigationPathRenderer.composite();
         }finally{
             VertexBuffer.unbind();shader.unbind();RenderSystem.defaultBlendFunc();RenderSystem.disableBlend();
             RenderSystem.enableCull();RenderSystem.depthMask(true);RenderSystem.enableDepthTest();GLOWS.clear();LABELS.clear();
         }
     }
 
-    /** 功能：设置主视图快照；模式 0 地表、1 灯芯、2/3 字形、4 灯头深度、5 动态模型材质。 */
+    /**
+     * 功能：用共用场景深度和独立颜色模式绘制导航网格，显式保留 alpha；仅在本类合成阶段调用。
+     * net.minecraft.client.gl.VertexBuffer 已由调用方绑定，modelView 沿用几何生成时的观察矩阵。
+     * 标准透明混合替代照明的加法混合，深度仍由片元快照检查，不依赖光影最终帧缓冲的深度。
+     */
+    static void drawNavigation(VertexBuffer buffer,Matrix4f modelView){
+        uniforms(modelView,6);
+        RenderSystem.defaultBlendFunc();
+        shader.bind();buffer.draw();
+    }
+
+    /** 功能：设置主视图快照；模式 0 地表、1 灯芯、2/3 字形、4 灯头深度、5 动态模型、6 导航。 */
     private static void uniforms(Matrix4f modelView,int mode){
         var client=MinecraftClient.getInstance();
         shader.initializeUniforms(VertexFormat.DrawMode.QUADS,modelView,worldProjection,client.getWindow());
