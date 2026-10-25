@@ -103,6 +103,8 @@ public class No_24_heli implements ModInitializer {
         }));
         // 雷达/停机坪/空域快照均为 S2C；客户端只显示，真实归属和修改权限仍由服务端校验。
         PayloadTypeRegistry.playS2C().register(RadarContactsPayload.ID,RadarContactsPayload.CODEC);
+        PayloadTypeRegistry.playS2C().register(org.DJB.no_24_heli.network.NavigationPathPayload.ID,
+                org.DJB.no_24_heli.network.NavigationPathPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(HelipadMapPayload.ID,HelipadMapPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(AirspacePayload.ID,AirspacePayload.CODEC);
         PayloadTypeRegistry.playC2S().register(RadarPayload.ID,RadarPayload.CODEC);

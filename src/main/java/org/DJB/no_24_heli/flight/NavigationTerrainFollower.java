@@ -1,5 +1,7 @@
 package org.DJB.no_24_heli.flight;
 
+import java.util.List;
+
 /**
  * 文件：三维轨迹的单调投影、连续前视与转弯速度包络，归属 flight 飞控模块，端侧 COMMON。
  * 无 MC API；NavigationPilot 每服务端 tick 调用，航段衔接时保留原控制器的速度和杆量。
@@ -194,6 +196,8 @@ final class NavigationTerrainFollower {
             return tail.getLast();
         }
         int at=segment;
+        // 表现层会读取进度前的少量航点；飞行前视仍只访问进度之后，不改变单调跟随。
+        while(at>0&&lengths[at]>distance)at--;
         while(at+2<points.size()&&lengths[at+1]<distance)at++;
         return NavigationTerrainRoute.interpolate(points.get(at),points.get(at+1),
                 Math.clamp((distance-lengths[at])/(lengths[at+1]-lengths[at]),0,1));
@@ -213,6 +217,27 @@ final class NavigationTerrainFollower {
 
     /** 功能：返回本航段已推进的三维弧长，供无进展重规划检测；无 MC API，不计单纯偏航。 */
     double progress() { return progress; }
+
+    /**
+     * 功能：按当前单调进度截取前后有界三维预览，跨入已验证续段；无 MC API，仅服务端主线程。
+     * 参数为后留距离、前视距离、采样间隔及已交接航段累计弧长，单位格；不推进飞控进度。
+     * 采样始终对齐全航路的整数米位置，飞机前进只裁去身后旧点，不让箭头跟随预览起点滑动。
+     * 排查：终点或续段尚未规划时截断，不外推未验证的直线；后留量补偿客户端实体插值延迟。
+     */
+    List<NavigationTerrainRoute.Point> preview(double behind, double ahead, double spacing, double offset,
+                                             NavigationTerrainRoute.Result next) {
+        double start = Math.ceil((Math.max(0, progress - behind) + offset) / spacing) * spacing - offset;
+        double total = lengths[lengths.length - 1];
+        if (next != null) {
+            for (int i = 1; i < next.path().size() && total < progress + ahead; i++)
+                total += next.path().get(i - 1).distance(next.path().get(i));
+        }
+        double end = Math.min(progress + ahead, total);
+        List<NavigationTerrainRoute.Point> result = new java.util.ArrayList<>();
+        for (double distance = start; distance < end; distance += spacing) result.add(pointAt(distance, next));
+        result.add(pointAt(end, next));
+        return List.copyOf(result);
+    }
 
     /** 功能：计算水平三点曲率，符号与原导航控制器一致；纯垂直段不产生偏航前馈。 */
     private static double curvature(NavigationTerrainRoute.Point a,NavigationTerrainRoute.Point b,NavigationTerrainRoute.Point c) {

@@ -5,6 +5,7 @@ import org.DJB.no_24_heli.data.AirspaceState;
 import org.DJB.no_24_heli.data.HeliConfig;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
 import org.DJB.no_24_heli.entity.RopeSeatEntity;
+import org.DJB.no_24_heli.network.NavigationPathPayload;
 
 
 import net.minecraft.entity.player.PlayerEntity;
@@ -91,6 +92,37 @@ public final class NavigationPilot {
     /** 最近一次规划耗时与展开节点数，仅服务端诊断使用。 */
     private long planningNanos;
     private int expandedNodes;
+    /** 是否已发出非空预览；取消后保留到下次同步，用空包清除客户端旧线，不保存或全服广播。 */
+    private boolean previewSent;
+    /** 预览后留四格补偿实体插值，前留七十二格覆盖显示及收包延迟；每米固定采样，单位格。 */
+    private static final double PREVIEW_BEHIND = 4, PREVIEW_AHEAD = 72, PREVIEW_SPACING = 1;
+    /** 已交接航段的累计弧长，保证每米箭头跨航段仍用同一采样基准；重规划时清零，不影响飞控。 */
+    private double previewOffset;
+
+    /**
+     * 功能：只向当前直升机乘员同步实际三维航路，个人可见开关完全不经过网络。
+     * 引用 net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking 定向发送，
+     * net.minecraft.server.network.ServerPlayerEntity 限定实际在线乘员；实体每两服务端 tick 调用。
+     * 返回无；副作用仅发包及记录是否需要清除，规划中不制造通向终点的虚构路线。
+     */
+    public void syncPreview(HelicopterEntity helicopter) {
+        boolean active = helicopter.flight.autopilot && terrainFollower != null && !stalled;
+        if (!active && !previewSent) return;
+        List<Vec3d> points = active ? terrainFollower.preview(PREVIEW_BEHIND, PREVIEW_AHEAD,
+                PREVIEW_SPACING, previewOffset, terrainNext).stream()
+                .map(point -> new Vec3d(point.x(), point.y(), point.z())).toList() : List.of();
+        // 只有真正抵达全局终点的三维航段才提供终点高度；预览或中间航段末端不能冒充目的地。
+        var finalRoute = !active ? null : terrainNext != null && nextGoalNode == route.size() - 1
+                ? terrainNext : terrainGoalNode == route.size() - 1 ? terrainRoute : null;
+        var end = finalRoute == null ? null : finalRoute.path().getLast();
+        Vec3d destination = end == null ? null : new Vec3d(end.x(), end.y(), end.z());
+        var packet = new NavigationPathPayload(helicopter.getId(), points, destination);
+        for (var passenger : helicopter.getPassengerList())
+            if (passenger instanceof net.minecraft.server.network.ServerPlayerEntity player
+                    && net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.canSend(player, NavigationPathPayload.ID))
+                net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player, packet);
+        previewSent = active;
+    }
 
     /** 功能：读取当前阶段供诊断；服务端，无 MC API，无副作用。 */
     public Phase phase() { return phase; }
@@ -232,6 +264,7 @@ public final class NavigationPilot {
         if(chunkLoader!=null){chunkLoader.close();chunkLoader=null;}
         terrainSnapshot=null;terrainRoute=null;terrainNext=null;terrainFollower=null;wideTerrain=false;blockedAt=-1;
         terrainSafetyRetries=0;terrainRetryPending=false;terrainFailure=null;waitingForChunks=false;
+        previewOffset=0;
     }
 
     /**
@@ -311,6 +344,8 @@ public final class NavigationPilot {
 
     /** 功能：交接已完成航段并预计算连续速度包络，不重置真实速度或导航控制器。 */
     private void useTerrain(NavigationTerrainRoute.Result result,int goalNode){
+        if(terrainRoute!=null)for(int i=1;i<terrainRoute.path().size();i++)
+            previewOffset+=terrainRoute.path().get(i-1).distance(terrainRoute.path().get(i));
         terrainRoute=result;terrainGoalNode=goalNode;
         terrainFollower=new NavigationTerrainFollower();
         terrainFollower.bind(result,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0);

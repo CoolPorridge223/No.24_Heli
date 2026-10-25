@@ -1,6 +1,7 @@
 package org.DJB.no_24_heli.client.screen;
 
 import org.DJB.no_24_heli.data.HeliConfig;
+import org.DJB.no_24_heli.client.HeliClientConfig;
 import org.DJB.no_24_heli.network.DifficultyPayload;
 import org.DJB.no_24_heli.network.SettingsPayload;
 
@@ -12,10 +13,13 @@ import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.text.Text;
 
-/** 飞行模式为个人配置；爆炸破坏与着火由服务器确认管理员权限，主菜单编辑本机默认值。 */
+/** 飞行模式为个人配置；轨迹可见性仅保存在本机；爆炸破坏与着火由服务器确认管理员权限。 */
+@net.fabricmc.api.Environment(net.fabricmc.api.EnvType.CLIENT)
 public class HeliSettingsScreen extends Screen {
     private final Screen parent;
     private ButtonWidget destructionButton,difficultyButton;
+    /** 个人轨迹开关始终可用，不受管理员权限或服务端设置回执影响。 */
+    private ButtonWidget navigationPathButton;
     private int mode;
     private boolean difficultyEditable,difficultyPending;
     private boolean destruction, editable, pending;
@@ -23,11 +27,13 @@ public class HeliSettingsScreen extends Screen {
     public HeliSettingsScreen(Screen parent) { super(Text.translatable("screen.no_24_heli.settings")); this.parent = parent; }
     @Override protected void init() {
         destructionButton = addDrawableChild(ButtonWidget.builder(Text.empty(), button -> change())
-                .dimensions(width / 2 - 120, height / 2 - 38, 240, 20).build());
+                .dimensions(width / 2 - 120, height / 2 - 58, 240, 20).build());
         difficultyButton=addDrawableChild(ButtonWidget.builder(Text.empty(),button->changeDifficulty())
-                .dimensions(width/2-120,height/2-12,240,20).build());
+                .dimensions(width/2-120,height/2-32,240,20).build());
+        navigationPathButton = addDrawableChild(ButtonWidget.builder(Text.empty(), button -> changeNavigationPath())
+                .dimensions(width / 2 - 120, height / 2 - 6, 240, 20).build());
         addDrawableChild(ButtonWidget.builder(Text.translatable("gui.done"), button -> close())
-                .dimensions(width / 2 - 100, height / 2 + 82, 200, 20).build());
+                .dimensions(width / 2 - 100, height / 2 + 94, 200, 20).build());
         if (client.world != null) {
             editable = false; pending = true; status = Text.translatable("screen.no_24_heli.loading");
             ClientPlayNetworking.send(new SettingsPayload(false, false, false, false));
@@ -52,6 +58,17 @@ public class HeliSettingsScreen extends Screen {
             else { HeliConfig.INSTANCE.explosionBlockDamage = old; status = Text.translatable("screen.no_24_heli.save_failed"); }
             refresh();
         }
+    }
+    /** 功能：仅修改并保存本机轨迹偏好，失败恢复旧值；不发 C2S，不改变其他乘员或服务器配置。 */
+    private void changeNavigationPath() {
+        boolean old = HeliClientConfig.INSTANCE.navigationPathVisible;
+        HeliClientConfig.INSTANCE.navigationPathVisible = !old;
+        if (HeliClientConfig.save()) status = Text.translatable("screen.no_24_heli.client_saved");
+        else {
+            HeliClientConfig.INSTANCE.navigationPathVisible = old;
+            status = Text.translatable("screen.no_24_heli.save_failed");
+        }
+        refresh();
     }
     /** 难度和破坏开关独立发送，避免覆盖其他管理员刚修改的配置。 */
     private void changeDifficulty(){
@@ -82,14 +99,17 @@ public class HeliSettingsScreen extends Screen {
         destructionButton.active = editable && !pending;
         difficultyButton.setMessage(Text.translatable("screen.no_24_heli.mode",Text.translatable("mode.no_24_heli."+mode)));
         difficultyButton.active=difficultyEditable&&!difficultyPending;
+        navigationPathButton.setMessage(Text.translatable("screen.no_24_heli.navigation_path",
+                Text.translatable(HeliClientConfig.INSTANCE.navigationPathVisible ? "options.on" : "options.off")));
     }
     @Override public void close() { client.setScreen(parent); }
     @Override public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         // Screen.render 已绘制模糊背景，文字必须在其后绘制。
         super.render(context, mouseX, mouseY, delta);
-        context.drawCenteredTextWithShadow(textRenderer, title, width / 2, height / 2 - 68, 0xffffff);
+        context.drawCenteredTextWithShadow(textRenderer, title, width / 2, height / 2 - 86, 0xffffff);
         context.drawCenteredTextWithShadow(textRenderer, Text.translatable("screen.no_24_heli.explanation"), width / 2, height / 2 + 24, 0xb8cbd0);
         context.drawCenteredTextWithShadow(textRenderer,Text.translatable("screen.no_24_heli.difficulty_hint"),width/2,height/2+40,0xb8cbd0);
-        context.drawCenteredTextWithShadow(textRenderer, status, width / 2, height / 2 + 58, 0xffcc66);
+        context.drawCenteredTextWithShadow(textRenderer,Text.translatable("screen.no_24_heli.navigation_path_hint"),width/2,height/2+56,0xb8cbd0);
+        context.drawCenteredTextWithShadow(textRenderer, status, width / 2, height / 2 + 74, 0xffcc66);
     }
 }

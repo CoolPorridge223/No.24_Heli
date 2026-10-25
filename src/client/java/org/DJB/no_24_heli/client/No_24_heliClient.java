@@ -145,6 +145,8 @@ public class No_24_heliClient implements ClientModInitializer {
      *      按钮重复查 ScreenEvents 是否移除旧按钮。
      */
     @Override public void onInitializeClient(){
+        HeliClientConfig.load();
+        org.DJB.no_24_heli.client.render.NavigationPathRenderer.register();
         // 渲染与输入模块各自维护缓存，入口只做一次性注册；资源重载由各模块自行处理。
         org.DJB.no_24_heli.client.render.PilotEquipmentClient.register();
         org.DJB.no_24_heli.client.render.HelicopterMesh.register();

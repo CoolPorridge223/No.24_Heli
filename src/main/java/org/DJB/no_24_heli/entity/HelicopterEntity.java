@@ -531,7 +531,7 @@ public class HelicopterEntity extends Entity {
                 }
             }
         }
-        if(age%2==0)dataTracker.set(STATUS,saveFlight());
+        if(age%2==0){dataTracker.set(STATUS,saveFlight());navigation.syncPreview(this);}
     }
     /** 无驾驶员时沿用本机最后模式，避免跳机改变事故和弃机物理。 */
     private HeliConfig flightConfig(){
