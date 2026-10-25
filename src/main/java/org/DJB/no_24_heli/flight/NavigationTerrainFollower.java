@@ -1,7 +1,5 @@
 package org.DJB.no_24_heli.flight;
 
-import java.util.List;
-
 /**
  * 文件：三维轨迹的单调投影、连续前视与转弯速度包络，归属 flight 飞控模块，端侧 COMMON。
  * 无 MC API；NavigationPilot 每服务端 tick 调用，航段衔接时保留原控制器的速度和杆量。
@@ -45,8 +43,8 @@ final class NavigationTerrainFollower {
         for(int i=1;i+1<count;i++) {
             curves[i]=curvature(points.get(i-1),points.get(i),points.get(i+1));
             if(Math.abs(curves[i])>1e-6)speeds[i]=Math.min(speeds[i],
-                    Math.min(Math.sqrt(NavigationTrajectory.LATERAL_ACCELERATION/Math.abs(curves[i])),
-                            NavigationTrajectory.YAW_RATE/Math.abs(curves[i])));
+                    Math.min(Math.sqrt(NavigationController.LATERAL_ACCELERATION/Math.abs(curves[i])),
+                            NavigationController.YAW_RATE/Math.abs(curves[i])));
         }
         for(int i=count-2;i>=0;i--)speeds[i]=Math.min(speeds[i],Math.sqrt(speeds[i+1]*speeds[i+1]
                 +2*NavigationController.BRAKE_ACCELERATION*NavigationRoute.distance(points.get(i).horizontal(),points.get(i+1).horizontal())));
@@ -93,7 +91,7 @@ final class NavigationTerrainFollower {
                 var preview=new NavigationTerrainFollower();preview.bind(next,cruise);continuationSpeed=preview.speeds[0];
                 double joint=curvature(points.get(points.size()-2),points.getLast(),next.path().get(1));
                 if(Math.abs(joint)>1e-6)continuationSpeed=Math.min(continuationSpeed,
-                        Math.min(Math.sqrt(NavigationTrajectory.LATERAL_ACCELERATION/Math.abs(joint)),NavigationTrajectory.YAW_RATE/Math.abs(joint)));
+                        Math.min(Math.sqrt(NavigationController.LATERAL_ACCELERATION/Math.abs(joint)),NavigationController.YAW_RATE/Math.abs(joint)));
             }
         }
         if(next!=null)limit=Math.min(limit,Math.sqrt(continuationSpeed*continuationSpeed
@@ -101,21 +99,23 @@ final class NavigationTerrainFollower {
         limit=Math.min(limit,speedAcross(pos,target,next));
         remaining+=continuationLength;
         // 高度与水平前视必须指向同一个已验证点；缩短前视后不能继续追逐远端反坡高度。
-        return new Sample(target,target.y(),remaining,limit,curves[segment],clearAcross(pos,target,next));
+        double curve=curves[segment]*(1-fraction)+curves[segment+1]*fraction;
+        return new Sample(target,target.y(),remaining,limit,curve,clearAcross(pos,target,next));
     }
 
     /**
      * 功能：为坡面和绕障回接寻找可执行的水平/高度组合；无 MC API，仅在已验证的快照内调整。
      * 远端高度在原地不可达时逐次缩小高差，可先平移离开山坡再下降，或移出顶棚后爬升。
-     * 垂直调节段、调节后的水平段及实际斜向连线均须安全；找不到就缩短前视，绝不放宽机体净空。
+     * 检查当前短程高度控制量和完整斜向连线；不再要求先原地爬到远端高度再水平移动。
+     * 找不到就缩短前视，实时惯性扫掠继续兜住实际运动，绝不放宽机体净空。
      */
     private NavigationTerrainRoute.Point reachableTarget(NavigationTerrainRoute.Point pos,
             NavigationTerrainRoute.Point target,NavigationTerrainRoute.Result next) {
         for(int attempt=0;attempt<=8;attempt++) {
             double y=attempt==8?pos.y():pos.y()+(target.y()-pos.y())/Math.scalb(1,attempt);
             var adjusted=new NavigationTerrainRoute.Point(target.x(),y,target.z());
-            var vertical=new NavigationTerrainRoute.Point(pos.x(),y,pos.z());
-            if(clearAcross(pos,vertical,next)&&clearAcross(vertical,adjusted,next)&&clearAcross(pos,adjusted,next))return adjusted;
+            var vertical=new NavigationTerrainRoute.Point(pos.x(),NavigationController.altitudeTarget(pos.y(),y),pos.z());
+            if(clearAcross(pos,vertical,next)&&clearAcross(pos,adjusted,next))return adjusted;
         }
         return null;
     }

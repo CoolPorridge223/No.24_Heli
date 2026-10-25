@@ -265,7 +265,7 @@ public class HelicopterEntity extends Entity {
             else if(heightAboveGround()<10){message(player,"autopilot_low");}
             else if(!manual&&flight.waypoint&&flight.running&&flight.armed&&!isOnGround()&&!isTouchingWater()){
                 flight.priorTrim=flight.trim;flight.priorAltitude=flight.altitudeHold;flight.priorCruise=flight.cruise;
-                navigation.reset();flight.cancelAutoFlight();flight.autopilot=true;flight.navAligned=false;flight.targetAltitude=getY();message(player,"autopilot_on");
+                navigation.reset();flight.cancelAutoFlight();flight.autopilot=true;flight.targetAltitude=getY();message(player,"autopilot_on");
             }else message(player,"autopilot_unavailable");
         }
         // 连续轴量每 tick 接收一次，离散按键另行限流，避免同 tick 的中性包吞掉开关动作。
@@ -425,7 +425,7 @@ public class HelicopterEntity extends Entity {
         }
         if(flight.autopilot){
             if(!(pilot() instanceof PlayerEntity)||grounded||!flight.running||flight.engine<=0||flight.fuel<=0||flight.wreck)stopAutopilot();
-            else navigation.step(this);
+            else navigation.step(this,rain);
         }
         // 物理积分：先清本 tick 的撞击记录，再按弃机/输入/动力/姿态顺序推进；姿态限位必须在 move 前完成。
         blockImpactSpeed=0;mainRotorBlockImpact=false;mainRotorBlockSpeed=0;

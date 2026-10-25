@@ -27,8 +27,8 @@ import java.util.concurrent.RejectedExecutionException;
  * 故障排查：旧路线恢复查 pending 的取消；卡顿查 Future 是否阻塞；实际切角查惯性通道限速。
  */
 public final class NavigationPilot {
-    /** 每次采集最多前视 512 格，主动加载所需区块并提前计算续段；高度目标每 tick 最多变化 0.10 格。 */
-    private static final double TERRAIN_LOOK=512,CLIMB_STEP=.10;
+    /** 每次空间航段最多前视 512 格，主动加载所需区块并提前计算续段。 */
+    private static final double TERRAIN_LOOK=512;
     /** 最终到点半径 0.5 格、停稳速度 0.01 格/tick；提交前漂移降至 0.03 格/tick。 */
     private static final double ARRIVAL_DISTANCE=.5,ARRIVAL_SPEED=.01,PLAN_SPEED=.03;
     /** 保守制动加速度 0.008 格/tick²，并为机体姿态响应留出 12 tick。 */
@@ -119,10 +119,12 @@ public final class NavigationPilot {
      * 端侧/线程：仅服务端 tick。返回：无。副作用：更新导航缓存和 FlightState。
      * 故障排查：主线程停顿查 Future#get 是否仅在 isDone 后执行；失效查版本比较顺序。
      */
-    public void step(HelicopterEntity h){
+    public void step(HelicopterEntity h,boolean rain){
         var s=h.flight;var world=(ServerWorld)h.getWorld();var airspace=AirspaceState.get(world);
         var pos=new NavigationRoute.Point(h.getX(),h.getZ());var goal=new NavigationRoute.Point(s.waypointX,s.waypointZ);
         HeliConfig config=HeliConfig.INSTANCE;
+        controller.wind(config.wind?FlightPhysics.windX(rain,world.getTime()):0,
+                config.wind?FlightPhysics.windZ(rain,world.getTime()):0);
         // 用稳定的实体尺寸；平移后 AABB 两端相减的浮点噪声不能触发整条航路失效。
         double halfWidth=h.getWidth()/2.0;
         double horizontalRadius=Math.hypot(halfWidth,halfWidth);
@@ -161,7 +163,7 @@ public final class NavigationPilot {
      */
     private void request(HelicopterEntity h,NavigationRoute.Point pos,NavigationRoute.Point goal,long now){
         try{
-            pending=NavigationPlanningService.submit(pos,goal,circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0,trajectory,node);attempted=true;retryAt=now+REPLAN_TICKS;
+            pending=NavigationPlanningService.submit(pos,goal,circles,settings,trajectory,node);attempted=true;retryAt=now+REPLAN_TICKS;
             phase=route.isEmpty()?Phase.PLANNING:Phase.REPLANNING;
         }catch(RejectedExecutionException e){
             retryAt=now+BUSY_TICKS;notify(h,"route_busy");
@@ -281,7 +283,9 @@ public final class NavigationPilot {
         if(terrainSnapshot==null){
             var start=terrainRoute==null?terrainPosition(h):terrainRoute.path().getLast();
             int first=Math.min(terrainRoute==null?node:terrainGoalNode+1,route.size()-1);
-            planningGoalNode=NavigationTerrainRoute.goalNode(start.horizontal(),route,first,TERRAIN_LOOK,circles,settings);
+            planningGoalNode=NavigationTerrainRoute.goalNode(start.horizontal(),route,first,TERRAIN_LOOK);
+            // 已知无限高禁区挡住直线时直接采集绕行空间，省去必然失败的窄走廊扫描。
+            wideTerrain|=!NavigationRoute.clear(start.horizontal(),route.get(planningGoalNode),circles,settings);
             terrainSnapshot=new NavigationTerrainSnapshot(world,start,route.get(planningGoalNode),
                     circles,settings,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0,!wideTerrain);
             // 超出体素预算时缩短一次采集范围，区块加载距离不再限制整条导航任务。
@@ -389,7 +393,7 @@ public final class NavigationPilot {
         var sample=terrainFollower.sample(here,speed,HeliConfig.INSTANCE.autopilotLookMin,
                 HeliConfig.INSTANCE.autopilotLookMax,terrainNext);
         var target=sample.target();
-        double desired=sample.altitude(),limit=sample.speed();
+        double desired=NavigationController.altitudeTarget(h.getY(),sample.altitude()),limit=sample.speed();
         double horizontal=NavigationRoute.distance(pos,target.horizontal()),vertical=Math.abs(target.y()-h.getY());
         if(vertical>1)limit=Math.min(limit,horizontal*(target.y()>h.getY()?NavigationTerrainRoute.CLIMB_SPEED
                 :NavigationTerrainRoute.DESCENT_SPEED)/vertical);
@@ -404,13 +408,12 @@ public final class NavigationPilot {
         boolean forwardClear=corridorClear(world,h,base,ahead)&&sample.safe();
         boolean driftClear=corridorClear(world,h,base,new Vec3d(s.vx*stopTime,s.vy*30,s.vz*stopTime));
         // 坡线尚未对准时可先安全垂直升降到本段高度；前方不通不能同时冻结解围所需的爬升。
-        if(!forwardClear&&vertical>.6&&corridorClear(world,h,base,new Vec3d(0,target.y()-h.getY(),0)))desired=target.y();
         boolean altitudeClear=corridorClear(world,h,base,new Vec3d(0,desired-h.getY(),0));
         if(waitingForChunks||wasWaiting)retainChunks();
         chunkLoader.step();
         if(waitingForChunks&&!wasWaiting)notify(h,"route_chunk_wait");
         if(!waitingForChunks&&driftClear&&altitudeClear){
-            s.targetAltitude+=Math.clamp(desired-s.targetAltitude,-CLIMB_STEP,CLIMB_STEP);
+            s.targetAltitude=desired;
         }else s.targetAltitude=h.getY();
         boolean adjusting=!waitingForChunks&&driftClear&&altitudeClear&&Math.abs(desired-h.getY())>.6;
         if(forwardClear&&driftClear&&altitudeClear)blockedAt=-1;

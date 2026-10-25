@@ -43,8 +43,6 @@ public final class FlightState {
     public boolean landingBlocked;
     /** 一键起降锚点，单位格；autoY 是开始降落时确定的最终目标，降落暂停不能覆盖它。 */
     public double autoX,autoZ,autoY;
-    /** 记录导航初次航向对准状态；允许在已验证通道内边低速平移边转向，不作为起步门槛。 */
-    public boolean navAligned;
     /** 电台只同步槽位和切歌序号；-1为关闭，0–7对应用户自己提供的八首MP3。 */
     public int radioTrack=-1,radioRevision;
     /** 切歌发生时的世界 tick，客户端据此从当前进度接入而不是从头播放。 */

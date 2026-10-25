@@ -4,53 +4,32 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 文件：安全曲线及弧长速度表，归属实体飞控 flight 模块，无注册项和 MC API。
+ * 文件：全局禁区引导曲线，归属实体飞控 flight 模块，无注册项和 MC API。
  * 端侧：COMMON；规划线程一次构建，服务端只读。曲线整段采样并校验所有扩张圆。
  * 排查：曲线切圈查采样段而非控制点；弯前刹停查曲率；长路线资源失败查采样预算。
  */
 public final class NavigationTrajectory {
-    /** 允许的横向加速度、减速度，单位格/tick²；按原积分器及 25 度侧倾留出余量。 */
-    public static final double LATERAL_ACCELERATION = .008, BRAKE = .004;
-    /** 最大偏航速率，弧度/tick；1.4 度/tick 低于原脚蹬完整控制能力。 */
-    public static final double YAW_RATE = Math.toRadians(1.4);
     /** 直线采样间距 2 格，曲线间距 0.5 格；曲线附加 0.25 格弦误差余量。 */
     private static final double SPACING = 2, CURVE_SPACING = .5, CURVE_MARGIN = .25;
     /** 最大切角距离 48 格，最多缩小 8 次；低于半径 0.5 格的曲线拒绝飞行。 */
     private static final double MAX_CUT = 48, MAX_CURVATURE = 2;
-    /** 只读采样点、累计弧长、曲率和预计算速度上限；速度单位格/tick。 */
+    /** 只读引导采样点；三维曲率和速度表由 NavigationTerrainFollower 唯一维护。 */
     private final List<NavigationRoute.Point> points;
-    private final double[] lengths, curvature, speeds;
 
     /** 构造结果，失败不交付半条曲线；无 MC API，工作线程创建。 */
     public record Build(NavigationRoute.Status status, NavigationTrajectory trajectory) {}
 
-    /** 功能：生成不可变弧长和速度表；仅后台调用，无 MC API 或世界副作用。 */
-    private NavigationTrajectory(List<NavigationRoute.Point> points, double cruise) {
-        this.points = List.copyOf(points);
-        int count = points.size();
-        lengths = new double[count]; curvature = new double[count]; speeds = new double[count];
-        for (int i = 1; i < count; i++) lengths[i] = lengths[i - 1]
-                + NavigationRoute.distance(points.get(i - 1), points.get(i));
-        for (int i = 0; i < count; i++) {
-            if (i > 0 && i + 1 < count) curvature[i] = bend(points.get(i - 1), points.get(i), points.get(i + 1));
-            double k = Math.abs(curvature[i]);
-            speeds[i] = k < 1e-6 ? cruise : Math.min(cruise,
-                    Math.min(Math.sqrt(LATERAL_ACCELERATION / k), YAW_RATE / k));
-        }
-        speeds[count - 1] = 0;
-        // 从终点倒推真实制动距离，连续多个弯道共同决定速度包络。
-        for (int i = count - 2; i >= 0; i--) speeds[i] = Math.min(speeds[i],
-                Math.sqrt(speeds[i + 1] * speeds[i + 1] + 2 * BRAKE * (lengths[i + 1] - lengths[i])));
-    }
+    /** 功能：保存不可变全局引导点；仅后台调用，不分配未参与飞行的二维速度表。 */
+    private NavigationTrajectory(List<NavigationRoute.Point> points) { this.points=List.copyOf(points); }
 
     /**
-     * 功能：将可见性折线变成切线连续的二次 Bezier 曲线，再建立速度包络。
-     * 引用 MC API：无。端侧/线程：后台；参数为不可变起点、航路、圆、设置和巡航速度。
+     * 功能：将可见性折线变成切线连续的二次 Bezier 曲线，供空间规划选择连续航段目标。
+     * 引用 MC API：无。端侧/线程：后台；参数为不可变起点、航路、圆和设置。
      * 返回：完整轨迹或精度/资源失败。副作用仅本次局部数组和预算。
      * 故障排查：不安全切角逐次缩小；仍无法实现的尖角拒绝，不让控制器强行穿圆。
      */
     public static Build build(NavigationRoute.Point start, List<NavigationRoute.Point> path,
-            List<NavigationRoute.Circle> circles, NavigationRoute.Settings settings, double cruise) {
+            List<NavigationRoute.Circle> circles, NavigationRoute.Settings settings) {
         var budget = new NavigationGrid.Budget(settings.maxCells(), settings.maxNodes());
         List<NavigationRoute.Point> raw = new ArrayList<>(); raw.add(start); raw.addAll(path);
         List<NavigationRoute.Point> output = new ArrayList<>(); output.add(start);
@@ -84,7 +63,7 @@ public final class NavigationTrajectory {
         }
         if (!appendLine(output, raw.getLast(), settings.maxCells())) return new Build(NavigationRoute.Status.CELL_LIMIT, null);
         NavigationRoute.Status status = validate(output, circles, settings, budget, 0);
-        return new Build(status, status == NavigationRoute.Status.SUCCESS ? new NavigationTrajectory(output, cruise) : null);
+        return new Build(status, status == NavigationRoute.Status.SUCCESS ? new NavigationTrajectory(output) : null);
     }
 
     /** 功能：完整线段逐圆验证，带资源和取消检查；只修改局部预算，无 MC API。 */
@@ -122,12 +101,4 @@ public final class NavigationTrajectory {
     }
     /** 功能：返回只读采样点，供跟随和原地形扫描；无副作用。 */
     public List<NavigationRoute.Point> points() { return points; }
-    /** 功能：返回点的累计弧长，单位格；无副作用。 */
-    public double length(int at) { return lengths[at]; }
-    /** 功能：返回全程弧长，单位格；无副作用。 */
-    public double totalLength() { return lengths[lengths.length - 1]; }
-    /** 功能：返回采样点的速度包络，单位格/tick；无副作用。 */
-    public double speed(int at) { return speeds[at]; }
-    /** 功能：返回采样点曲率，单位 1/格；无副作用。 */
-    public double curvature(int at) { return curvature[at]; }
 }

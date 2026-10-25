@@ -17,17 +17,22 @@ final class NavigationTerrainRoute {
     /** 整机任意姿态半径加一格控制余量；编译期常量，不在后台调用碰撞或世界 API。 */
     static final double ENVELOPE = org.DJB.no_24_heli.entity.HelicopterCollision.QUERY_RADIUS + 1;
     /** 时间单位 tick；升降低于原高度保持的 0.16 上限，留出响应余量。 */
-    static final double CLIMB_SPEED = .10, DESCENT_SPEED = .08, COVERED_SPEED = .25;
+    static final double CLIMB_SPEED = .14, DESCENT_SPEED = .12, COVERED_SPEED = .25;
+    /** 爬升/下降额外计入半倍垂直用时，优先侧绕；禁区外十二格为软余量，不改变硬边界。 */
+    private static final double VERTICAL_WEIGHT=.5, COMFORT_MARGIN=12;
     /** 顶棚内时间按三倍计入，并在每次进入时增加二十秒风险代价，避免轻微捷径诱导穿洞。 */
     private static final double COVERED_WEIGHT = 3, ENTRY_COST = 400;
     /** 单次局部搜索最多展开四十万个节点，不突破用户的 pathMaxNodes。 */
     private static final int MAX_NODES = 400_000;
+    /** 同高度绕行先使用至多一万六千节点及总预算四分之一；代价不超过直飞下界 1.8 倍时优先采用。 */
+    private static final int PLANAR_NODES=16_000;
+    private static final double SIDE_DETOUR_RATIO=1.8;
     /** 搜索时允许沿父节点跨格直连，最远一百二十八格；避免把缓坡的同步升降算成逐格陡爬。 */
     private static final double SHORTCUT_DISTANCE = 128;
     /** 加权启发式优先获得可飞路线，权重 1.15；不承诺严格时间最优，净空和风险代价保持不变。 */
     private static final double HEURISTIC_WEIGHT = 1.15;
-    /** 转角最多切二十四格并保留相邻直线六成，轨迹按两格以内加密供连续前视。 */
-    private static final double TURN_CUT = 24, SPACING = 2;
+    /** 转角最多切四十八格并保留相邻直线六成，轨迹按两格以内加密供连续前视。 */
+    private static final double TURN_CUT = 48, SPACING = 2;
     /** 三维坐标以实体原点为准，单位格；无 MC API、无可变字段。 */
     record Point(double x, double y, double z) {
         /** 功能：投影为原禁区规划坐标；无 MC API、无副作用。 */
@@ -52,6 +57,8 @@ final class NavigationTerrainRoute {
         final int nx, ny, nz;
         /** 整格能容纳整机时为真；covered 表示上方存在障碍，二者只在构造时写。 */
         private final boolean[] free, covered;
+        /** 每格额外时间比例的百分数，范围 0..100；优先远离山壁与禁区，不能代替硬净空。 */
+        private final byte[] proximity;
         /** 本任务的只读禁区、设置和巡航速度，全部高度遵循同一禁区约束。 */
         private final List<NavigationRoute.Circle> circles;
         private final NavigationRoute.Settings settings;
@@ -68,6 +75,7 @@ final class NavigationTerrainRoute {
             this.x=x; this.y=y; this.z=z; this.nx=nx; this.ny=ny; this.nz=nz;
             this.circles=List.copyOf(circles); this.settings=settings; this.cruise=cruise;
             free=new boolean[occupied.length]; covered=new boolean[occupied.length];
+            proximity=new byte[occupied.length];
             int sx=nx+1, sz=nz+1, layer=sx*sz;
             int[] sum=new int[layer*(ny+1)];
             for(int iy=1;iy<=ny;iy++) for(int iz=1;iz<=nz;iz++) for(int ix=1;ix<=nx;ix++) {
@@ -79,11 +87,21 @@ final class NavigationTerrainRoute {
             int pad=(int)Math.ceil(ENVELOPE/CELL);
             for(int iz=pad;iz<nz-pad;iz++) for(int ix=pad;ix<nx-pad;ix++) {
                 if(Thread.currentThread().isInterrupted())return;
+                double circlePenalty=0;
+                for(var circle:circles) {
+                    double gap=Math.hypot(x+ix*CELL-circle.x(),z+iz*CELL-circle.z())
+                            -circle.radius()-Math.max(ENVELOPE,settings.clearance());
+                    circlePenalty=Math.max(circlePenalty,Math.clamp(1-gap/COMFORT_MARGIN,0,1)*.75);
+                }
                 // 方块仍按整格膨胀；禁飞圆改为每条实际线段精确检查，避免四格栅格吞掉合法贴边终点。
                 for(int iy=pad;iy<ny-pad;iy++) {
                     int at=index(ix,iy,iz);
                     free[at]=count(sum,sx,layer,ix-pad,iy-pad,iz-pad,ix+pad+1,iy+pad+1,iz+pad+1)==0;
                     covered[at]=count(sum,sx,layer,ix-pad,iy+pad+1,iz-pad,ix+pad+1,ny,iz+pad+1)>0;
+                    int comfort=pad+3;
+                    boolean nearTerrain=count(sum,sx,layer,Math.max(0,ix-comfort),Math.max(0,iy-comfort),Math.max(0,iz-comfort),
+                            Math.min(nx,ix+comfort+1),Math.min(ny,iy+comfort+1),Math.min(nz,iz+comfort+1))>0;
+                    proximity[at]=(byte)Math.round(100*Math.min(1,circlePenalty+(nearTerrain?.8:0)));
                 }
             }
         }
@@ -160,7 +178,7 @@ final class NavigationTerrainRoute {
             return false;
         }
         /**
-         * 功能：连续段飞行时间加顶棚风险，搜索、父节点直连和平滑统一使用，单位 tick。
+         * 功能：连续段飞行时间加高差、贴障碍及顶棚风险，搜索、直连和平滑统一计价，单位 tick。
          * 无 MC API；后台调用。整段采用跟随器相同的最低限速，顶棚部分另加风险，每次进入单独收费。
          * 排查：不能只给洞内采样降速却让跟随器在整条长段限速，否则穿洞时间会被低估。
          */
@@ -169,6 +187,7 @@ final class NavigationTerrainRoute {
             int last=cell(a),roofSteps=0,entries=0;
             if(!free(last))return Double.POSITIVE_INFINITY;
             boolean wasCovered=covered[last];
+            double proximitySum=0;
             for(int i=1;i<=steps;i++) {
                 if(Thread.currentThread().isInterrupted())return Double.POSITIVE_INFINITY;
                 int next=cell(interpolate(a,b,(double)i/steps));
@@ -177,9 +196,12 @@ final class NavigationTerrainRoute {
                 if(roof)roofSteps++;
                 if(!wasCovered&&roof)entries++;
                 wasCovered=roof;last=next;
+                proximitySum+=Byte.toUnsignedInt(proximity[next])/100.0;
             }
             double speed=roofSteps>0?Math.min(cruise,COVERED_SPEED):cruise;
-            return travel(a,b,speed)*(1+(COVERED_WEIGHT-1)*roofSteps/steps)+ENTRY_COST*entries;
+            double vertical=Math.abs(b.y-a.y)/(b.y>=a.y?CLIMB_SPEED:DESCENT_SPEED);
+            return travel(a,b,speed)*(1+(COVERED_WEIGHT-1)*roofSteps/steps+proximitySum/steps)
+                    +VERTICAL_WEIGHT*vertical+ENTRY_COST*entries;
         }
     }
 
@@ -198,17 +220,22 @@ final class NavigationTerrainRoute {
         Arrays.fill(position,-1);Arrays.fill(parent,-1);Arrays.fill(cost,Double.POSITIVE_INFINITY);
     }
     /**
-     * 功能：沿全局引导顺序选择本侧可见的局部终点，首次被禁区遮挡即停止，不跳到圆的另一侧。
+     * 功能：沿全局引导选择最多九十度累计转向的空间航段，不再把每条切圆短弦都拆成规划接缝。
      * 无 MC API；服务端创建地形请求时调用，返回单调前进的引导索引，不修改输入列表。
      * 重规划时 first 是未抵达的旧局部终点；即使当前位置因漂移暂不可直达，也保留该绕行目标。
      */
-    static int goalNode(NavigationRoute.Point start,List<NavigationRoute.Point> route,int first,double look,
-                        List<NavigationRoute.Circle> circles,NavigationRoute.Settings settings) {
-        var from=start;double distance=0;int selected=first;
+    static int goalNode(NavigationRoute.Point start,List<NavigationRoute.Point> route,int first,double look) {
+        var from=start;double distance=0,turn=0,previousX=0,previousZ=0;int selected=first;
         for(int at=first;at<route.size();at++) {
             double segment=NavigationRoute.distance(from,route.get(at));
-            if(at>first&&(distance+segment>look||!NavigationRoute.clear(start,route.get(at),circles,settings)))break;
+            double dx=route.get(at).x()-from.x(),dz=route.get(at).z()-from.z();
+            if(segment>1e-6) {
+                dx/=segment;dz/=segment;
+                if(previousX!=0||previousZ!=0)turn+=Math.acos(Math.clamp(previousX*dx+previousZ*dz,-1,1));
+            }
+            if(at>first&&(distance+segment>look||turn>Math.PI/2))break;
             distance+=segment;from=route.get(at);selected=at;
+            if(segment>1e-6){previousX=dx;previousZ=dz;}
         }
         return selected;
     }
@@ -220,7 +247,7 @@ final class NavigationTerrainRoute {
         return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
     }
     /**
-     * 功能：二十六邻三维 A* 加父节点可见直连，同时比较侧绕、缓坡升降与穿洞，出口必须无顶棚。
+     * 功能：先尝试八邻同高度侧绕，再按共享预算执行二十六邻空间搜索，出口必须无顶棚。
      * 无 MC API；后台调用；输入为独占快照和真实起终点，终点高度自由选择，不擅自自动降落。
      * 返回：完整三维航路或精度/预算失败；副作用仅局部数组。
      * 排查：局部矩形外可能仍有路，GRID_RESOLUTION 绝不等同真实封闭。
@@ -234,9 +261,28 @@ final class NavigationTerrainRoute {
         // 露天空域整段验证后直接交付，不为平直航线分配搜索堆或展开三维网格。
         Result direct=direct(v,start,goal);
         if(direct.status()!=NavigationRoute.Status.GRID_RESOLUTION)return direct;
+        int budget=Math.min(MAX_NODES,v.settings.maxNodes());
+        Result level=search(v,start,goal,true,Math.min(PLANAR_NODES,budget/4));
+        if(level.status()==NavigationRoute.Status.INTERRUPTED)return level;
+        if(level.status()==NavigationRoute.Status.SUCCESS&&level.costTicks()<=heuristic(start,goal,v.cruise)*SIDE_DETOUR_RATIO)
+            return level;
+        Result spatial=search(v,start,goal,false,budget-level.expanded());
+        if(spatial.status()==NavigationRoute.Status.INTERRUPTED)return spatial;
+        Result chosen=level.status()==NavigationRoute.Status.SUCCESS
+                &&(spatial.status()!=NavigationRoute.Status.SUCCESS||level.costTicks()<=spatial.costTicks())?level:spatial;
+        return new Result(chosen.status(),chosen.path(),v,level.expanded()+spatial.expanded(),chosen.costTicks());
+    }
+
+    /**
+     * 功能：共用八邻同高度/二十六邻空间搜索实现，两个阶段共享调用方给定的节点预算。
+     * 无 MC API；后台执行；所有高度都检查同一组无限高圆柱，重叠圆按并集阻挡。
+     * 返回完整安全路线或明确失败；同高度阶段失败不能被当作三维不可达。
+     */
+    private static Result search(Volume v,Point start,NavigationRoute.Point goal,boolean levelOnly,int limit) {
+        int begin=v.cell(start);
         NavigationTerrainRoute open=new NavigationTerrainRoute(v.free.length,v.nx*v.nz,begin);
         open.cost[begin]=0;open.parent[begin]=begin;open.offer(begin,HEURISTIC_WEIGHT*heuristic(start,goal,v.cruise));
-        int expanded=0,limit=Math.min(MAX_NODES,v.settings.maxNodes());
+        int expanded=0;
         while(open.size>0) {
             if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,expanded);
             if(expanded++>=limit)return failure(NavigationRoute.Status.NODE_LIMIT,v,expanded-1);
@@ -247,7 +293,7 @@ final class NavigationTerrainRoute {
                 if(v.clear(p,end)&&!v.covered(end))return open.finish(v,at,start,end,expanded);
             }
             int ix=at%v.nx,iy=at/(v.nx*v.nz),iz=at/v.nx%v.nz;
-            for(int dy=-1;dy<=1;dy++) for(int dz=-1;dz<=1;dz++) for(int dx=-1;dx<=1;dx++) {
+            for(int dy=levelOnly?0:-1;dy<=(levelOnly?0:1);dy++) for(int dz=-1;dz<=1;dz++) for(int dx=-1;dx<=1;dx++) {
                 if(dx==0&&dy==0&&dz==0||ix+dx<0||iy+dy<0||iz+dz<0||ix+dx>=v.nx||iy+dy>=v.ny||iz+dz>=v.nz)continue;
                 int next=v.index(ix+dx,iy+dy,iz+dz);
                 if(!v.free[next]||open.position[next]==-2||!v.boxClear(at,next))continue;

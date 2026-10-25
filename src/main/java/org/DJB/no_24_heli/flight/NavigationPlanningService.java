@@ -49,19 +49,19 @@ public final class NavigationPlanningService {
      * 故障排查：数据变化没有失效时检查调用方是否取消旧任务并更新快照。
      */
     public static Future<Planned> submit(NavigationRoute.Point start, NavigationRoute.Point goal,
-            List<NavigationRoute.Circle> circles, NavigationRoute.Settings settings, double cruise,
+            List<NavigationRoute.Circle> circles, NavigationRoute.Settings settings,
             NavigationTrajectory existing, int nextNode) {
         List<NavigationRoute.Circle> snapshot = List.copyOf(circles);
-        return EXECUTOR.submit(() -> plan(start, goal, snapshot, settings, cruise, existing, nextNode));
+        return EXECUTOR.submit(() -> plan(start, goal, snapshot, settings, existing, nextNode));
     }
 
     /**
-     * 功能：先验证旧轨迹或选择宽弧路线，完成全部平滑和速度规划后一次性交付。
+     * 功能：先验证旧轨迹或选择宽弧路线，完成全局引导平滑后一次性交付。
      * 引用 MC API：无。端侧/线程：仅工作线程；参数全为只读快照。
      * 返回：轨迹及耗时；副作用仅本次计算。排查：旧轨迹安全时 reused 不得重置跟随进度。
      */
     static Planned plan(NavigationRoute.Point start, NavigationRoute.Point goal,
-            List<NavigationRoute.Circle> circles, NavigationRoute.Settings settings, double cruise,
+            List<NavigationRoute.Circle> circles, NavigationRoute.Settings settings,
             NavigationTrajectory existing, int nextNode) {
         long began = System.nanoTime();
         if (existing != null && remainingClear(start, existing, nextNode, circles, settings)) {
@@ -83,7 +83,7 @@ public final class NavigationPlanningService {
             }
         }
         if (result.status() != NavigationRoute.Status.SUCCESS) return new Planned(result, null, false, System.nanoTime() - began);
-        var built = NavigationTrajectory.build(start, result.path(), circles, settings, cruise);
+        var built = NavigationTrajectory.build(start, result.path(), circles, settings);
         if (built.status() != NavigationRoute.Status.SUCCESS) result = new NavigationRoute.Result(built.status(), List.of(),
                 result.expandedNodes(), result.startEnclosed(), result.goalEnclosed(), result.cellSize());
         return new Planned(result, built.trajectory(), false, System.nanoTime() - began);
