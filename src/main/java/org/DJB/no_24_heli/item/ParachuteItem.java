@@ -106,7 +106,7 @@ public final class ParachuteItem extends Item implements Equipment {
     /** 叠伞没有饮食/拉弓动作，手持装备由圆圈 HUD 表现使用进度。 */
     @Override public UseAction getUseAction(ItemStack stack) { return UseAction.NONE; }
 
-    /** 只有逻辑服务端完整使用五秒后才能置回可穿戴状态，客户端不抢先修改组件。 */
+    /** 服务端完整使用五秒只修改原手持物品的折叠状态；不穿戴或复制，客户端阻止持续右键自动再用。 */
     @Override public ItemStack finishUsing(ItemStack stack, World world, LivingEntity user) {
         if (!world.isClient && canFold(stack))
             NbtComponent.set(DataComponentTypes.CUSTOM_DATA, stack, nbt -> nbt.putBoolean(PACKED, true));

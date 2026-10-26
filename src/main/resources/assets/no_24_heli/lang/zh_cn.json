@@ -133,7 +133,7 @@
   "screen.no_24_heli.radius": "禁飞半径：16–512 格（全高度）",
   "screen.no_24_heli.apply": "保存半径",
   "screen.no_24_heli.radar_readonly": "仅放置者或管理员可修改此雷达",
-  "screen.no_24_heli.map": "导航地图 · 北向",
+  "screen.no_24_heli.map": "导航地图 · 北向  左键移动/右键选点",
   "screen.no_24_heli.clear_waypoint": "取消导航",
   "screen.no_24_heli.close_map": "关闭地图",
   "screen.no_24_heli.waypoints": "导航点",

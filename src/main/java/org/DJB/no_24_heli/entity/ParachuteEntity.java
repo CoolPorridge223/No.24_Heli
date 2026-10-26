@@ -502,6 +502,22 @@ public final class ParachuteEntity extends Entity {
         if (age % 2 == 0) dataTracker.set(CLOTH, cloth.snapshot(false));
     }
 
+    /**
+     * 功能：创造玩家双击跳跃后退出自己的载人伞并恢复创造飞行，不折叠或复制胸槽物品。
+     * 引用 net.minecraft.entity.Entity#stopRiding 解除载体，ServerPlayerEntity#sendAbilitiesUpdate 同步飞行许可。
+     * 端侧：仅逻辑服务端主线程；复核创造权限、存活及真实乘骑；普通模式不能通过伪造请求切伞。
+     * 副作用：移除当前伞、清空速度和跌落计时；已开伞的 CUSTOM_DATA 保持未折叠及原 ID、耐久。
+     */
+    public void cancelCreativeFlight(ServerPlayerEntity player){
+        if(getWorld().isClient||!player.isCreative()||!player.isAlive()||!player.getAbilities().allowFlying
+                ||!hasPassenger(player)||!isAirborne())return;
+        Vec3d position=getPos();
+        player.stopRiding();player.requestTeleport(position.x,position.y,position.z);
+        player.setVelocity(Vec3d.ZERO);player.velocityModified=true;player.fallDistance=0;
+        player.getAbilities().flying=true;player.sendAbilitiesUpdate();
+        discard();
+    }
+
     /** 原版世界玩家表只在所在维度解析；离线或跨维度后宽限清理，不保留不可见孤儿。 */
     private PlayerEntity owner() { return ownerUuid == null ? null : getWorld().getPlayerByUuid(ownerUuid); }
     /** 认原来的物品 UUID，换上另一只已叠伞包不能继续牵引这块布料。 */

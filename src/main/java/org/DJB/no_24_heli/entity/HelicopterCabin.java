@@ -201,7 +201,7 @@ public final class HelicopterCabin {
         doors[door] = open;
     }
 
-    /** 普通上机固定使用最近门的对应座；占座时仅 F 入口可以发起拖拽，右键不强行换人。 */
+    /** 普通上机固定使用最近门的对应座；占座时仅 F 入口可以发起拖拽，本方法不强行换人。 */
     public boolean board(PlayerEntity player) {
         if (!canReach(player) || heli.hasPassenger(player)) return false;
         if (player.getVehicle() instanceof RopeSeatEntity) return boardFromRope(player);

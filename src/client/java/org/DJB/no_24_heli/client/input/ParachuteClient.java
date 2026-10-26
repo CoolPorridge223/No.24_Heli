@@ -6,6 +6,7 @@ import org.DJB.no_24_heli.client.render.ParachutePackRenderer;
 import org.DJB.no_24_heli.client.render.ParachuteRenderer;
 import org.DJB.no_24_heli.entity.ParachuteEntity;
 import org.DJB.no_24_heli.network.ParachutePayload;
+import org.DJB.no_24_heli.network.ParachuteCancelPayload;
 import org.DJB.no_24_heli.registry.ModParachutes;
 import org.DJB.no_24_heli.No_24_heli;
 import org.DJB.no_24_heli.item.ParachuteItem;
@@ -17,6 +18,7 @@ import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.LivingEntityFeatureRendererRegistrationCallback;
@@ -24,6 +26,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.render.entity.PlayerEntityRenderer;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.util.TypedActionResult;
 import org.lwjgl.glfw.GLFW;
 
 /**
@@ -41,6 +44,14 @@ public final class ParachuteClient {
     private static boolean deployRequested;
     /** 当前伞实体 ID：仅初次乘骑时清除原版 Shift 脱离提示，避免每 tick 覆盖其他消息。 */
     private static int mountedCanopy = -1;
+    /** 与原版创造双击跳跃一致的七 tick 窗口，时间取客户端世界 tick，不接受长按重复。 */
+    private static final int CREATIVE_JUMP_WINDOW=7;
+    /** 上次独立跳跃按下的世界 tick；-100 表示尚未开始双击窗口。 */
+    private static long lastJump=-100;
+    /** 跳跃边沿及待确认取消状态，仅保留到当前伞或世界结束。 */
+    private static boolean jumpHeld,creativeCancelPending;
+    /** 一次持续右键只允许启动一次叠伞，结束后必须松开才允许再次使用/穿戴。 */
+    private static boolean foldingUseHeld;
 
     /** 无实例，输入状态仅属于当前客户端。 */
     private ParachuteClient() {}
@@ -78,10 +89,41 @@ public final class ParachuteClient {
     }
 
     /**
+     * 功能：在 net.minecraft.client.input.KeyboardInput 清除乘伞跳跃前识别两次独立按下。
+     * 客户端只发送空取消意图；世界切换、GUI、非创造或离伞时重置，服务端再复核真实权限。
+     */
+    public static void handleJump(boolean pressed){
+        var client=MinecraftClient.getInstance();
+        if(client.player==null||client.world==null||client.currentScreen!=null||!client.player.isCreative()
+                ||!(client.player.getVehicle() instanceof ParachuteEntity canopy)||!canopy.isAirborne()){
+            jumpHeld=pressed;lastJump=-100;creativeCancelPending=false;return;
+        }
+        long now=client.world.getTime();
+        if(pressed&&!jumpHeld&&!creativeCancelPending){
+            if(now>=lastJump&&now-lastJump<=CREATIVE_JUMP_WINDOW){
+                ClientPlayNetworking.send(new ParachuteCancelPayload());
+                creativeCancelPending=true;lastJump=-100;
+            }else lastJump=now;
+        }
+        jumpHeld=pressed;
+    }
+
+    /** 等待服务端解除乘骑时，不让 KeyboardInput 的旧伞状态覆盖随后到达的创造飞行能力包。 */
+    public static boolean creativeCancelPending(){return creativeCancelPending;}
+
+    /**
      * 注册 net.fabricmc.fabric.api.client.rendering.v1 的实体和玩家背包特征，tick 中发送意图。
      * GUI 打开时输入回中；断线清除待发请求；服务端仍重新验证资格与所属伞。
      */
     public static void initialize() {
+        // Fabric 使用回调先于 Item#use；挡住叠伞完成后的连续右键，避免创造装备复制到胸槽。
+        UseItemCallback.EVENT.register((player,world,hand)->{
+            var stack=player.getStackInHand(hand);
+            if(!world.isClient||!ParachuteItem.isParachute(stack))return TypedActionResult.pass(stack);
+            if(foldingUseHeld)return TypedActionResult.fail(stack);
+            if(ParachuteItem.canFold(stack))foldingUseHeld=true;
+            return TypedActionResult.pass(stack);
+        });
         // 原版谓词限制在 0～1：完整、未折叠、损坏分别为 0、0.5、1，不替换物品或组件。
         ModelPredicateProviderRegistry.register(ModParachutes.PARACHUTE,No_24_heli.id("pack_state"),
                 (stack,world,entity,seed)->ParachuteItem.isLost(stack)?1:ParachuteItem.isPacked(stack)?0:.5f);
@@ -93,14 +135,17 @@ public final class ParachuteClient {
         });
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null || client.world == null) {
-                deployRequested = false; mountedCanopy = -1; return;
+                deployRequested = false; mountedCanopy = -1;
+                jumpHeld=false;lastJump=-100;creativeCancelPending=false;foldingUseHeld=false;return;
             }
+            if(!client.options.useKey.isPressed())foldingUseHeld=false;
             boolean active = client.player.getVehicle() instanceof ParachuteEntity;
             int currentCanopy = active ? client.player.getVehicle().getId() : -1;
             // net.minecraft.client.gui.hud.InGameHud#setOverlayMessage 清除原版骑乘提示，不替换成操作说明。
             if (currentCanopy != mountedCanopy && active)
                 client.inGameHud.setOverlayMessage(net.minecraft.text.Text.empty(), false);
             mountedCanopy = currentCanopy;
+            if(!active){jumpHeld=false;lastJump=-100;creativeCancelPending=false;}
             boolean deploy = deployRequested && client.currentScreen == null && canPull(client);
             deployRequested = false;
             if (!active && !deploy) return;

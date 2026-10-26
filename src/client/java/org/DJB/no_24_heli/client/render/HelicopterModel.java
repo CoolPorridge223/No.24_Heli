@@ -56,6 +56,8 @@ public final class HelicopterModel {
     /** 紫金采用饱和金色饰带，救援白腰带保留高可见度，三款迷彩每格约重复 0.36 次。 */
     private static final int GOLD = 0xfffdb927, RESCUE_WHITE = 0xfff2f4ee, RESCUE_DARK = 0xff30363b;
     private static final double CAMOUFLAGE_SCALE = .36;
+    /** 迷彩投影的横向斜率，保留 X 正负；两轴均混入横向位移，避免机鼻前视挤成条纹及左右镜像。 */
+    private static final double CAMOUFLAGE_U_SKEW = .47, CAMOUFLAGE_V_SKEW = 1.6;
     /** 各纵截面依次为 Z、半宽、中心高度、半高；形状按参考图的圆鼻、宽舱和收腰机尾采样。 */
     private static final double[][] BODY_PROFILE = {
             {-5.06, .075, 1.87, .075}, {-3.40, .14, 1.68, .14}, {-2.10, .20, 1.49, .20},
@@ -716,11 +718,13 @@ public final class HelicopterModel {
     /**
      * 功能：缓存连续迷彩投影；引用 MC API：net.minecraft.util.math.Vec3d 提供局部位置。
      * 端侧：构造期；参数：v 为外壳顶点；返回：保持位置与法线的纹理顶点；无副作用。
-     * 排查：UV 不能按每个面的主法线切换，否则斑块会在机腹和尾梁断开；使用可平铺材质。
+     * 排查：不得对 X 取绝对值，否则左右斑块完全镜像；统一投影保证关门后的蒙皮连续。
+     * 此方法只生成独立迷彩图层的顶点，不修改紫金底漆、24/Laker 贴花或整窗 UV。
      */
     private static Vertex camouflageVertex(Vertex v) {
-        return new Vertex(v.position, v.normal, (float) (v.position.z * CAMOUFLAGE_SCALE),
-                (float) ((v.position.y + Math.abs(v.position.x) * 1.6) * CAMOUFLAGE_SCALE));
+        return new Vertex(v.position, v.normal,
+                (float) ((v.position.z + v.position.x * CAMOUFLAGE_U_SKEW) * CAMOUFLAGE_SCALE),
+                (float) ((v.position.y + v.position.x * CAMOUFLAGE_V_SKEW) * CAMOUFLAGE_SCALE));
     }
 
     /** 功能：判定外漆材质槽；端侧：客户端；参数为材质编号；返回：是否喷漆面；无 MC API 与副作用。 */
@@ -805,23 +809,24 @@ public final class HelicopterModel {
         for (int blade = 0; blade < 4; blade++) {
             double angle = blade * Math.PI / 2;
             buildBlade(rotor, new Vec3d(Math.cos(angle), 0, Math.sin(angle)),
-                    new Vec3d(-Math.sin(angle), 0, Math.cos(angle)), 3.70, .17, .022);
+                    new Vec3d(-Math.sin(angle), 0, Math.cos(angle)), .10, 3.70, .17, .022);
             buildBlade(tailRotor, new Vec3d(Math.cos(angle), Math.sin(angle), 0),
-                    new Vec3d(-Math.sin(angle), Math.cos(angle), 0), .65, .095, .014);
+                    new Vec3d(-Math.sin(angle), Math.cos(angle), 0), .045, .65, .095, .014);
         }
     }
 
     /**
      * 功能：生成有上下翼面、前后缘及端盖的薄桨叶；引用 MC API：net.minecraft.util.math.Vec3d 建立局部翼型基。
-     * 端侧：构造期；参数：target/radial/across/length/chord/thickness 为网格、翼轴和格数尺寸；返回：无。
+     * 端侧：构造期；参数：target/radial/across/root/length/chord/thickness 为网格、翼轴、起点及格数尺寸。
+     * 尾桨叶根从 0.045 格开始，连同半弦长落在 0.075 格桨毂内部；主旋翼仍从原 0.10 格开始。
      * 副作用：追加闭合部件；排查：低角度消失查边缘和桨尖封盖，连续下反角不能在每段重置。
      */
     private static void buildBlade(List<Face> target, Vec3d radial, Vec3d across,
-            double length, double chord, double thickness) {
+            double root, double length, double chord, double thickness) {
         Vec3d normal = across.crossProduct(radial);
         for (int segment = 0; segment < 20; segment++) {
             double t0 = segment / 20.0, t1 = (segment + 1) / 20.0;
-            double start = .10 + t0 * (length - .10), end = .10 + t1 * (length - .10);
+            double start = root + t0 * (length - root), end = root + t1 * (length - root);
             double width0 = chord * (1 - .42 * t0), width1 = chord * (1 - .42 * t1);
             Vec3d a = radial.multiply(start).subtract(across.multiply(width0 / 2)).add(normal.multiply(-.025 * t0 * t0));
             Vec3d b = radial.multiply(end).subtract(across.multiply(width1 / 2)).add(normal.multiply(-.025 * t1 * t1));

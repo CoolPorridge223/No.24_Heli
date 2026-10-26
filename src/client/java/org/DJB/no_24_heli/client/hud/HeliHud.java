@@ -118,7 +118,7 @@ public final class HeliHud {
             drawKeyHint(ctx,ParachuteClient.keyName(),"hud.no_24_heli.parachute_pull_before","hud.no_24_heli.parachute_pull_after");
         var doorTarget=org.DJB.no_24_heli.client.input.CabinDoorClient.target();
         boolean aboard=doorTarget!=null&&doorTarget.hasPassenger(mc.player);
-        // 离地后隐藏下机键帽；F/Shift 的空中危险确认仍由原有输入与服务端逻辑处理。
+        // 离地后隐藏下机键帽；F 的空中危险确认仍由舱门输入与服务端逻辑处理。
         boolean doorHint=doorTarget!=null&&(aboard
                 ?doorTarget.isCabinGrounded()
                     &&doorTarget.cabin.motion(mc.player)==org.DJB.no_24_heli.entity.HelicopterCabin.SEATED

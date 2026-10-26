@@ -28,6 +28,7 @@ import org.DJB.no_24_heli.entity.HelicopterEntity;
  * net.minecraft.client.font.TextRenderer 在世界矩阵上写字，TextLayerType.NORMAL 保留遮挡。
  * 生命周期：HelicopterRenderer 每帧调用；雷达复用服务器快照，不新增同步协议。
  * 端侧/线程：客户端渲染线程，只读飞行状态；启动后的文字独立背光，停机文字接受舱灯块光。
+ * 残骸只绘制环境光下的烧蚀破损面板，不提交正常读数、雷达扫描或背光文字。
  * 排查：文字镜像查面板 Y 轴 180° 和字体负 Y 缩放；指针反转查角度公式；雷达方向查 HeliRadar.relative。
  */
 @Environment(EnvType.CLIENT)
@@ -41,6 +42,8 @@ public final class CockpitDashboardRenderer {
     /** 环境光下的外壳、表盘、文字及告警色；屏幕使用同一纯白实体底纹。 */
     private static final int CASE = 0xff343e47, BLACK = 0xff10191c, INK = 0xffd8eadc;
     private static final int GREEN = 0xff7ce3bc, AMBER = 0xffffd66b, RED = 0xffff6655;
+    /** 残骸为低反照率焦黑材质，破口和裂纹也只使用环境光，不使用满亮或自发光图层。 */
+    private static final int WRECK_CASE = 0xff242321, WRECK_FACE = 0xff0b0d0e, WRECK_EDGE = 0xff39352e;
     /** 面板朝向舱内 +Z，转换到机体后朝 -Z，保证两种驾驶视角看到同一套仪表。 */
     private static final Vec3d NORMAL = new Vec3d(0, 0, 1);
     /** 面板按真实内舱截面缩放到 80%，保证下排表盘和右侧图标不穿入侧壁内衬。 */
@@ -63,6 +66,10 @@ public final class CockpitDashboardRenderer {
         matrices.push(); matrices.translate(0, 1.10, .82); matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180));
         matrices.scale(PANEL_SCALE, PANEL_SCALE, 1);
         VertexConsumer buffer = consumers.getBuffer(RenderLayer.getEntityCutoutNoCull(HelicopterRenderer.TEXTURE));
+        if(heli.flight.wreck){
+            damagedPanel(matrices,buffer,light);
+            matrices.pop();return;
+        }
         roundedPanel(matrices, buffer, -.85, -.42, .85, .35, 0, CASE, light);
         var s = heli.flight;
         var display = FlightInstruments.sample(heli, delta);
@@ -84,6 +91,79 @@ public final class CockpitDashboardRenderer {
         indicators(heli, matrices, buffer, instrumentLight);
         matrices.pop();
         flushText(consumers,s.running&&!s.wreck);
+    }
+
+    /**
+     * 功能：用撕裂边缘、空白破屏和缺损圆表替代残骸的整套正常仪表。
+     * 引用 net.minecraft.client.render.VertexConsumer 提交普通受光实体几何，不请求背光或字体图层。
+     * 端侧：客户端渲染线程；light 原样使用环境光；不采样飞行读数或修改服务端残骸状态。
+     * 排查：坠机仍亮查是否误入正常仪表分支；亮点查是否提交了正常数字、指示灯或 queueText。
+     */
+    private static void damagedPanel(MatrixStack m,VertexConsumer b,int light){
+        // 外轮廓缺角并向内凹陷；保留背板，避免透过破口直接看到机头外的天空。
+        double[][] outline={{-.85,-.42},{.34,-.42},{.42,-.385},{.53,-.42},{.75,-.42},{.78,-.34},
+                {.70,-.27},{.85,-.19},{.85,.14},{.76,.19},{.81,.30},{.69,.35},
+                {-.68,.35},{-.72,.30},{-.81,.31},{-.85,.23}};
+        Vec3d center=Vec3d.ZERO;
+        for(int i=0;i<outline.length;i++){
+            double[] current=outline[i],next=outline[(i+1)%outline.length];
+            Vec3d p=new Vec3d(current[0],current[1],0),q=new Vec3d(next[0],next[1],0);
+            triangle(m,b,center,p,q,WRECK_CASE,light);
+            // 沿用正常面板 4.5 厘米厚度，断面使用暗色金属，不露出明亮的完整表壳。
+            quad(m,b,p,p.add(0,0,-.045),q.add(0,0,-.045),q,WRECK_EDGE,light);
+        }
+        damagedDial(m,b,-.65,.18,.105,1,light);
+        damagedDial(m,b,-.37,.18,.105,3,light);
+        damagedDial(m,b,-.09,.18,.105,5,light);
+        damagedDial(m,b,-.65,-.14,.115,7,light);
+        damagedDial(m,b,.16,.18,.082,9,light);
+        damagedDial(m,b,.54,.18,.12,11,light);
+        // 高度/垂速屏及状态灯区彻底熄灭，不留下仍可读的彩色数字或亮灯。
+        for(double x:new double[]{-.455,-.225}){
+            rectangle(m,b,x,-.293,x+.17,.022,FACE_Z,WRECK_FACE,light);
+            line(m,b,x+.025,-.27,x+.12,-.14,.002,NEEDLE_Z,WRECK_EDGE,light);
+            line(m,b,x+.12,-.14,x+.08,-.04,.0015,NEEDLE_Z,WRECK_EDGE,light);
+            line(m,b,x+.12,-.14,x+.16,-.10,.0015,NEEDLE_Z,WRECK_EDGE,light);
+        }
+        rectangle(m,b,.27,-.302,.79,.005,FACE_Z,WRECK_FACE,light);
+        line(m,b,.30,-.29,.47,-.14,.003,NEEDLE_Z,WRECK_EDGE,light);
+        line(m,b,.47,-.14,.44,-.02,.002,NEEDLE_Z,WRECK_EDGE,light);
+        line(m,b,.47,-.14,.73,-.09,.002,NEEDLE_Z,WRECK_EDGE,light);
+        // 仪表之间的烧蚀裂口贯穿底板，与表玻璃的细裂纹使用不同宽度。
+        line(m,b,-.82,.30,-.48,.03,.008,FACE_Z,WRECK_FACE,light);
+        line(m,b,-.48,.03,-.53,-.39,.006,FACE_Z,WRECK_FACE,light);
+        line(m,b,-.48,.03,.02,-.05,.004,FACE_Z,WRECK_FACE,light);
+    }
+
+    /**
+     * 功能：绘制缺了一段表圈、破裂玻璃和折断表针的静止残表，不调用正常 dial 或雷达。
+     * 引用 net.minecraft.util.math.Vec3d 描述破口；客户端渲染线程，variant 固定不同表盘的破损方向。
+     * 故障排查：破损不应随帧随机闪烁，所有裂纹深度在表面之前且共用普通环境光。
+     */
+    private static void damagedDial(MatrixStack m,VertexConsumer b,double x,double y,double r,int variant,int light){
+        disk(m,b,x,y,r,FACE_Z,WRECK_FACE,light);
+        for(int i=0;i<SEGMENTS;i++){
+            int sector=(i+variant*3)%SEGMENTS;
+            if(sector<7)continue;
+            double a=i*Math.PI*2/SEGMENTS,next=(i+1)*Math.PI*2/SEGMENTS;
+            double inner=r*(sector==7||sector==SEGMENTS-1?.70:.91);
+            quad(m,b,new Vec3d(x+Math.cos(a)*inner,y+Math.sin(a)*inner,INK_Z),
+                    new Vec3d(x+Math.cos(a)*r,y+Math.sin(a)*r,INK_Z),
+                    new Vec3d(x+Math.cos(next)*r,y+Math.sin(next)*r,INK_Z),
+                    new Vec3d(x+Math.cos(next)*inner,y+Math.sin(next)*inner,INK_Z),WRECK_EDGE,light);
+        }
+        double crackX=x+r*.17,crackY=y-r*.13;
+        for(int ray=0;ray<4;ray++){
+            double angle=variant*.73+ray*1.53;
+            double middleX=x+Math.cos(angle)*r*.55,middleY=y+Math.sin(angle)*r*.55;
+            line(m,b,crackX,crackY,middleX,middleY,.0016,NEEDLE_Z,WRECK_EDGE,light);
+            line(m,b,middleX,middleY,x+Math.cos(angle+.18)*r*.94,y+Math.sin(angle+.18)*r*.94,
+                    .0012,NEEDLE_Z,WRECK_EDGE,light);
+        }
+        // 两截暗金属残针方向不同，不再跟随实际飞行数据。
+        double angle=variant*.41;
+        line(m,b,x,y,x+Math.cos(angle)*r*.28,y+Math.sin(angle)*r*.28,.003,NEEDLE_Z,WRECK_EDGE,light);
+        line(m,b,x+r*.22,y-r*.32,x+r*.53,y-r*.41,.003,NEEDLE_Z,WRECK_EDGE,light);
     }
 
     /**

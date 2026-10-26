@@ -301,7 +301,7 @@ public final class HeliMapScreen extends Screen {
     /** 标题栏按钮保留原版键盘焦点、提示与朗读；只替换 net.minecraft.client.gui.widget.ButtonWidget 的外观。 */
     @Environment(EnvType.CLIENT)
     private static final class MapIconButton extends ButtonWidget{
-        /** true 绘制关闭叉号，false 绘制草图中的回转箭头。 */
+        /** true 绘制关闭叉号，false 绘制环形 Reload 箭头，按钮动作仍为取消导航。 */
         private final boolean closeIcon;
         /** 无可见文字的按钮仍提供本地化名称供 Tooltip 与无障碍朗读使用。 */
         private MapIconButton(int x,int y,Text label,boolean closeIcon,PressAction action){
@@ -316,12 +316,13 @@ public final class HeliMapScreen extends Screen {
             if(closeIcon){
                 line(ctx,x+6,y+6,x+13,y+13,color);line(ctx,x+13,y+6,x+6,y+13,color);
             }else{
-                for(int i=0;i<28;i++){
-                    double a=Math.toRadians(-45+i*10);
+                // 三百余度圆弧接左上角顺时针箭头，避免原图标的箭头与圆弧不相连而呈 U 形。
+                for(int i=0;i<=30;i++){
+                    double a=Math.toRadians(-70+i*10);
                     int px=x+10+(int)Math.round(Math.cos(a)*5),py=y+10+(int)Math.round(Math.sin(a)*5);
                     ctx.fill(px,py,px+1,py+1,color);
                 }
-                line(ctx,x+5,y+9,x+6,y+14,color);line(ctx,x+6,y+14,x+11,y+13,color);
+                line(ctx,x+4,y+6,x+7,y+6,color);line(ctx,x+7,y+6,x+7,y+9,color);
             }
         }
     }

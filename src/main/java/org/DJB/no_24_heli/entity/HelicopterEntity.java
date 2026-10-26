@@ -234,7 +234,8 @@ public class HelicopterEntity extends Entity {
     public void control(PlayerEntity player,ControlPayload p){
         if(!p.valid()||!hasPassenger(player)||flight.wreck)return;
         long tick=getWorld().getTime();
-        if((p.actions()&ControlPayload.DISMOUNT)!=0){requestDismount(player);return;}
+        // DISMOUNT 只保留给绳索；飞机下机由 cabin_door 的 F 意图进入，不接受旧 Shift 控制包。
+        if((p.actions()&ControlPayload.DISMOUNT)!=0)return;
         int seatAction=p.actions()&ControlPayload.SEAT_ACTIONS;
         // 换座先于驾驶权判断，后排也能进入空主驾；本包旧座位的四轴不应用到新座位。
         if(seatAction!=0){cabin.switchSeat(player,Integer.numberOfTrailingZeros(seatAction)-Integer.numberOfTrailingZeros(ControlPayload.SEAT_PILOT));return;}
@@ -622,7 +623,7 @@ public class HelicopterEntity extends Entity {
      * 引用 MC API：net.minecraft.entity.player.PlayerEntity#interact 是原版实体交互入口；
      *      net.minecraft.item.ItemStack/Items 判断维修包、染料、拴绳；ActionResult 决定客户端摆臂/消耗。
      * 端侧/线程：客户端只返回 SUCCESS 让原版继续，所有状态修改在服务端；主线程。
-     * 副作用：可能登机、打开容器、消耗物品、改涂装/燃油、生成村民座位、回收整机；失败不改状态。
+     * 副作用：可能打开容器、消耗物品、改涂装/燃油、生成村民座位、回收整机；右键不让玩家登机。
      * 排查：右键无反应查客户端提前返回/准星；维修无效查冷却和耐久上限；回收失败查 canRecover 条件。
      */
     @Override public ActionResult interact(PlayerEntity player,Hand hand){
@@ -670,7 +671,7 @@ public class HelicopterEntity extends Entity {
             }else if(isOnGround()||hasPassenger(player)||isTouchingWater())openMenu(player);
             return ActionResult.CONSUME;
         }
-        return cabin.board(player)?ActionResult.CONSUME:ActionResult.FAIL;
+        return ActionResult.PASS;
     }
     public void openMenu(PlayerEntity player){
         if(flight.wreck)return;
@@ -847,11 +848,11 @@ public class HelicopterEntity extends Entity {
         message(player,p.clear()?"waypoint_clear":"waypoint_set");dataTracker.set(STATUS,saveFlight());
     }
     /**
-     * 功能：F/Shift 共用下机入口；地面直接开门走下，空中先警告并在 60 tick 内二次确认才跃出。
+     * 功能：F 下机入口；地面直接开门走下，空中先警告并在 60 tick 内二次确认才跃出。
      *
      * 引用 MC API：无直接调用；实际开门/离座交给 {@link HelicopterCabin#beginExit}，
      *      解除乘骑仍由原版 net.minecraft.entity.Entity#stopRiding 完成。
-     * 端侧/线程：仅逻辑服务端；客户端只发送 ControlPayload.DISMOUNT 意图。
+     * 端侧/线程：仅逻辑服务端；客户端通过 CabinDoorPayload 发送 F 意图。
      * 副作用：记录确认窗口或启动离机；地面出口被卡住时由舱位组件直接下载具，不会保留座位。
      * 排查：首次按无反应查 isCabinGrounded；二次按仍不走查动作状态/座位；同 tick 重复请求不算确认。
      */

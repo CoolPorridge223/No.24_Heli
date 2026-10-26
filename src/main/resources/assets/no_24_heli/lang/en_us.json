@@ -133,7 +133,7 @@
   "screen.no_24_heli.radius": "Radius: 16–512 blocks (all heights)",
   "screen.no_24_heli.apply": "Save radius",
   "screen.no_24_heli.radar_readonly": "Only the owner or an operator can edit",
-  "screen.no_24_heli.map": "Navigation map · North up",
+  "screen.no_24_heli.map": "Navigation map · North up  Left drag / Right click: waypoint",
   "screen.no_24_heli.clear_waypoint": "Cancel navigation",
   "screen.no_24_heli.close_map": "Close map",
   "screen.no_24_heli.waypoints": "Waypoints",

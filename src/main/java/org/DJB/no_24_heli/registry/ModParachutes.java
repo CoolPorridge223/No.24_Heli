@@ -16,6 +16,7 @@ import org.DJB.no_24_heli.item.ParachuteRepairRecipe;
 import net.minecraft.recipe.RecipeSerializer;
 import net.minecraft.recipe.SpecialRecipeSerializer;
 import org.DJB.no_24_heli.network.ParachutePayload;
+import org.DJB.no_24_heli.network.ParachuteCancelPayload;
 
 /**
  * 职责：集中注册新跳伞系统，避免向主入口继续添加业务逻辑。
@@ -46,6 +47,12 @@ public final class ModParachutes {
      * 仅服务端主线程改变状态；非法数值拒绝并记录，防止 NaN 污染世界坐标。
      */
     public static void initialize() {
+        PayloadTypeRegistry.playC2S().register(ParachuteCancelPayload.ID,ParachuteCancelPayload.CODEC);
+        ServerPlayNetworking.registerGlobalReceiver(ParachuteCancelPayload.ID,(packet,context)->
+                context.server().execute(()->{
+                    if(context.player().getVehicle() instanceof ParachuteEntity canopy)
+                        canopy.cancelCreativeFlight(context.player());
+                }));
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             for (var player : server.getPlayerManager().getPlayerList())
                 if (player.fallDistance > 2 && !player.horizontalCollision && ParachuteEntity.canStartFreefall(player))
