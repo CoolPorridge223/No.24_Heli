@@ -39,6 +39,8 @@ import org.spongepowered.asm.mixin.injection.invoke.arg.Args;
 public abstract class HeliCrewRendererMixin {
     /** 自定义握杆臂替代玩家原右臂；每次绘制结束恢复，避免污染离机人物及其他渲染。 */
     @org.spongepowered.asm.mixin.Unique private boolean heli$hiddenArm, heli$armVisible, heli$sleeveVisible;
+    /** 夺座双臂补画时保存左臂可见性，所有退出路径均在 render 返回恢复。 */
+    @org.spongepowered.asm.mixin.Unique private boolean cabin$hiddenArms, cabin$leftVisible, cabin$leftSleeveVisible;
     /** 完整描述符避免同时命中 net.minecraft.client.render.entity.LivingEntityRenderer 的桥接方法。 */
     private static final String RENDER = "render(Lnet/minecraft/entity/LivingEntity;FFLnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider;I)V";
     /** 复用 net.minecraft.client.render.entity.LivingEntityRenderer#model，在原版坐姿完成后调整腿部位置。 */
@@ -73,6 +75,11 @@ public abstract class HeliCrewRendererMixin {
             playerModel.rightArm.visible = heli$armVisible;
             playerModel.rightSleeve.visible = heli$sleeveVisible;
             heli$hiddenArm = false;
+            if (cabin$hiddenArms) {
+                playerModel.leftArm.visible = cabin$leftVisible;
+                playerModel.leftSleeve.visible = cabin$leftSleeveVisible;
+                cabin$hiddenArms = false;
+            }
         }
         if (entity.getVehicle() instanceof HelicopterEntity) matrices.pop();
     }
@@ -89,14 +96,18 @@ public abstract class HeliCrewRendererMixin {
         matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(bodyYaw - 180));
         matrices.multiply(HeliView.bodyRotation(heli, delta));
         matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180 + CabinPassengerRenderer.yaw(heli, entity, delta)));
+        float fall = heli.cabin.motion(entity) == org.DJB.no_24_heli.entity.HelicopterCabin.PULL
+                ? org.DJB.no_24_heli.entity.HelicopterCabin.pullPhase(heli.cabin.progress(entity, delta),
+                        org.DJB.no_24_heli.entity.HelicopterCabin.PULL_HIT,
+                        org.DJB.no_24_heli.entity.HelicopterCabin.PULL_LANDED) : 0;
+        float size = MathHelper.lerp(fall, SEATED_SCALE, 1);
         matrices.translate(0, HIP_HEIGHT, 0);
-        matrices.scale(SEATED_SCALE, SEATED_SCALE, SEATED_SCALE);
+        matrices.scale(size, size, size);
         matrices.translate(0, -HIP_HEIGHT, 0);
         if (heli.cabin.motion(entity) == org.DJB.no_24_heli.entity.HelicopterCabin.PULL) {
-            float fall = MathHelper.clamp((heli.cabin.progress(entity, delta) - .25f) / .75f, 0, 1);
-            matrices.translate(0, HIP_HEIGHT - .55 * fall, 0);
-            matrices.multiply(RotationAxis.POSITIVE_X.rotationDegrees(-85 * fall));
-            matrices.translate(0, -HIP_HEIGHT, 0);
+            // 最后一帧与 cabin$prone 共用脚位、比例和 -90° 旋转，真实离座时不会再跳成另一种姿态。
+            matrices.translate(0, .16 * fall, 0);
+            matrices.multiply(RotationAxis.POSITIVE_X.rotationDegrees(-90 * fall));
         }
     }
 
@@ -136,6 +147,22 @@ public abstract class HeliCrewRendererMixin {
             playerModel.rightArm.visible = playerModel.rightSleeve.visible = false;
             heli$hiddenArm = true;
         }
+    }
+
+    /** 原版 net.minecraft.client.render.entity.model.EntityModel#render 前补画分段双臂，保留原模型供装备层读取肩部。 */
+    @Inject(method = RENDER, at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/render/entity/model/EntityModel;render(Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumer;III)V"))
+    private void cabin$arms(LivingEntity entity, float yaw, float delta, MatrixStack matrices,
+            VertexConsumerProvider vertices, int light, CallbackInfo ci) {
+        if (!(entity instanceof net.minecraft.client.network.AbstractClientPlayerEntity player)
+                || ((org.DJB.no_24_heli.entity.CabinPlayerState) player).cabinPullTarget() == null
+                || !(model instanceof net.minecraft.client.render.entity.model.PlayerEntityModel<?> playerModel)) return;
+        CabinPassengerRenderer.renderActionArms(playerModel, player, delta, matrices, vertices, light);
+        heli$armVisible = playerModel.rightArm.visible; heli$sleeveVisible = playerModel.rightSleeve.visible;
+        cabin$leftVisible = playerModel.leftArm.visible; cabin$leftSleeveVisible = playerModel.leftSleeve.visible;
+        playerModel.rightArm.visible = playerModel.rightSleeve.visible = false;
+        playerModel.leftArm.visible = playerModel.leftSleeve.visible = false;
+        heli$hiddenArm = cabin$hiddenArms = true;
     }
 
     /**

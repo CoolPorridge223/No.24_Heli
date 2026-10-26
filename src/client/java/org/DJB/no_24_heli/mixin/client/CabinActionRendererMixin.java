@@ -8,7 +8,9 @@ import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.RotationAxis;
 import org.DJB.no_24_heli.client.camera.CabinActionView;
+import org.DJB.no_24_heli.client.render.CabinPassengerRenderer;
 import org.DJB.no_24_heli.entity.CabinPlayerState;
+import org.DJB.no_24_heli.entity.HelicopterEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -36,14 +38,20 @@ public abstract class CabinActionRendererMixin {
         ci.cancel();
     }
 
-    /** 拉人者始终朝向被拖者，略微后仰；不使用鼠标头部角度决定身体方向。 */
+    /** 拉人者朝向被拖者并转腰蓄力；脚位跟随门把手与后撤路径，不使用鼠标头部角度决定身体方向。 */
     @Inject(method = "setupTransforms(Lnet/minecraft/client/network/AbstractClientPlayerEntity;Lnet/minecraft/client/util/math/MatrixStack;FFFF)V",
             at = @At("TAIL"))
     private void cabin$pullerTransform(AbstractClientPlayerEntity player, MatrixStack matrices, float animation,
             float bodyYaw, float delta, float scale, CallbackInfo ci) {
-        if (((CabinPlayerState) player).cabinPullTarget() == null) return;
-        matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(bodyYaw - CabinActionView.facing(player, delta)));
-        matrices.multiply(RotationAxis.POSITIVE_X.rotationDegrees(-12));
+        HelicopterEntity heli = ((CabinPlayerState) player).cabinPullTarget();
+        if (heli == null) return;
+        var correction = heli.cabin.toWorld(heli.cabin.pullerPosition(player, delta)).subtract(player.getLerpedPos(delta));
+        // setupTransforms 已处于人物偏航空间；先撤销原版旋转再平移世界差值，避免左右门后撤方向颠倒。
+        matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(bodyYaw - 180));
+        matrices.translate(correction.x, correction.y, correction.z);
+        float p = heli.cabin.progress(heli.cabin.pulledOccupant(player), delta);
+        matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180 - CabinActionView.facing(player, delta)
+                + CabinPassengerRenderer.pullerTwist(p)));
     }
 
 }

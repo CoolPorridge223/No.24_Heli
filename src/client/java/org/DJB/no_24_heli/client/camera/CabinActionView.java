@@ -8,6 +8,7 @@ import net.minecraft.client.option.Perspective;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.particle.ParticleTypes;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.DJB.no_24_heli.client.render.CabinPassengerRenderer;
 import org.DJB.no_24_heli.entity.CabinPlayerState;
@@ -26,7 +27,7 @@ public final class CabinActionView {
     private static Perspective previous;
     private static HelicopterEntity scene;
     /** 动作正面距离，保留 net.minecraft.client.render.Camera#clipToSpace 的原版墙壁裁剪。 */
-    public static final float DISTANCE = 3.5f;
+    private static final float DISTANCE = 3.5f, IMPACT_DISTANCE = 2.15f;
 
     /** 静态相机工具，不创建或移动权威实体。 */
     private CabinActionView() {}
@@ -74,13 +75,32 @@ public final class CabinActionView {
         HelicopterEntity heli = state.cabinPullTarget();
         Entity victim = heli == null ? null : heli.cabin.pulledOccupant(player);
         if (victim == null) return player.getYaw(delta);
-        Vec3d direction = victim.getLerpedPos(delta).subtract(player.getLerpedPos(delta));
+        Vec3d direction = heli.cabin.toWorld(heli.cabin.position(victim, delta))
+                .subtract(heli.cabin.toWorld(heli.cabin.pullerPosition(player, delta)));
         return (float) Math.toDegrees(Math.atan2(-direction.x, direction.z));
     }
 
-    /** 拖拽双方共用被拖者的正面画面，向门前偏三十度避开操作者对脸部的遮挡。 */
+    /** 双方共用被拖者的侧前机位，偏向操作者左肘一侧六十五度，避免背部挡住接触点。 */
     public static float cameraYaw(PlayerEntity player, float delta) {
-        return facing(subject(player), delta) + 180 + 30;
+        PlayerEntity victim = subject(player);
+        if (victim.getVehicle() instanceof HelicopterEntity heli && heli.cabin.motion(victim) == HelicopterCabin.PULL)
+            return heli.getYaw(delta) + (heli.cabin.accessSide(victim) == 0 ? -90 : 90) + 180 - 65;
+        return facing(subject(player), delta) + 180 - 65;
+    }
+
+    /** 肘击前平滑推近，在倒地阶段拉回；保留 Camera#clipToSpace 的墙壁裁剪，不改全局 FOV。 */
+    public static float distance(PlayerEntity player, float delta) {
+        float p = pullProgress(player, delta);
+        float zoom = HelicopterCabin.pullPhase(p, HelicopterCabin.PULL_LIFT, HelicopterCabin.PULL_WINDUP)
+                * (1 - HelicopterCabin.pullPhase(p, HelicopterCabin.PULL_HIT + .04f, HelicopterCabin.PULL_LANDED));
+        return MathHelper.lerp(zoom, DISTANCE, IMPACT_DISTANCE);
+    }
+
+    /** 本地双方读取被拖者同一世界时钟；非拖拽阶段返回一，确保登机与眩晕不继承缩放。 */
+    private static float pullProgress(PlayerEntity player, float delta) {
+        PlayerEntity victim = subject(player);
+        return victim.getVehicle() instanceof HelicopterEntity heli && heli.cabin.motion(victim) == HelicopterCabin.PULL
+                ? heli.cabin.progress(victim, delta) : 1;
     }
 
     /** 拉人者镜头取被拖玩家为主体；入座及趴地阶段再跟随自身。 */
@@ -94,7 +114,16 @@ public final class CabinActionView {
         player = subject(player);
         CabinPlayerState state = (CabinPlayerState) player;
         if (state.cabinStunned()) return player.getLerpedPos(delta).add(0, .4, 0);
-        if (player.getVehicle() instanceof HelicopterEntity heli) return HeliView.cockpitPosition(heli, player, delta).add(0, -.4, 0);
+        if (player.getVehicle() instanceof HelicopterEntity heli) {
+            Vec3d center = HeliView.cockpitPosition(heli, player, delta).add(0, -.4, 0);
+            if (heli.cabin.motion(player) == HelicopterCabin.PULL) {
+                float p = heli.cabin.progress(player, delta);
+                // 击中后约两 tick 的微小回弹增强接触感，不叠加随机抖动或改变玩家鼠标角度。
+                float impact = MathHelper.clamp((p - HelicopterCabin.PULL_HIT) / .05f, 0, 1);
+                center = center.add(0, .035 * Math.sin(impact * Math.PI * 2) * (1 - impact), 0);
+            }
+            return center;
+        }
         return player.getLerpedPos(delta).add(0, 1.15, 0);
     }
 }

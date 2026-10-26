@@ -35,9 +35,12 @@ public final class HelicopterCabin {
     public static final double DOOR_BACK = -1.15, REAR_DOOR_FRONT = -.38,
             FRONT_DOOR_BACK = -.31, DOOR_FRONT = .50, DOOR_ANGLE = 78;
     public static final int DOOR_TICKS = 10, BOARD_TICKS = 24, EXIT_TICKS = 20, JUMP_TICKS = 12;
-    /** 动作编号：静坐、迈入、地面走下、空中跃出、被拖出；拖拽先等门全开再播放 1.5 秒。 */
+    /** 动作编号：静坐、迈入、地面走下、空中跃出、被拖出；夺座先开门，再播放拎起、左肘击和倒地。 */
     public static final int SEATED = 0, BOARD = 1, EXIT = 2, JUMP = 3, PULL = 4;
-    public static final int PULL_TICKS = 30;
+    /** 开门后的动作持续 44 tick（2.2 秒）；以下归一化节点由位置、骨骼和镜头共用。 */
+    public static final int PULL_TICKS = 44;
+    public static final float PULL_GRAB = .18f, PULL_LIFT = .48f, PULL_WINDUP = .64f,
+            PULL_HIT = .70f, PULL_LANDED = .96f;
     /** 同侧出口从近到远找可站立点，单位格；升降范围容纳台阶、薄停机坪及收架后的低机身。 */
     private static final double[] EXIT_DISTANCES = {2.05, 2.4, 2.75}, EXIT_OFFSETS = {0, -.35, .35};
     private static final double EXIT_STEP_UP = 1.1, EXIT_STEP_DOWN = 1.5, EXIT_FLOOR_GAP = .02;
@@ -267,11 +270,14 @@ public final class HelicopterCabin {
         Vec3d local = findExit(victim, seat, false);
         if (local == null) { tell(player, "door_exit_blocked"); cancelTakeOver(seat); return; }
         outside[seat] = local;
+        Vec3d pullerEnd = toWorld(pullerPosition(player, 0));
         // removed 会清空本座拖拽身份；先保存操作者，解除后再进入常规登机动画。
         ((CabinPlayerState) player).cabinPull(-1, -1);
         victim.stopRiding(); victim.refreshPositionAfterTeleport(toWorld(local)); victim.setVelocity(Vec3d.ZERO);
         ((CabinPlayerState) victim).cabinStun(heli.getWorld().getTime() + CabinPlayerState.STUN_TICKS,
                 heli.getYaw() + (side(seat) == 0 ? -90 : 90));
+        // 真实登机入口接续最后一帧的后撤脚位，避免视觉拉人者突然跳回动作前的位置。
+        player.refreshPositionAfterTeleport(pullerEnd);
         mount(player, seat, true);
     }
 
@@ -356,8 +362,10 @@ public final class HelicopterCabin {
         if (motions[seat] == SEATED || outside[seat] == null) return seated;
         float p = progress(entity, delta);
         if (motions[seat] == PULL) {
-            double drag = smooth(MathHelper.clamp((p - .18) / .82, 0, 1));
-            return seated.lerp(outside[seat], drag);
+            float lift = pullPhase(p, PULL_GRAB, PULL_LIFT);
+            float fall = pullPhase(p, PULL_HIT, PULL_LANDED);
+            return seated.lerp(outside[seat], pullPhase(p, .06f, PULL_LIFT))
+                    .add(0, .30 * lift * (1 - fall), 0); // 双手拎起三十厘米，受击后才落向地面。
         }
         double t = motions[seat] == BOARD ? p : 1 - p;
         Vec3d threshold = new Vec3d(side(seat) == 0 ? .90 : -.90, .38, seated.z);
@@ -369,6 +377,28 @@ public final class HelicopterCabin {
 
     /** 平滑步进函数；参数为归一化时间，避免端点速度突变。 */
     private static double smooth(double t) { return t * t * (3 - 2 * t); }
+
+    /** 动作片段的平滑进度；COMMON 两端只读，共享端点保证抓取、肘击、倒地与镜头同时发生。 */
+    public static float pullPhase(float progress, float from, float to) {
+        return (float) smooth(MathHelper.clamp((progress - from) / (to - from), 0, 1));
+    }
+
+    /**
+     * 功能：拉人者先靠近门把手，再双手后撤拎出乘员，击中后向旁边让出倒地空间。
+     * 引用 net.minecraft.util.math.Vec3d#lerp 只计算机身局部脚位；渲染读取，服务端完成时接回同一登机入口。
+     * 排查：双手够不到乘员先查门侧及 PULL_LIFT；不改输入锁使用的真实站位或普通上下机路径。
+     */
+    public Vec3d pullerPosition(Entity player, float delta) {
+        Entity victim = pulledOccupant(player);
+        if (victim == null) return localPosition(player);
+        int seat = seat(victim);
+        float p = progress(victim, delta), sign = side(seat) == 0 ? 1 : -1;
+        Vec3d near = new Vec3d(sign * 1.30, outside[seat].y, seatPosition(seat).z - .35);
+        Vec3d retreat = outside[seat].add(sign * .75, 0, 0);
+        return localPosition(player).lerp(near, doorProgress(seat, delta))
+                .lerp(retreat, pullPhase(p, PULL_GRAB, PULL_LIFT))
+                .add(0, 0, .65 * pullPhase(p, PULL_HIT, PULL_LANDED));
+    }
 
     /**
      * 功能：确认离机后自动开门，等待门全开再起身；动画期间保留座位。
