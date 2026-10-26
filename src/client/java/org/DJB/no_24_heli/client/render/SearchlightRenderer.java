@@ -96,6 +96,8 @@ public final class SearchlightRenderer {
     private static final List<Glow> GLOWS=new ArrayList<>();
     /** 仪表文字只保存当前帧的观察空间矩阵，不受探照灯开关、示廓灯闪烁或昼夜控制。 */
     private static final List<BacklitLabel> LABELS=new ArrayList<>();
+    /** 玻璃复用合成深度，但使用标准透明混合；独立于灯具开关，每帧重新登记。 */
+    private static final List<Glass> GLASS=new ArrayList<>();
     /** 字形缓冲跨帧复用，资源重载、离开世界或退出时释放；字体页仍由原版字体管理器持有。 */
     private static BacklitText backlitText;
     /** 当前光影的像素抖动与低分辨率深度比例；主视图灯具登记时读取，不修改光影选项。 */
@@ -117,6 +119,9 @@ public final class SearchlightRenderer {
     private record Glow(HelicopterModel model,String part,int paint,boolean distant,Matrix4f modelView,int color){}
     /** 启动仪表的本地化文字快照；保留样式、姓名和字宽缩放，不重画停机文字。 */
     private record BacklitLabel(Text value,float x,float y,int color,Matrix4f matrix){}
+    /** 保存玻璃的门体矩阵、残骸颜色和环境光；不持有实体，不参与光影阴影图。 */
+    private record Glass(HelicopterModel model,String part,int paint,boolean wreck,boolean distant,
+                         Matrix4f modelView,int light){}
 
     /**
      * 职责：复用 net.minecraft.client.font.TextRenderer 的字体选择和字形顶点，合成时按字体页分批绘制。
@@ -288,13 +293,13 @@ public final class SearchlightRenderer {
         ClientLifecycleEvents.CLIENT_STOPPING.register(client->reset());
         WorldRenderEvents.START.register(context->{
             HelicopterMesh.prepare();if(HelicopterMesh.isShadowPass())return;
-            GLOWS.clear();LABELS.clear();prepared=false;
+            GLOWS.clear();LABELS.clear();GLASS.clear();prepared=false;
             DEPTH_JITTER[0]=0;DEPTH_JITTER[1]=0;
         });
         // 独立于机身视锥；这里只保存主视图，实际光斑须在光影完成世界合成后绘制。
         WorldRenderEvents.AFTER_ENTITIES.register(context->{
             HelicopterMesh.prepare();if(HelicopterMesh.isShadowPass())return;
-            boolean active=!GLOWS.isEmpty()||!LABELS.isEmpty()||NavigationPathRenderer.isVisible();
+            boolean active=!GLOWS.isEmpty()||!LABELS.isEmpty()||!GLASS.isEmpty()||NavigationPathRenderer.isVisible();
             for(var entity:context.world().getEntities())if(entity instanceof HelicopterEntity heli&&heli.flight.searchlight&&!heli.flight.wreck
                     &&context.camera().getPos().squaredDistanceTo(heli.getPos())<VIEW_DISTANCE_SQUARED){active=true;break;}
             if(!active)return;
@@ -333,6 +338,17 @@ public final class SearchlightRenderer {
                 new Matrix4f(RenderSystem.getModelViewMatrix()).mul(matrices.peek().getPositionMatrix()),color));
     }
 
+    /**
+     * 功能：登记整片机窗；引用 net.minecraft.client.util.math.MatrixStack 保留开门和机体姿态。
+     * 端侧：客户端主视图；排除阴影遍历，透明度不依赖 Iris 的实体 alpha 规则，不改服务端状态。
+     */
+    static void queueGlass(HelicopterModel model,String part,HelicopterEntity heli,boolean distant,MatrixStack matrices,int light){
+        if(HelicopterMesh.isShadowPass())return;
+        captureJitter();
+        GLASS.add(new Glass(model,part,heli.flight.paint,heli.flight.wreck,distant,
+                new Matrix4f(RenderSystem.getModelViewMatrix()).mul(matrices.peek().getPositionMatrix()),light));
+    }
+
     /** 功能：登记已启动飞机的文字背光；保存实际观察矩阵，避开阴影遍历，不改变字体布局。 */
     static void queueText(Text value,float x,float y,int color,Matrix4f matrix){
         if(HelicopterMesh.isShadowPass())return;
@@ -340,9 +356,9 @@ public final class SearchlightRenderer {
         LABELS.add(new BacklitLabel(value,x,y,color,new Matrix4f(RenderSystem.getModelViewMatrix()).mul(matrix)));
     }
 
-    /** 功能：首次登记可见发光内容时读取当前实体程序的 TAA 抖动，兼容仅有仪表背光的帧。 */
+    /** 功能：首次登记合成内容时读取当前实体程序的 TAA 抖动，兼容仅有玻璃或仪表背光的帧。 */
     private static void captureJitter(){
-        if(GLOWS.isEmpty()&&LABELS.isEmpty()){
+        if(GLOWS.isEmpty()&&LABELS.isEmpty()&&GLASS.isEmpty()){
             int program=RenderSystem.getShader().getGlRef();
             int location=GL20C.glGetUniformLocation(program,"taa_offset");
             if(location>=0)GL20C.glGetUniformfv(program,location,DEPTH_JITTER);
@@ -419,10 +435,39 @@ public final class SearchlightRenderer {
                         backlitText,TextRenderer.TextLayerType.NORMAL,0,LightmapTextureManager.MAX_LIGHT_COORDINATE);
                 backlitText.flush();
             }
+            drawGlass();
             NavigationPathRenderer.composite();
         }finally{
             VertexBuffer.unbind();shader.unbind();RenderSystem.defaultBlendFunc();RenderSystem.disableBlend();
-            RenderSystem.enableCull();RenderSystem.depthMask(true);RenderSystem.enableDepthTest();GLOWS.clear();LABELS.clear();
+            RenderSystem.enableCull();RenderSystem.depthMask(true);RenderSystem.enableDepthTest();GLOWS.clear();LABELS.clear();GLASS.clear();
+        }
+    }
+
+    /**
+     * 功能：用 net.minecraft.client.render.LightmapTextureManager 的真实光照贴图绘制高透玻璃。
+     * 端侧：世界合成后的渲染线程；保留深度快照遮挡但不写深度，剔除背面使六毫米内外表面只混合一次。
+     * 排查：夜间发白查光照采样；窗框穿透查片元深度容差；多机重叠按观察空间距离由远到近提交。
+     */
+    private static void drawGlass(){
+        if(GLASS.isEmpty())return;
+        var lightmap=MinecraftClient.getInstance().gameRenderer.getLightmapTextureManager();
+        int previousLightmap=RenderSystem.getShaderTexture(2);
+        lightmap.enable();
+        try{
+            shader.addSampler("GlassLightmap",RenderSystem.getShaderTexture(2));
+            RenderSystem.defaultBlendFunc();RenderSystem.enableCull();
+            GLASS.sort(java.util.Comparator.comparingDouble((Glass pane)->
+                    pane.modelView.getTranslation(new Vector3f()).lengthSquared()).reversed());
+            for(var pane:GLASS){
+                uniforms(pane.modelView,7);
+                shader.getUniform("GlassLight").set(((pane.light&65535)+8)/256f,((pane.light>>>16)+8)/256f);
+                shader.bind();
+                for(var segment:HelicopterMesh.mesh(pane.model,pane.part,pane.paint,pane.wreck,pane.distant)){
+                    segment.buffer().bind();segment.buffer().draw();
+                }
+            }
+        }finally{
+            lightmap.disable();RenderSystem.setShaderTexture(2,previousLightmap);RenderSystem.disableCull();
         }
     }
 
@@ -437,7 +482,7 @@ public final class SearchlightRenderer {
         shader.bind();buffer.draw();
     }
 
-    /** 功能：设置主视图快照；模式 0 地表、1 灯芯、2/3 字形、4 灯头深度、5 动态模型、6 导航。 */
+    /** 功能：设置主视图快照；模式 0 地表、1 灯芯、2/3 字形、4 灯头深度、5 动态模型、6 导航、7 玻璃。 */
     private static void uniforms(Matrix4f modelView,int mode){
         var client=MinecraftClient.getInstance();
         shader.initializeUniforms(VertexFormat.DrawMode.QUADS,modelView,worldProjection,client.getWindow());
@@ -657,7 +702,7 @@ public final class SearchlightRenderer {
 
     /** 功能：释放跨帧几何与屏幕快照；仅资源重载、断线和退出调用，不影响正常帧中的灯芯队列。 */
     private static void reset(){
-        clear();GLOWS.clear();LABELS.clear();
+        clear();GLOWS.clear();LABELS.clear();GLASS.clear();
         if(backlitText!=null){backlitText.close();backlitText=null;}
         if(sceneSnapshot!=null){sceneSnapshot.delete();sceneSnapshot=null;}
     }

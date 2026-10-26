@@ -41,8 +41,8 @@ public final class HelicopterModel {
     private final List<Face> camouflage = new ArrayList<>();
     /** 旧编号 0–5 保留丛林、雪、沙、黑、救援及紫金色；新增默认 6 为参考图蓝白警用色。 */
     private static final int[] PAINT_COLORS = {0xff526b40, 0xffe5ebed, 0xffc3a06c, 0xff252b33, 0xffe97a28, 0xff64389b, 0xff234aa4};
-    /** 顶点保持白色，透明中心由贴图 alpha 丢弃，窗缘反光不依赖顶点透明混合。 */
-    private static final int GLASS_COLOR = 0xffffffff;
+    /** 整片玻璃约 90% 透明（alpha=26/255），浅蓝灰色与掠射高光在世界合成后按环境光混合。 */
+    private static final int GLASS_COLOR = 0x1aabcbd8;
     /** 地板顶面沿用原 0.64 格高度，厚 3.5 厘米；相对内蒙皮另留 2.5 厘米净距。 */
     private static final double FLOOR_TOP = .64, FLOOR_THICKNESS = .035, FLOOR_CLEARANCE = .025;
     /** 地板限定在后隔舱之前与仪表罩下方，沿机腹按 32 段采样，单位：格。 */
@@ -988,7 +988,7 @@ public final class HelicopterModel {
      */
     public static void vertex(MatrixStack matrices, VertexConsumer buffer, Vec3d point, Vec3d normal,
             int color, int light, float u, float v) {
-        // SpriteTexturedVertexConsumer 的方法会返回底层消费者，分步调用以保留玻璃图集的 UV 变换。
+        // 包装消费者的方法可能返回底层对象，分步调用以保留调用方的 UV 和属性适配。
         buffer.vertex(matrices.peek(), (float) point.x, (float) point.y, (float) point.z);
         buffer.color(color);
         buffer.texture(u, v);

@@ -1,7 +1,7 @@
 {
   "vertex":"no_24_heli:searchlight",
   "fragment":"no_24_heli:searchlight",
-  "samplers":[{"name":"SceneDepth"},{"name":"SceneColor"},{"name":"BlockAtlas"},{"name":"FontAtlas"},{"name":"LightDepth"}],
+  "samplers":[{"name":"SceneDepth"},{"name":"SceneColor"},{"name":"BlockAtlas"},{"name":"FontAtlas"},{"name":"LightDepth"},{"name":"GlassLightmap"}],
   "uniforms":[
     {"name":"ModelViewMat","type":"matrix4x4","count":16,"values":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},
     {"name":"ProjMat","type":"matrix4x4","count":16,"values":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},
@@ -10,6 +10,7 @@
     {"name":"ScreenSize","type":"float","count":2,"values":[1,1]},
     {"name":"DepthScale","type":"float","count":1,"values":[1]},
     {"name":"DepthJitter","type":"float","count":2,"values":[0,0]},
+    {"name":"GlassLight","type":"float","count":2,"values":[0.03125,0.03125]},
     {"name":"LightOrigin","type":"float","count":3,"values":[0,0,0]},
     {"name":"LightDirection","type":"float","count":3,"values":[0,-1,0]},
     {"name":"LightConeOffset","type":"float","count":1,"values":[0]},

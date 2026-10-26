@@ -6,9 +6,7 @@ import net.fabricmc.api.Environment;
 import net.minecraft.client.render.Frustum;
 import net.minecraft.client.render.LightmapTextureManager;
 import net.minecraft.client.render.RenderLayer;
-import net.minecraft.client.render.TexturedRenderLayers;
 import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.texture.SpriteAtlasTexture;
 import net.minecraft.client.render.entity.EntityRenderer;
 import net.minecraft.client.render.entity.EntityRendererFactory;
 import net.minecraft.client.util.math.MatrixStack;
@@ -30,7 +28,7 @@ import org.joml.Vector3f;
  * net.minecraft.client.render.RenderLayer 为玻璃启用透明混合，为机壳保留普通光照。
  * 生命周期：客户端 EntityRendererRegistry 创建，每帧由实体分派器调用。
  * 端侧/线程：仅客户端渲染线程，姿态与动画仅读取已同步状态。
- * 排查：天空变黑查机窗中央是否被 alpha 丢弃；窗缘重复查整窗 UV；部件漂移查 push/pop。
+ * 排查：天空变黑查玻璃是否误写实体深度；玻璃明暗查合成队列和环境光；部件漂移查 push/pop。
  */
 @Environment(EnvType.CLIENT)
 public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
@@ -47,8 +45,6 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
     private static final Identifier SURFACE = No_24_heli.id("textures/entity/heli_surface.png");
     private static final Identifier NUMBER = No_24_heli.id("textures/entity/heli_number_24.png");
     private static final Identifier WORDMARK = No_24_heli.id("textures/entity/heli_wordmark_laker.png");
-    /** 机窗中心完全透明，仅窗缘保留可见材质，避免无透明实体通道的光影覆盖天空深度与法线。 */
-    private static final Identifier GLASS_SPRITE = No_24_heli.id("block/heli_glass_edge");
     /** 近景保持原模型，64 格外惰性构建简化原型；同类原型的 VBO 由 HelicopterMesh 跨实体共享。 */
     private final HelicopterModel model = new HelicopterModel();
     private HelicopterModel distantModel;
@@ -82,7 +78,7 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
      * 功能：按共同姿态绘制机壳、实体仪表及透明玻璃；引用 MC API：
      * net.minecraft.client.util.math.MatrixStack 隔离部件变换，net.minecraft.client.render.RenderLayer 选择深度/混合路径。
      * 端侧：渲染线程；参数：heli/yaw/delta/matrices/consumers/light 为实体及帧绘制环境；返回：无。
-     * 副作用：提交顶点；排查：机窗使用 alpha 丢弃，中央不能写入实体深度或光影材质缓冲。
+     * 副作用：提交顶点；排查：机窗在世界合成后透明混合，不能写入实体深度或光影材质缓冲。
      */
     @Override public void render(HelicopterEntity heli, float yaw, float delta, MatrixStack matrices,
             VertexConsumerProvider consumers, int light) {
@@ -167,16 +163,14 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
                 heli.flight.wreck ? light : (light & 0xffff0000) | Math.max(light & 0xffff, LightmapTextureManager.pack(11, 0)));
         if (!collecting && !HelicopterMesh.isShadowPass() && (cockpit || camera.lengthSquared() < INSTRUMENT_DISTANCE_SQUARED))
             dashboard.render(heli, delta, matrices, consumers, light);
-        // 窗缘走原版裁切层，透明中央的片元被丢弃，不依赖光影对半透明实体的混合实现。
-        var glassSprite = client.getSpriteAtlas(SpriteAtlasTexture.BLOCK_ATLAS_TEXTURE).apply(GLASS_SPRITE);
-        selected.render("glass", matrices, glassSprite.getTextureSpecificVertexConsumer(
-                consumers.getBuffer(TexturedRenderLayers.getEntityCutout())),
-                light, heli.flight.paint, heli.flight.wreck);
-        for(int door=0;door<HelicopterCabin.SEATS;door++){
-            matrices.push();rotateDoor(matrices,heli,door,delta);
-            selected.render("door"+door+"_glass",matrices,glassSprite.getTextureSpecificVertexConsumer(
-                    consumers.getBuffer(TexturedRenderLayers.getEntityCutout())),light,heli.flight.paint,heli.flight.wreck);
-            matrices.pop();
+        // 高透玻璃不作为探照灯的实心遮挡物；主视图保留门动画和真实环境光，阴影遍历由队列过滤。
+        if(!collecting){
+            SearchlightRenderer.queueGlass(selected,"glass",heli,distant,matrices,light);
+            for(int door=0;door<HelicopterCabin.SEATS;door++){
+                matrices.push();rotateDoor(matrices,heli,door,delta);
+                SearchlightRenderer.queueGlass(selected,"door"+door+"_glass",heli,distant,matrices,light);
+                matrices.pop();
+            }
         }
         CabinPassengerRenderer.renderFirstPerson(heli,delta,matrices,consumers,light);
         matrices.pop();

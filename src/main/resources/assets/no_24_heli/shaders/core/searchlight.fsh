@@ -6,6 +6,8 @@ uniform sampler2D SceneColor;
 uniform sampler2D BlockAtlas;
 uniform sampler2D FontAtlas;
 uniform sampler2D LightDepth;
+uniform sampler2D GlassLightmap;
+uniform vec2 GlassLight;
 uniform mat4 LightMatrix;
 uniform mat4 InverseProjection;
 uniform vec2 ScreenSize;
@@ -61,7 +63,7 @@ void main() {
     vec4 savedPosition = InverseProjection * vec4(screen * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
     float savedZ = savedPosition.z / savedPosition.w;
     // 背光字形只保留半毫米基础容差，不能漏过紧贴表面的指针而呈现悬浮文字。
-    float tolerance = max(LightMode == 2 || LightMode == 3 ? 0.0005 : 0.08, fwidth(viewPosition.z) * 1.5 / DepthScale);
+    float tolerance = max(LightMode == 2 || LightMode == 3 || LightMode == 7 ? 0.0005 : 0.08, fwidth(viewPosition.z) * 1.5 / DepthScale);
     if (viewPosition.z < savedZ - tolerance) discard;
     // 导航为个人目镜覆盖层，颜色与透明度独立于光影材质和雾；场景深度仍遮挡机体及地形。
     if (LightMode == 6) {
@@ -69,6 +71,19 @@ void main() {
         return;
     }
     float fogVisibility = 1.0 - smoothstep(FogStart, max(FogStart + 0.001, FogEnd), vertexDistance);
+    if (LightMode == 7) {
+        // 整窗保持约 10% 不透明度；高光只改变颜色，不能把掠射角变成挡视野的实心玻璃。
+        vec3 normal = normalize(surfaceNormal);
+        float facing = clamp(abs(dot(normal, normalize(-viewPosition))), 0.0, 1.0);
+        float fresnel = pow(1.0 - facing, 5.0);
+        vec2 edgeDistance = min(materialUv, vec2(1.0) - materialUv);
+        float edge = 1.0 - smoothstep(0.0, 0.025, min(edgeDistance.x, edgeDistance.y));
+        // 窗缘使用整窗 UV，不在细分面重复；残骸亮度随顶点色压暗，夜晚由真实光照贴图降亮。
+        vec3 tint = materialTint.rgb * (0.78 + 0.22 * max(fresnel, edge));
+        vec3 light = texture(GlassLightmap, clamp(GlassLight, vec2(0.5 / 16.0), vec2(15.5 / 16.0))).rgb;
+        fragColor = vec4(tint * light, materialTint.a * fogVisibility);
+        return;
+    }
     if (LightMode == 2 || LightMode == 3) {
         vec4 glyph = texture(FontAtlas, materialUv);
         if (LightMode == 3) glyph = vec4(1.0, 1.0, 1.0, glyph.r);
