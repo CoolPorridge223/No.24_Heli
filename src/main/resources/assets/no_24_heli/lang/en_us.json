@@ -186,7 +186,7 @@
   "message.no_24_heli.route_start_enclosed": "Planning failed: start is enclosed by restricted airspace and cannot reach the goal.",
   "message.no_24_heli.route_goal_enclosed": "Planning failed: goal is enclosed by restricted airspace and cannot be reached from the start.",
   "message.no_24_heli.route_different_enclosed": "Planning failed: start and goal are in disconnected enclosed regions.",
-  "message.no_24_heli.route_grid_resolution": "Safety clearance or grid resolution cannot represent a traversable route. Check endpoint clearance, passage width and gridCellSize.",
+  "message.no_24_heli.route_grid_resolution": "The helicopter or waypoint is too close to a no-fly zone.",
   "message.no_24_heli.route_cell_limit": "Planning failed: required grid exceeds pathMaxCells.",
   "message.no_24_heli.route_node_limit": "Planning failed: visited nodes exceed pathMaxNodes.",
   "message.no_24_heli.route_geometry_limit": "Planning failed: circle rasterization or enclosure checks exceed the geometry budget.",
@@ -244,5 +244,11 @@
   "hud.no_24_heli.rear_right": "Rear right",
   "hud.no_24_heli.cabin_takeover_after": "to pull out the occupant and take this seat",
   "message.no_24_heli.seat_occupied": "This door's seat is occupied; press the boarding key to take it",
-  "message.no_24_heli.takeover_unavailable": "Wait until the helicopter is stationary on land and the occupant is seated"
+  "message.no_24_heli.takeover_unavailable": "Wait until the helicopter is stationary on land and the occupant is seated",
+  "key.no_24_heli.seat_pilot": "Switch to pilot (hold Ctrl)",
+  "key.no_24_heli.seat_copilot": "Switch to copilot (hold Ctrl)",
+  "key.no_24_heli.seat_rear_left": "Switch to rear left (hold Ctrl)",
+  "key.no_24_heli.seat_rear_right": "Switch to rear right (hold Ctrl)",
+  "message.no_24_heli.seat_switch_occupied": "This seat is already occupied by a player",
+  "message.no_24_heli.seat_switch_unavailable": "Wait until the current boarding or exit action finishes before switching seats"
 }

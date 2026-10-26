@@ -22,14 +22,17 @@ public record ControlPayload(float pitch,float roll,float pedal,float collective
     public static final int ROPE_BOARD=2048;
     /** N 开关与方向键连续瞄准；只影响探照灯，不参与飞控轴或自动驾驶接管。 */
     public static final int SEARCHLIGHT=4096, LIGHT_LEFT=8192, LIGHT_RIGHT=16384, LIGHT_UP=32768, LIGHT_DOWN=65536;
-    /** 现有十二位动作及五位灯具动作，包的四轴与 VarInt 布局保持；超出此掩码的位一律拒绝。 */
-    private static final int VALID_ACTIONS=(1<<17)-1;
+    /** Ctrl+1/2/3/4 的固定目标座位，只允许一个目标座位；沿用四轴与 VarInt 布局。 */
+    public static final int SEAT_PILOT=1<<17, SEAT_COPILOT=1<<18, SEAT_REAR_LEFT=1<<19, SEAT_REAR_RIGHT=1<<20;
+    public static final int SEAT_ACTIONS=SEAT_PILOT|SEAT_COPILOT|SEAT_REAR_LEFT|SEAT_REAR_RIGHT;
+    /** 原有十七位动作加四位换座，超出掩码或同时请求多个座位均拒绝。 */
+    private static final int VALID_ACTIONS=(1<<21)-1;
     /** 线格式固定为四轴 Float + 动作 VarInt；顺序与客户端/服务端协议表必须同步修改。 */
     public static final PacketCodec<RegistryByteBuf,ControlPayload> CODEC=new PacketCodec<>() {
         public ControlPayload decode(RegistryByteBuf b) { return new ControlPayload(b.readFloat(),b.readFloat(),b.readFloat(),b.readFloat(),b.readVarInt()); }
         public void encode(RegistryByteBuf b,ControlPayload p) { b.writeFloat(p.pitch);b.writeFloat(p.roll);b.writeFloat(p.pedal);b.writeFloat(p.collective);b.writeVarInt(p.actions); }
     };
     /** 系统边界校验：拒绝 NaN/Infinity 和未定义动作位；有限轴随后由 control() 限幅到 -1..1。 */
-    public boolean valid() { return Float.isFinite(pitch)&&Float.isFinite(roll)&&Float.isFinite(pedal)&&Float.isFinite(collective)&&(actions&~VALID_ACTIONS)==0; }
+    public boolean valid() { return Float.isFinite(pitch)&&Float.isFinite(roll)&&Float.isFinite(pedal)&&Float.isFinite(collective)&&(actions&~VALID_ACTIONS)==0&&Integer.bitCount(actions&SEAT_ACTIONS)<=1; }
     @Override public Id<? extends CustomPayload> getId(){return ID;}
 }

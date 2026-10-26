@@ -10,6 +10,7 @@ import org.DJB.no_24_heli.client.camera.HeliView;
 import org.DJB.no_24_heli.client.hud.HeliHud;
 import org.DJB.no_24_heli.client.hud.HeliRadar;
 import org.DJB.no_24_heli.client.input.ParachuteClient;
+import org.DJB.no_24_heli.client.input.CabinSeatClient;
 import org.DJB.no_24_heli.client.map.ExploredMap;
 import org.DJB.no_24_heli.client.network.ServerRadioCache;
 import org.DJB.no_24_heli.client.render.HelicopterRenderer;
@@ -145,6 +146,7 @@ public class No_24_heliClient implements ClientModInitializer {
      *      按钮重复查 ScreenEvents 是否移除旧按钮。
      */
     @Override public void onInitializeClient(){
+        CabinSeatClient.init();
         HeliClientConfig.load();
         org.DJB.no_24_heli.client.render.NavigationPathRenderer.register();
         // 渲染与输入模块各自维护缓存，入口只做一次性注册；资源重载由各模块自行处理。
@@ -194,13 +196,14 @@ public class No_24_heliClient implements ClientModInitializer {
                 if(client.currentScreen==null&&client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity)
                     HeliView.togglePerspective(client);
             }
+            int seatAction=CabinSeatClient.pollAction(client);
             if(client.world==null||client.player==null){sounds.clear();HeliRadar.reset();return;}
             // 所有附近直升机都播放连续音源，转速决定音高和音量。
             sounds.entrySet().removeIf(e->e.getValue().isDone());
             for(var entity:client.world.getEntities())if(entity instanceof HelicopterEntity h&&h.flight.rpm>.015&&!sounds.containsKey(h.getId())){
                 var sound=new RotorSound(h);sounds.put(h.getId(),sound);client.getSoundManager().play(sound);
             }
-            int action=pressed(START,1)|pressed(ALT,2)|pressed(TRIM,4)|pressed(CRUISE,8)|pressed(GEAR,16)|pressed(ROPE,32)|pressed(EXIT,64)|pressed(MENU,128)|pressed(AUTO,ControlPayload.AUTOPILOT)|pressed(AUTO_FLIGHT,ControlPayload.AUTO_FLIGHT)|pressed(SEARCHLIGHT,ControlPayload.SEARCHLIGHT);
+            int action=seatAction|pressed(START,1)|pressed(ALT,2)|pressed(TRIM,4)|pressed(CRUISE,8)|pressed(GEAR,16)|pressed(ROPE,32)|pressed(EXIT,64)|pressed(MENU,128)|pressed(AUTO,ControlPayload.AUTOPILOT)|pressed(AUTO_FLIGHT,ControlPayload.AUTO_FLIGHT)|pressed(SEARCHLIGHT,ControlPayload.SEARCHLIGHT);
             if(MAP.wasPressed()){
                 if(client.currentScreen instanceof HeliMapScreen)client.setScreen(null);
                 else if(client.currentScreen==null&&client.player.getVehicle() instanceof HelicopterEntity)client.setScreen(new HeliMapScreen());
@@ -233,7 +236,8 @@ public class No_24_heliClient implements ClientModInitializer {
                             |(LIGHT_UP.isPressed()?ControlPayload.LIGHT_UP:0)|(LIGHT_DOWN.isPressed()?ControlPayload.LIGHT_DOWN:0);
                 }
                 pedal=(RIGHT.isPressed()||InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_E)?1:0)-(LEFT.isPressed()||InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_Q)?1:0);
-                collective=(client.options.jumpKey.isPressed()?1:0)-(InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_LEFT_CONTROL)?1:0);
+                collective=(client.options.jumpKey.isPressed()?1:0)-(InputUtil.isKeyPressed(client.getWindow().getHandle(),GLFW.GLFW_KEY_LEFT_CONTROL)
+                        &&seatAction==0&&!CabinSeatClient.suppressCollective()?1:0);
             }else action=0;
             ClientPlayNetworking.send(new ControlPayload(cyclicPitch,cyclicRoll,pedal,collective,action));
         });

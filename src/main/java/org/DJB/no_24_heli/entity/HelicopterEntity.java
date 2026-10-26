@@ -235,6 +235,9 @@ public class HelicopterEntity extends Entity {
         if(!p.valid()||!hasPassenger(player)||flight.wreck)return;
         long tick=getWorld().getTime();
         if((p.actions()&ControlPayload.DISMOUNT)!=0){requestDismount(player);return;}
+        int seatAction=p.actions()&ControlPayload.SEAT_ACTIONS;
+        // 换座先于驾驶权判断，后排也能进入空主驾；本包旧座位的四轴不应用到新座位。
+        if(seatAction!=0){cabin.switchSeat(player,Integer.numberOfTrailingZeros(seatAction)-Integer.numberOfTrailingZeros(ControlPayload.SEAT_PILOT));return;}
         if((p.actions()&ControlPayload.MENU)!=0&&tick-lastActions>=5){openMenu(player);lastActions=tick;}
         if((p.actions()&ControlPayload.EXIT_ROPE)!=0&&flight.rope&&tick-lastActions>=5){rappel(player);lastActions=tick;return;}
         if(!isPilot(player)||cabin.motion(player)!=HelicopterCabin.SEATED)return;

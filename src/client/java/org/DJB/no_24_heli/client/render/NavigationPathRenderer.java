@@ -39,8 +39,8 @@ import org.joml.Vector3f;
 public final class NavigationPathRenderer {
     /** 箭头含描边宽 1/3 米、长 0.6 米、间隔一米；白边厚两厘米，中心 RGB 为 0.9。 */
     private static final double HALF_WIDTH = 1.0 / 6, ARROW_LENGTH = .6, SPACING = 1, BORDER = .02;
-    /** 接回原轨迹前七米处；起点在机舱中心半径两米的球面上，球外五米渐显，最远显示六十四米。 */
-    private static final double JOIN_DISTANCE = 7, CABIN_RADIUS = 2, LENGTH = 64, FADE = 5;
+    /** 接回原轨迹前十二米处；起点在机舱中心半径两米的球面上，球外五米渐显，最远显示六十四米。 */
+    private static final double JOIN_DISTANCE = 12, CABIN_RADIUS = 2, LENGTH = 64, FADE = 5;
     /** 接回曲线每十厘米以内采样，至少十二段；控制柄不超过接回范围的一半，避免偏航时大幅绕圈。 */
     private static final double CONNECTION_STEP = .1, MAX_HANDLE = JOIN_DISTANCE / 2;
     private static final int MIN_CONNECTION_STEPS = 12;
@@ -215,7 +215,7 @@ public final class NavigationPathRenderer {
         return selected;
     }
 
-    /** 功能：保留原轨迹前七米段末端之后的固定航点，先供 connection 构造完整平滑航路。 */
+    /** 功能：保留原轨迹前十二米段末端之后的固定航点，先供 connection 构造完整平滑航路。 */
     private static List<Vec3d> clip(double start) {
         List<Vec3d> result = new ArrayList<>();
         double along = 0;
