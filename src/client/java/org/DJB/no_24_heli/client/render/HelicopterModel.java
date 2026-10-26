@@ -41,7 +41,7 @@ public final class HelicopterModel {
     private final List<Face> camouflage = new ArrayList<>();
     /** 旧编号 0–5 保留丛林、雪、沙、黑、救援及紫金色；新增默认 6 为参考图蓝白警用色。 */
     private static final int[] PAINT_COLORS = {0xff526b40, 0xffe5ebed, 0xffc3a06c, 0xff252b33, 0xffe97a28, 0xff64389b, 0xff234aa4};
-    /** 整片玻璃 80% 透明（alpha=51/255），环境光与可用的 LabPBR 反射在世界合成后混合。 */
+    /** 普通玻璃 80% 透明（alpha=51/255），颜色按环境光在世界合成后混合。 */
     private static final int GLASS_COLOR = 0x33abcbd8;
     /** 地板顶面沿用原 0.64 格高度，厚 3.5 厘米；相对内蒙皮另留 2.5 厘米净距。 */
     private static final double FLOOR_TOP = .64, FLOOR_THICKNESS = .035, FLOOR_CLEARANCE = .025;
@@ -78,6 +78,8 @@ public final class HelicopterModel {
     private final List<Face> cyclic = new ArrayList<>();
     /** 四门的外壳、内衬、玻璃及涂装独立缓存，门号对应固定座号，所有面共用同一铰链。 */
     private final java.util.Map<String,List<Face>> doors = new java.util.HashMap<>();
+    /** 各独立窗面的真实局部中心；合成时变换到观察空间排序，不能沿用关门时重合的机身原点。 */
+    private final java.util.Map<String,Vec3d> glassCenters = new java.util.HashMap<>();
     /** 舱灯位置只用于内饰光照衰减，单位：机体局部格数。 */
     private static final Vec3d CABIN_LAMP_POSITION = new Vec3d(0, 1.94, -.12);
 
@@ -118,6 +120,7 @@ public final class HelicopterModel {
         buildCabin();
         if (!distant) buildPanelSeams();
         splitDoors(shell,"shell");splitDoors(interior,"interior");splitDoors(glass,"glass");
+        buildGlassParts();
         buildDoorFrames();
         buildTail();
         buildNumber();
@@ -207,6 +210,32 @@ public final class HelicopterModel {
                 output.remove(i);
         return output;
     }
+
+    /**
+     * 功能：把左右风挡分开并缓存每片窗面的中心，避免远侧玻璃在近侧玻璃之后混合。
+     * 引用 net.minecraft.util.math.Vec3d 保存几何中心；仅客户端构造期，保留内外厚度、绕序和连续法线。
+     * 排查：关门时排序失效查是否仍用部件矩阵的平移量，开门时中心须应用同一门体矩阵。
+     */
+    private void buildGlassParts() {
+        for (int side = 0; side < 2; side++) {
+            List<Face> pane = new ArrayList<>();
+            for (Face face : glass) {
+                double x = face.a.position.x + face.b.position.x + face.c.position.x + face.d.position.x;
+                if ((x >= 0 ? 0 : 1) == side) pane.add(face);
+            }
+            doors.put("windshield" + side + "_glass", pane);
+        }
+        for (var entry : doors.entrySet()) {
+            if (!entry.getKey().endsWith("_glass")) continue;
+            Vec3d center = Vec3d.ZERO;
+            for (Face face : entry.getValue())
+                center = center.add(face.a.position).add(face.b.position).add(face.c.position).add(face.d.position);
+            glassCenters.put(entry.getKey(), center.multiply(1.0 / (4 * entry.getValue().size())));
+        }
+    }
+
+    /** 功能：返回独立窗面的局部中心供透明排序；net.minecraft.util.math.Vec3d 为构造期缓存，仅渲染线程读取。 */
+    Vec3d glassCenter(String part) { return glassCenters.get(part); }
 
     /** 门沿封住蒙皮厚度，齐平把手位于后缘；net.minecraft.util.math.Vec3d 描述真实曲面与铰链。 */
     private void buildDoorFrames(){

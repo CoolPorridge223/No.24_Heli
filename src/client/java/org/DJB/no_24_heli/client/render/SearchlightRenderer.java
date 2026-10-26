@@ -35,7 +35,6 @@ import net.minecraft.client.texture.SpriteAtlasTexture;
 import net.minecraft.client.util.BufferAllocator;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
@@ -99,16 +98,9 @@ public final class SearchlightRenderer {
     private static final List<BacklitLabel> LABELS=new ArrayList<>();
     /** 玻璃复用合成深度，但使用标准透明混合；独立于灯具开关，每帧重新登记。 */
     private static final List<Glass> GLASS=new ArrayList<>();
-    /** 非金属玻璃的 LabPBR 数据：R 为感知光滑度，G 为线性 F0；资源包可覆盖此贴图。 */
-    private static final Identifier GLASS_SPECULAR=No_24_heli.id("textures/entity/heli_glass_s.png");
-    /** 每次资源重载后只检测一次材质；缺少贴图时保留环境光透明玻璃，不采样缺失纹理。 */
-    private static boolean glassMaterialChecked,glassSpecularAvailable;
-    /** 世界阶段保存天空颜色与观察空间竖直轴，屏幕外反射按昼夜/天气及玻璃处的天空光近似。 */
-    private static Vec3d glassSkyColor=Vec3d.ZERO;
-    private static final Vector3f GLASS_SKY_UP=new Vector3f();
     /** 字形缓冲跨帧复用，资源重载、离开世界或退出时释放；字体页仍由原版字体管理器持有。 */
     private static BacklitText backlitText;
-    /** 当前光影的像素抖动与低分辨率深度比例；主视图灯具登记时读取，不修改光影选项。 */
+    /** 当前光影在深度纹理中的 UV 偏移；主视图首次登记时换算，不修改光影选项。 */
     private static final float[] DEPTH_JITTER=new float[2];
     private static int revision=-1;
     /** 主视图矩阵与雾参数在世界阶段保存，稍后在原版清空手持物深度前使用；不沿用阴影相机。 */
@@ -127,9 +119,9 @@ public final class SearchlightRenderer {
     private record Glow(HelicopterModel model,String part,int paint,boolean distant,Matrix4f modelView,int color){}
     /** 启动仪表的本地化文字快照；保留样式、姓名和字宽缩放，不重画停机文字。 */
     private record BacklitLabel(Text value,float x,float y,int color,Matrix4f matrix){}
-    /** 保存玻璃的门体矩阵、残骸颜色和环境光；不持有实体，不参与光影阴影图。 */
+    /** 保存玻璃的门体矩阵、残骸颜色、环境光和窗面中心观察深度；不持有实体，不参与光影阴影图。 */
     private record Glass(HelicopterModel model,String part,int paint,boolean wreck,boolean distant,
-                         Matrix4f modelView,int light){}
+                         Matrix4f modelView,int light,float viewZ){}
 
     /**
      * 职责：复用 net.minecraft.client.font.TextRenderer 的字体选择和字形顶点，合成时按字体页分批绘制。
@@ -318,8 +310,6 @@ public final class SearchlightRenderer {
             cameraPosition=context.camera().getPos();viewFrustum=context.frustum();
             tickDelta=context.tickCounter().getTickDelta(false);fogStart=RenderSystem.getShaderFogStart();fogEnd=RenderSystem.getShaderFogEnd();
             fogShape=RenderSystem.getShaderFogShape().getId();
-            glassSkyColor=context.world().getSkyColor(cameraPosition,tickDelta);
-            worldView.transformDirection(0,1,0,GLASS_SKY_UP).normalize();
             prepared=true;
         });
         // 方块实体在 AFTER_ENTITIES 之后才绘制；所有不透明与透明实体层提交后再保存深度。
@@ -355,8 +345,10 @@ public final class SearchlightRenderer {
     static void queueGlass(HelicopterModel model,String part,HelicopterEntity heli,boolean distant,MatrixStack matrices,int light){
         if(HelicopterMesh.isShadowPass())return;
         captureJitter();
-        GLASS.add(new Glass(model,part,heli.flight.paint,heli.flight.wreck,distant,
-                new Matrix4f(RenderSystem.getModelViewMatrix()).mul(matrices.peek().getPositionMatrix()),light));
+        Matrix4f modelView=new Matrix4f(RenderSystem.getModelViewMatrix()).mul(matrices.peek().getPositionMatrix());
+        Vec3d center=model.glassCenter(part);
+        float viewZ=modelView.transformPosition(new Vector3f((float)center.x,(float)center.y,(float)center.z)).z;
+        GLASS.add(new Glass(model,part,heli.flight.paint,heli.flight.wreck,distant,modelView,light,viewZ));
     }
 
     /** 功能：登记已启动飞机的文字背光；保存实际观察矩阵，避开阴影遍历，不改变字体布局。 */
@@ -366,12 +358,24 @@ public final class SearchlightRenderer {
         LABELS.add(new BacklitLabel(value,x,y,color,new Matrix4f(RenderSystem.getModelViewMatrix()).mul(matrix)));
     }
 
-    /** 功能：首次登记合成内容时读取当前实体程序的 TAA 抖动，兼容仅有玻璃或仪表背光的帧。 */
+    /**
+     * 功能：首次登记时从当前实体程序读取 TAA 抖动并换算深度 UV，兼容仅有玻璃或仪表背光的帧。
+     * 引用 com.mojang.blaze3d.systems.RenderSystem 取得实体程序；客户端渲染线程，不改变光影配置。
+     * 排查：Kappa 的 taaOffset 是裁剪空间偏移，按其 VertexDownscaling 公式乘 0.5；Photon 保留既有换算。
+     */
     private static void captureJitter(){
         if(GLOWS.isEmpty()&&LABELS.isEmpty()&&GLASS.isEmpty()){
             int program=RenderSystem.getShader().getGlRef();
-            int location=GL20C.glGetUniformLocation(program,"taa_offset");
-            if(location>=0)GL20C.glGetUniformfv(program,location,DEPTH_JITTER);
+            int location=GL20C.glGetUniformLocation(program,"taaOffset");
+            float factor=.5f;
+            if(location<0){
+                location=GL20C.glGetUniformLocation(program,"taa_offset");
+                factor=HelicopterMesh.depthScale()<1?.5f:.33f;
+            }
+            if(location>=0){
+                GL20C.glGetUniformfv(program,location,DEPTH_JITTER);
+                DEPTH_JITTER[0]*=factor;DEPTH_JITTER[1]*=factor;
+            }
         }
     }
 
@@ -454,33 +458,24 @@ public final class SearchlightRenderer {
     }
 
     /**
-     * 功能：用 net.minecraft.client.render.LightmapTextureManager 的真实光照及可用 LabPBR 材质绘制玻璃。
+     * 功能：用 net.minecraft.client.render.LightmapTextureManager 的真实光照绘制普通透明玻璃。
      * 端侧：世界合成后的渲染线程；保留深度快照遮挡但不写深度，剔除背面使六毫米内外表面只混合一次。
-     * 排查：夜间发白查光照采样；窗框穿透查片元深度容差；多机重叠按观察空间距离由远到近提交。
+     * 排查：夜间发白查光照采样；窗框穿透查片元深度容差；多机及开门重叠按真实窗面中心深度排序。
      */
     private static void drawGlass(){
         if(GLASS.isEmpty())return;
         var client=MinecraftClient.getInstance();
-        if(!glassMaterialChecked){
-            glassSpecularAvailable=client.getResourceManager().getResource(GLASS_SPECULAR).isPresent();
-            glassMaterialChecked=true;
-        }
         var lightmap=client.gameRenderer.getLightmapTextureManager();
         int previousLightmap=RenderSystem.getShaderTexture(2);
         lightmap.enable();
         try{
             shader.addSampler("GlassLightmap",RenderSystem.getShaderTexture(2));
-            shader.addSampler("GlassSpecular",client.getTextureManager().getTexture(
-                    glassSpecularAvailable?GLASS_SPECULAR:HelicopterRenderer.TEXTURE).getGlId());
             RenderSystem.defaultBlendFunc();RenderSystem.enableCull();
-            GLASS.sort(java.util.Comparator.comparingDouble((Glass pane)->
-                    pane.modelView.getTranslation(new Vector3f()).lengthSquared()).reversed());
+            // 观察空间前方为负 Z；先画更负的远窗，不能用所有关闭门共用的机身原点排序。
+            GLASS.sort(java.util.Comparator.comparingDouble(Glass::viewZ));
             for(var pane:GLASS){
                 uniforms(pane.modelView,7);
                 shader.getUniform("GlassLight").set(((pane.light&65535)+8)/256f,((pane.light>>>16)+8)/256f);
-                shader.getUniform("GlassPbr").set(glassSpecularAvailable&&!pane.wreck?1:0);
-                shader.getUniform("GlassSkyColor").set((float)glassSkyColor.x,(float)glassSkyColor.y,(float)glassSkyColor.z);
-                shader.getUniform("GlassSkyUp").set(GLASS_SKY_UP);
                 shader.bind();
                 for(var segment:HelicopterMesh.mesh(pane.model,pane.part,pane.paint,pane.wreck,pane.distant)){
                     segment.buffer().bind();segment.buffer().draw();
@@ -513,7 +508,7 @@ public final class SearchlightRenderer {
         shader.getUniform("ScreenSize").set((float)client.getFramebuffer().textureWidth,(float)client.getFramebuffer().textureHeight);
         float scale=HelicopterMesh.depthScale();
         shader.getUniform("DepthScale").set(scale);
-        shader.getUniform("DepthJitter").set(DEPTH_JITTER[0]*(scale<1?.5f:.33f),DEPTH_JITTER[1]*(scale<1?.5f:.33f));
+        shader.getUniform("DepthJitter").set(DEPTH_JITTER[0],DEPTH_JITTER[1]);
         shader.getUniform("FogStart").set(fogStart);shader.getUniform("FogEnd").set(fogEnd);
         shader.getUniform("FogShape").set(fogShape);
     }
@@ -723,7 +718,6 @@ public final class SearchlightRenderer {
     /** 功能：释放跨帧几何与屏幕快照；仅资源重载、断线和退出调用，不影响正常帧中的灯芯队列。 */
     private static void reset(){
         clear();GLOWS.clear();LABELS.clear();GLASS.clear();
-        glassMaterialChecked=false;glassSpecularAvailable=false;
         if(backlitText!=null){backlitText.close();backlitText=null;}
         if(sceneSnapshot!=null){sceneSnapshot.delete();sceneSnapshot=null;}
     }

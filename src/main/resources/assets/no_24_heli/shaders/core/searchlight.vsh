@@ -10,7 +10,6 @@ in vec3 Normal;
 uniform mat4 ModelViewMat;
 uniform mat4 ProjMat;
 uniform int FogShape;
-uniform int LightMode;
 out float vertexDistance;
 out vec3 localPosition;
 out vec3 viewPosition;
@@ -30,7 +29,7 @@ void main() {
     materialUv = UV0;
     materialOverlayUv = vec2(UV1) / 32767.0;
     materialTint = Color;
-    // 玻璃以观察空间法线计算掠射高光；其余照明模式仍使用原局部法线。
-    surfaceNormal = LightMode == 7 ? mat3(ModelViewMat) * Normal : Normal;
+    // 探照灯照明使用原局部法线。
+    surfaceNormal = Normal;
     materialOverlayTint = vec4(UV2.y & 255, (UV2.x >> 8) & 255, UV2.x & 255, (UV2.y >> 8) & 255) / 255.0;
 }

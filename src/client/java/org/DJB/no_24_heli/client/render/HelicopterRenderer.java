@@ -165,7 +165,8 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
             dashboard.render(heli, delta, matrices, consumers, light);
         // 高透玻璃不作为探照灯的实心遮挡物；主视图保留门动画和真实环境光，阴影遍历由队列过滤。
         if(!collecting){
-            SearchlightRenderer.queueGlass(selected,"glass",heli,distant,matrices,light);
+            for(int side=0;side<2;side++)
+                SearchlightRenderer.queueGlass(selected,"windshield"+side+"_glass",heli,distant,matrices,light);
             for(int door=0;door<HelicopterCabin.SEATS;door++){
                 matrices.push();rotateDoor(matrices,heli,door,delta);
                 SearchlightRenderer.queueGlass(selected,"door"+door+"_glass",heli,distant,matrices,light);

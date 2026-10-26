@@ -48,7 +48,7 @@ public final class HelicopterMesh {
     private static ShaderProgram shader;
     /** 光影管线对象变化时失效，防止沿用上一个光影包的实体材质编号和顶点格式。 */
     private static Object pipeline;
-    /** Photon 的 TAAU 将场景深度存于纹理左下缩放区域；仅光影管线更换时读取实际选项。 */
+    /** Photon 与 Kappa 将场景深度存于纹理左下缩放区域；仅光影管线更换时读取实际选项。 */
     private static float depthScale=1;
     /** 可选 Iris 边界只解析一次，不新增运行依赖；方法句柄不参与逐顶点循环。 */
     private static MethodHandle irisActive, irisPipeline, irisBegin, irisEnd, irisShadow;
@@ -137,7 +137,7 @@ public final class HelicopterMesh {
     static float depthScale(){return depthScale;}
 
     /**
-     * 功能：读取 Photon 的 TAAU/TAAU_RENDER_SCALE 选项，避免把放大后颜色坐标用于低分辨率深度。
+     * 功能：读取 Photon 的 TAAU/TAAU_RENDER_SCALE 或 Kappa 的 ResolutionScale，匹配低分辨率深度区域。
      * 引用 Iris 的可选 OptionValues 接口；仅管线重载调用，不读写用户配置或新增依赖。
      * 排查：其他光影没有该选项时使用原尺寸；接口不兼容记录原因并保留原尺寸。
      */
@@ -148,19 +148,25 @@ public final class HelicopterMesh {
             if(pack.isEmpty())return 1;
             Object options=pack.get().getClass().getMethod("getShaderPackOptions").invoke(pack.get());
             Object optionSet=options.getClass().getMethod("getOptionSet").invoke(options);
-            if(!(boolean)optionSet.getClass().getMethod("isBooleanOption",String.class).invoke(optionSet,"TAAU"))return 1;
             var strings=(java.util.Map<?,?>)optionSet.getClass().getMethod("getStringOptions").invoke(optionSet);
-            if(!strings.containsKey("TAAU_RENDER_SCALE"))return 1;
             Object values=options.getClass().getMethod("getOptionValues").invoke(options);
             Class<?> valueType=Class.forName("net.irisshaders.iris.shaderpack.option.values.OptionValues");
-            if((boolean)optionSet.getClass().getMethod("isBooleanOption",String.class).invoke(optionSet,"TAA")
-                    &&!(boolean)valueType.getMethod("getBooleanValueOrDefault",String.class).invoke(values,"TAA"))return 1;
-            if(!(boolean)valueType.getMethod("getBooleanValueOrDefault",String.class).invoke(values,"TAAU"))return 1;
-            String scale=(String)valueType.getMethod("getStringValueOrDefault",String.class).invoke(values,"TAAU_RENDER_SCALE");
+            String scale;
+            if(strings.containsKey("ResolutionScale")){
+                // Kappa 即使未修改选项也默认以 0.75 渲染；独立于 TAA 开关，不能退回全尺寸深度。
+                scale=(String)valueType.getMethod("getStringValueOrDefault",String.class).invoke(values,"ResolutionScale");
+            }else{
+                if(!(boolean)optionSet.getClass().getMethod("isBooleanOption",String.class).invoke(optionSet,"TAAU")
+                        ||!strings.containsKey("TAAU_RENDER_SCALE"))return 1;
+                if((boolean)optionSet.getClass().getMethod("isBooleanOption",String.class).invoke(optionSet,"TAA")
+                        &&!(boolean)valueType.getMethod("getBooleanValueOrDefault",String.class).invoke(values,"TAA"))return 1;
+                if(!(boolean)valueType.getMethod("getBooleanValueOrDefault",String.class).invoke(values,"TAAU"))return 1;
+                scale=(String)valueType.getMethod("getStringValueOrDefault",String.class).invoke(values,"TAAU_RENDER_SCALE");
+            }
             float parsed=Float.parseFloat(scale);
             return Float.isFinite(parsed)?net.minecraft.util.math.MathHelper.clamp(parsed,.25f,1):1;
         }catch(ReflectiveOperationException|NumberFormatException exception){
-            No_24_heli.LOGGER.warn("无法读取光影 TAAU 深度比例，使用原尺寸深度",exception);return 1;
+            No_24_heli.LOGGER.warn("无法读取光影深度比例，使用原尺寸深度",exception);return 1;
         }
     }
 
