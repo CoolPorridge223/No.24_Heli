@@ -50,8 +50,8 @@ public final class ParachuteClient {
     private static long lastJump=-100;
     /** 跳跃边沿及待确认取消状态，仅保留到当前伞或世界结束。 */
     private static boolean jumpHeld,creativeCancelPending;
-    /** 一次持续右键只允许启动一次叠伞，结束后必须松开才允许再次使用/穿戴。 */
-    private static boolean foldingUseHeld;
+    /** 一次持续右键只启动一次叠伞或穿戴/交换，松开后才允许下一次，防止完成后连续换回旧装备。 */
+    private static boolean packUseHeld;
 
     /** 无实例，输入状态仅属于当前客户端。 */
     private ParachuteClient() {}
@@ -116,12 +116,12 @@ public final class ParachuteClient {
      * GUI 打开时输入回中；断线清除待发请求；服务端仍重新验证资格与所属伞。
      */
     public static void initialize() {
-        // Fabric 使用回调先于 Item#use；挡住叠伞完成后的连续右键，避免创造装备复制到胸槽。
+        // Fabric 使用回调先于 Item#use；自动穿戴由服务端叠伞结束处理，连续右键不能再交换胸槽。
         UseItemCallback.EVENT.register((player,world,hand)->{
             var stack=player.getStackInHand(hand);
             if(!world.isClient||!ParachuteItem.isParachute(stack))return TypedActionResult.pass(stack);
-            if(foldingUseHeld)return TypedActionResult.fail(stack);
-            if(ParachuteItem.canFold(stack))foldingUseHeld=true;
+            if(packUseHeld)return TypedActionResult.fail(stack);
+            if(ParachuteItem.canFold(stack)||ParachuteItem.isPacked(stack))packUseHeld=true;
             return TypedActionResult.pass(stack);
         });
         // 原版谓词限制在 0～1：完整、未折叠、损坏分别为 0、0.5、1，不替换物品或组件。
@@ -136,9 +136,9 @@ public final class ParachuteClient {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null || client.world == null) {
                 deployRequested = false; mountedCanopy = -1;
-                jumpHeld=false;lastJump=-100;creativeCancelPending=false;foldingUseHeld=false;return;
+                jumpHeld=false;lastJump=-100;creativeCancelPending=false;packUseHeld=false;return;
             }
-            if(!client.options.useKey.isPressed())foldingUseHeld=false;
+            if(!client.options.useKey.isPressed())packUseHeld=false;
             boolean active = client.player.getVehicle() instanceof ParachuteEntity;
             int currentCanopy = active ? client.player.getVehicle().getId() : -1;
             // net.minecraft.client.gui.hud.InGameHud#setOverlayMessage 清除原版骑乘提示，不替换成操作说明。

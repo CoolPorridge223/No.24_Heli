@@ -25,7 +25,7 @@ import java.util.UUID;
  * 职责：提供可右键穿戴的伞包，不赋予胸甲防御或鞘翅飞行能力。
  * 引用：net.minecraft.item.Equipment 使原版装备槽和快捷穿戴识别胸部装备。
  * 生命周期：ModParachutes 初始化时注册；库存操作由原版逻辑服务端处理。
- * 排查：无法放入胸槽查 getSlotType；右键不换装查 equipAndSwap，不能继承鞘翅。
+ * 排查：无法放入胸槽查 getSlotType；右键换装查 equipPacked，创造穿戴也必须移走原手持物品。
  */
 public final class ParachuteItem extends Item implements Equipment {
     /** 耐久 256；开伞耗四点、飞行每五秒耗一点，由原版 ItemStack.damage 应用耐久附魔。 */
@@ -91,13 +91,30 @@ public final class ParachuteItem extends Item implements Equipment {
     /** 原版 net.minecraft.item.Equipment 将物品限定在胸甲槽。 */
     @Override public EquipmentSlot getSlotType() { return EquipmentSlot.CHEST; }
 
-    /** 两端使用原版 net.minecraft.item.Equipment#equipAndSwap 的穿戴结果与同步。 */
+    /** 未折叠时开始叠伞；已折叠时复用原版槽位、绑定诅咒检查及穿戴同步，并消除创造复制。 */
     @Override public TypedActionResult<ItemStack> use(World world, PlayerEntity player, Hand hand) {
         ItemStack stack = player.getStackInHand(hand);
         if (canFold(stack)) {
             player.setCurrentHand(hand); return TypedActionResult.consume(stack);
         }
-        return isPacked(stack) ? equipAndSwap(this, world, player, hand) : TypedActionResult.fail(stack);
+        return isPacked(stack) ? equipPacked(world, player, hand) : TypedActionResult.fail(stack);
+    }
+
+    /**
+     * 功能：穿戴原手持伞包，胸槽占用时把原装备交换到同一手；创造模式也只保留一件原伞包。
+     * 引用 net.minecraft.item.Equipment#equipAndSwap 保留槽位许可、绑定诅咒、物品统计和两端预测。
+     * 端侧：沿用原版客户端预测及服务端权威；仅成功后清空原版创造分支留下的手持源对象。
+     * 排查：空胸槽必须返回 EMPTY，交换必须返回旧胸甲，不能把已穿戴的新伞包再次返回手中。
+     */
+    private TypedActionResult<ItemStack> equipPacked(World world, PlayerEntity player, Hand hand) {
+        ItemStack held = player.getStackInHand(hand);
+        TypedActionResult<ItemStack> result = equipAndSwap(this, world, player, hand);
+        if (result.getResult().isAccepted() && player.isCreative()) {
+            // 原版创造分支复制到胸槽但不消耗来源；成功后消费来源，保留完整组件的胸槽副本。
+            held.setCount(0);
+            if (result.getValue() == held) return TypedActionResult.success(ItemStack.EMPTY, world.isClient);
+        }
+        return result;
     }
 
     /** 原版连续使用计时；松开右键会丢弃本次进度，无累计到物品的计时数据。 */
@@ -106,10 +123,16 @@ public final class ParachuteItem extends Item implements Equipment {
     /** 叠伞没有饮食/拉弓动作，手持装备由圆圈 HUD 表现使用进度。 */
     @Override public UseAction getUseAction(ItemStack stack) { return UseAction.NONE; }
 
-    /** 服务端完整使用五秒只修改原手持物品的折叠状态；不穿戴或复制，客户端阻止持续右键自动再用。 */
+    /**
+     * 服务端叠好后仅在胸槽为空时自动穿戴并返回空手；占用时留在原手持栏，不交换或复制其他装备。
+     * net.minecraft.entity.LivingEntity 的使用结束流程将返回值写回当前手，避免胸槽和手上同时留一件。
+     */
     @Override public ItemStack finishUsing(ItemStack stack, World world, LivingEntity user) {
-        if (!world.isClient && canFold(stack))
+        if (!world.isClient && canFold(stack)) {
             NbtComponent.set(DataComponentTypes.CUSTOM_DATA, stack, nbt -> nbt.putBoolean(PACKED, true));
+            if (user instanceof PlayerEntity player && player.getEquippedStack(EquipmentSlot.CHEST).isEmpty())
+                return equipPacked(world, player, player.getActiveHand()).getValue();
+        }
         return stack;
     }
 
