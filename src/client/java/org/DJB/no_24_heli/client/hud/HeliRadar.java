@@ -2,6 +2,7 @@ package org.DJB.no_24_heli.client.hud;
 
 import org.DJB.no_24_heli.block.HelipadBlock;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
+import org.DJB.no_24_heli.client.render.HudShapes;
 import org.DJB.no_24_heli.network.AirspacePayload;
 import org.DJB.no_24_heli.network.HelipadMapPayload;
 import org.DJB.no_24_heli.network.RadarContactsPayload;
@@ -77,10 +78,11 @@ public final class HeliRadar {
     public static void draw(DrawContext ctx,HelicopterEntity heli,int right){
         var mc=MinecraftClient.getInstance();int cx=right-54,cy=57,r=38;
         // 外圈只保留方位字，移除标题和扫描距离文字。
-        ctx.fill(cx-52,3,cx+52,112,0xc010241f);circle(ctx,cx,cy,r,0xff527768);circle(ctx,cx,cy,r/2,0xff304b42);
+        ctx.fill(cx-52,3,cx+52,112,0xc010241f);
+        HudShapes.circle(ctx,cx,cy,r,1,0xff527768);HudShapes.circle(ctx,cx,cy,r/2.0,1,0xff304b42);
         ctx.fill(cx-r,cy,cx+r,cy+1,0xff304b42);ctx.fill(cx,cy-r,cx+1,cy+r,0xff304b42);
         double angle=(heli.age+mc.getRenderTickCounter().getTickDelta(false))*.045;
-        for(int i=1;i<r;i++){int px=cx+(int)(Math.sin(angle)*i),py=cy-(int)(Math.cos(angle)*i);ctx.fill(px,py,px+1,py+1,0xff56aa83);}
+        HudShapes.line(ctx,cx,cy,cx+Math.sin(angle)*r,cy-Math.cos(angle)*r,.8,0xff56aa83);
         // 只绘制落在圆形雷达内的禁飞边界，机外圆心也能显示进入视野的红色弧线。
         for(var zone:zones){
             double[] center=relative(zone.pos().getX()+.5-heli.getX(),zone.pos().getZ()+.5-heli.getZ(),heli.getYaw());
@@ -88,8 +90,9 @@ public final class HeliRadar {
             if(Math.hypot(zx,zy)>r+zr||Math.hypot(zx,zy)+r<zr)continue;
             int steps=Math.max(64,(int)Math.ceil(zr*Math.PI*4));
             for(int i=0;i<steps;i++){
-                double a=i*Math.PI*2/steps,px=zx+Math.cos(a)*zr,py=zy+Math.sin(a)*zr;
-                if(px*px+py*py<=r*r)ctx.fill(cx+(int)Math.round(px),cy+(int)Math.round(py),cx+(int)Math.round(px)+1,cy+(int)Math.round(py)+1,0xffff6655);
+                double a=i*Math.PI*2/steps,b=(i+1)*Math.PI*2/steps;
+                double px=zx+Math.cos(a)*zr,py=zy+Math.sin(a)*zr,qx=zx+Math.cos(b)*zr,qy=zy+Math.sin(b)*zr;
+                if(px*px+py*py<=r*r&&qx*qx+qy*qy<=r*r)HudShapes.line(ctx,cx+px,cy+py,cx+qx,cy+qy,.8,0xffff6655);
             }
         }
         for(var e:contacts(heli)){

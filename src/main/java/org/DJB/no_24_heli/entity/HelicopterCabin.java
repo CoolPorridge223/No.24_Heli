@@ -210,6 +210,34 @@ public final class HelicopterCabin {
         return mount(player, seat, true);
     }
 
+    /**
+     * 功能：服务端原子切换固定座位；只移动本机已坐稳乘员的 UUID，不触发离机或副驾自动接管。
+     * 引用 MC API：net.minecraft.entity.Entity#hasPassenger 复核真实乘骑；PlayerEntity#isAlive 拒绝失效请求。
+     * 端侧/线程：逻辑服务端主线程；参数：player 为发包乘员，target 为 0..3；返回：无。
+     * 副作用：转移座位、关闭原座门并立即同步；涉及主驾时清除旧输入和自动驾驶，保留当前总距。
+     * 排查：占座含正在登机或被拖拽的预占 UUID；乘降、下绳和眩晕期间不能换座，也不交换或挤出他人。
+     */
+    public void switchSeat(PlayerEntity player, int target) {
+        if (heli.getWorld().isClient || !heli.hasPassenger(player) || heli.flight.wreck
+                || !player.isAlive() || player.isSpectator() || target < 0 || target >= SEATS) return;
+        int source = seat(player);
+        if (source < 0 || source == target) return;
+        if (occupants[target] != null) { tell(player, "seat_switch_occupied"); return; }
+        if (motions[source] != SEATED || ropeExits[source] || pullers[source] != null || CabinPlayerState.locked(player)) {
+            tell(player, "seat_switch_unavailable"); return;
+        }
+        occupants[target] = occupants[source]; occupants[source] = null;
+        motions[source] = motions[target] = SEATED;
+        outside[source] = outside[target] = null;
+        ropeExits[source] = ropeExits[target] = false;
+        started[source] = started[target] = heli.getWorld().getTime();
+        setDoor(source, false);
+        if (source == 0 || target == 0) {
+            heli.stopAutopilot(); heli.flight.cancelAutoFlight(); heli.flight.clearInputs();
+        }
+        heli.syncCabin();
+    }
+
     /** 服务端与 HUD 共用占座拖拽资格；只处理停稳在陆地、坐稳且存活的玩家，不影响空中离机。 */
     public boolean canTakeOver(PlayerEntity player) {
         if (!canReach(player) || player.hasVehicle() || !heli.isCabinGrounded() || heli.isTouchingWater()

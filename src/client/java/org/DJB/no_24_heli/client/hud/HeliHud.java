@@ -6,6 +6,7 @@ package org.DJB.no_24_heli.client.hud;
 
 import org.DJB.no_24_heli.client.input.ParachuteClient;
 import org.DJB.no_24_heli.client.render.FlightInstruments;
+import org.DJB.no_24_heli.client.render.HudShapes;
 import org.DJB.no_24_heli.data.HeliConfig;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
 import org.DJB.no_24_heli.entity.RopeSeatEntity;
@@ -42,6 +43,10 @@ public final class HeliHud {
     private static final int TAPE_GAP=8;
     /** 空速表现有圆心高度与半径，单位：HUD 像素；供两条刻度带对齐其底边。 */
     private static final int AIRSPEED_CENTER_Y=-40,AIRSPEED_RADIUS=35;
+    /** 圆表数字缩为 75%；空速单位另缩为 55%，保持数值比单位醒目。 */
+    private static final float GAUGE_READOUT_SCALE=.75f,AIRSPEED_UNIT_SCALE=.55f;
+    /** 空速单位与数字底边的间隔，单位：局部 HUD 像素。 */
+    private static final int AIRSPEED_UNIT_GAP=3;
     /** 两条刻度带连同标题、单位、数字窗统一缩小为原来的 2/3，仅客户端使用。 */
     private static final float TAPE_SCALE=2f/3f;
     /** 相邻短刻度间距，单位：HUD 像素；分别对应 5 m/s 和 50 m。 */
@@ -190,9 +195,9 @@ public final class HeliHud {
         int cx=w-143,cy=32;ctx.fill(cx-25,cy-25,cx+25,cy+25,0xa0193329);
         m.push();m.translate(cx,cy,0);m.multiply(RotationAxis.POSITIVE_Z.rotationDegrees((float)-display.roll));
         float offset=(float)Math.clamp(display.pitch*.5,-10,10);m.translate(0,offset,0);
-        ctx.fill(-17,-1,17,1,0xff90e0b4);
-        ctx.fill(-8,-8,8,-7,0xff547969);ctx.fill(-8,7,8,8,0xff547969);m.pop();
-        ctx.fill(cx-14,cy,cx-4,cy+1,0xffffd66b);ctx.fill(cx+4,cy,cx+14,cy+1,0xffffd66b);ctx.fill(cx-1,cy-2,cx+1,cy+3,0xffffd66b);
+        HudShapes.rect(ctx,-17,-1,34,2,0xff90e0b4);
+        HudShapes.rect(ctx,-8,-8,16,1,0xff547969);HudShapes.rect(ctx,-8,7,16,1,0xff547969);m.pop();
+        HudShapes.rect(ctx,cx-14,cy,10,1,0xffffd66b);HudShapes.rect(ctx,cx+4,cy,10,1,0xffffd66b);HudShapes.rect(ctx,cx-1,cy-2,2,5,0xffffd66b);
         HeliRadar.draw(ctx,h,w-4);
         m.pop();
     }
@@ -227,7 +232,7 @@ public final class HeliHud {
     /**
      * 功能：绘制等大刻度带，两表刻度和数字统一靠左，整十/整百标长线与数字。
      * 引用 MC API：net.minecraft.client.gui.DrawContext#fill 绘制边框与刻线，
-     * #drawText 绘制主刻度；#disableScissor 与 tapeScissor 成对恢复裁剪。
+     * HudShapes 提交浮点刻线与机内同款七段数字；endTapeScissor 与 tapeScissor 成对恢复裁剪。
      * 端侧/线程：客户端渲染线程。参数：ctx 为绘制上下文，x/top 为外框左上角，
      * value 为平滑读数，verticalSpeed 区分 m/s 垂速与 m 世界高度。
      * 返回：无。副作用：提交 GUI 绘制。故障排查：短线出现数字查 major；
@@ -249,18 +254,18 @@ public final class HeliHud {
         int center=(int)Math.floor(value/step);
         for(int i=center-range;i<=center+range;i++){
             double offset=tapeOffset(value,i*step,step,TAPE_SPACING);
-            int y=mid+(int)Math.round(offset),mark=i*step;
+            double y=mid+offset;int mark=i*step;
             boolean major=i%2==0;
             int color=tapeColor(offset,(bottom-bodyTop)/2.0),length=major?9:5;
             int edge=x+1;
-            ctx.fill(edge,y,edge+length,y+1,color);
+            HudShapes.rect(ctx,edge,y,length,.7,color);
             if(major){
                 String number=(verticalSpeed&&mark>0?"+":"")+mark;
                 int textX=edge+length+3;
-                ctx.drawText(mc.textRenderer,number,textX,y-mc.textRenderer.fontHeight/2,color,false);
+                HudShapes.number(ctx,number,textX,y-4.5,color);
             }
         }
-        ctx.disableScissor();
+        endTapeScissor(ctx);
         tapeReadout(ctx,x,mid,value,verticalSpeed);
         var matrices=ctx.getMatrices();
         // 标题增大后上移 4 HUD 像素，保留与单位栏的间距。
@@ -273,17 +278,27 @@ public final class HeliHud {
     /**
      * 功能：将仪表局部矩形转成实际 GUI 坐标，保证底部缩放后仍正确裁剪数字鼓。
      * 引用 MC API：net.minecraft.client.gui.DrawContext#getMatrices 读取当前位置矩阵，
-     * #enableScissor 启用屏幕坐标裁剪；调用者必须用 #disableScissor 恢复。
+     * #draw 提交当前顶点后，#enableScissor 启用屏幕坐标裁剪；调用者必须用 endTapeScissor 恢复。
      * 端侧/线程：客户端渲染线程。参数：ctx 为上下文，left/top/right/bottom 为局部矩形。
      * 返回：无。副作用：压入裁剪区域。故障排查：GUI 比例改变后文字越界查矩阵转换；
-     * 后续 HUD 消失查调用者是否恢复裁剪。本处仅处理 HUD 的平移与正比例缩放。
+     * 后续 HUD 消失查调用者是否恢复裁剪；几何越界查切换裁剪前是否提交批次。
+     * 本处仅处理 HUD 的平移与正比例缩放，HUD 回调中不能依赖原版有条件的自动提交。
      */
     private static void tapeScissor(DrawContext ctx,int left,int top,int right,int bottom){
         var matrix=ctx.getMatrices().peek().getPositionMatrix();
         var a=new org.joml.Vector3f(left,top,0).mulPosition(matrix);
         var b=new org.joml.Vector3f(right,bottom,0).mulPosition(matrix);
+        ctx.draw();
         ctx.enableScissor((int)Math.floor(a.x),(int)Math.floor(a.y),(int)Math.ceil(b.x),(int)Math.ceil(b.y));
     }
+
+    /**
+     * 功能：先在当前遮罩内完成数字批次，再恢复上一层裁剪。
+     * 引用 MC API：net.minecraft.client.gui.DrawContext#draw 提交几何，#disableScissor 弹出嵌套裁剪。
+     * 端侧：客户端渲染线程；参数：ctx 为当前上下文；返回：无；副作用：提交顶点并恢复裁剪。
+     * 排查：上下方漏出数字时检查本方法是否与每次 tapeScissor 成对调用，不能先解除裁剪再提交。
+     */
+    private static void endTapeScissor(DrawContext ctx){ctx.draw();ctx.disableScissor();}
 
     /**
      * 功能：绘制向左凸字形数字窗，高位与符号占矮框，低位占上下加高的右框。
@@ -314,11 +329,8 @@ public final class HeliHud {
         // 两块内填色相交，中央保持连通，不在高低位之间画分隔线。
         ctx.fill(left+1,centerTop+1,right-1,centerBottom-1,0xff090f13);
         ctx.fill(tailLeft+1,top+1,right-1,bottom-1,0xff090f13);
-        for(int i=0;i<READOUT_ARROW;i++){
-            int px=left-1-i,half=READOUT_ARROW-1-i;
-            ctx.fill(px,mid-half,px+1,mid+half+1,0xffe6f4ee);
-            if(half>0)ctx.fill(px,mid-half+1,px+1,mid+half,0xff090f13);
-        }
+        HudShapes.triangle(ctx,x,mid,left,mid-READOUT_ARROW,left,mid+READOUT_ARROW,0xffe6f4ee);
+        HudShapes.triangle(ctx,x+1.5,mid,left+1,mid-READOUT_ARROW+1.5,left+1,mid+READOUT_ARROW-1.5,0xff090f13);
         tapeScissor(ctx,left+1,top+1,right-1,bottom-1);
         var matrices=ctx.getMatrices();
         // 符号独立固定在窗内左侧中央；以最靠近中心的数字行判零，避免显示 +0/-0。
@@ -326,17 +338,17 @@ public final class HeliHud {
         String sign=centered==0?"":centered<0?"-":verticalSpeed?"+":"";
         matrices.push();matrices.translate(left+READOUT_PADDING,mid,0);matrices.scale(scale,scale,1);
         matrices.translate(0,-MinecraftClient.getInstance().textRenderer.fontHeight/2.0,0);
-        ctx.drawText(MinecraftClient.getInstance().textRenderer,sign,0,0,0xffe6f4ee,false);matrices.pop();
+        HudShapes.number(ctx,sign,0,0,0xffe6f4ee);matrices.pop();
         matrices.push();matrices.translate(numberLeft,mid,0);matrices.scale(scale,scale,1);
         rollingDigits(ctx,value,step,digits,verticalSpeed);
-        matrices.pop();ctx.disableScissor();
+        matrices.pop();endTapeScissor(ctx);
     }
 
     /**
      * 功能：低位沿真实数轴滚动，高位仅在中央单行格内完成当前位与下一位的替换。
-     * 引用 MC API：net.minecraft.client.gui.DrawContext#drawText 绘制相邻数字行，
+     * 引用 MC API：net.minecraft.client.gui.DrawContext 提供相邻七段数字行的顶点批次，
      * net.minecraft.client.util.math.MatrixStack#translate 保留亚像素滚动位置；
-     * net.minecraft.client.gui.DrawContext#disableScissor 恢复高位格的嵌套裁剪。
+     * net.minecraft.client.gui.DrawContext#draw 在恢复高位格的嵌套裁剪前提交数字几何。
      * 端侧/线程：客户端渲染线程。参数：value 为带符号读数，step 为 1 m/s 或 20 m，
      * digits 为数字位数，verticalSpeed 选择个位或高度末两位的滚动组；符号由调用者固定绘制。
      * 返回：无。副作用：提交文字绘制，恢复矩阵。故障排查：710 直接跳到 720 查是否提前取整；
@@ -357,7 +369,7 @@ public final class HeliHud {
             if(numbers[1].charAt(column)==numbers[2].charAt(column)){
                 var matrices=ctx.getMatrices();
                 matrices.push();matrices.translate((column+1)*DIGIT_WIDTH,-mc.textRenderer.fontHeight/2.0,0);
-                ctx.drawText(mc.textRenderer,String.valueOf(numbers[1].charAt(column)),0,0,0xffe6f4ee,false);
+                HudShapes.number(ctx,String.valueOf(numbers[1].charAt(column)),0,0,0xffe6f4ee);
                 matrices.pop();
             }else{
                 for(int row=1;row<=2;row++){
@@ -365,12 +377,12 @@ public final class HeliHud {
                     double offset=tapeOffset(value,mark,step,ROLL_PITCH);
                     var matrices=ctx.getMatrices();
                     matrices.push();matrices.translate((column+1)*DIGIT_WIDTH,offset-mc.textRenderer.fontHeight/2.0,0);
-                    ctx.drawText(mc.textRenderer,String.valueOf(numbers[row].charAt(column)),0,0,0xffe6f4ee,false);
+                    HudShapes.number(ctx,String.valueOf(numbers[row].charAt(column)),0,0,0xffe6f4ee);
                     matrices.pop();
                 }
             }
         }
-        ctx.disableScissor();
+        endTapeScissor(ctx);
         for(int row=0;row<numbers.length;row++){
             long mark=lower+(row-1)*step;
             // 与窗外共用 value-mark：数值增大时所有正负刻度向下，减小时向上。
@@ -380,32 +392,42 @@ public final class HeliHud {
             // 高度末两位成组滚动；实际零值写 0，其余整百读数仍保留 00。
             String tail=verticalSpeed?numbers[row].substring(digits-1)
                     :mark==0?" 0":String.format(Locale.ROOT,"%02d",Math.abs(mark)%100);
-            ctx.drawText(mc.textRenderer,tail,(digits-tailWidth+1)*DIGIT_WIDTH,0,0xffe6f4ee,false);
+            HudShapes.number(ctx,tail,(digits-tailWidth+1)*DIGIT_WIDTH,0,0xffe6f4ee);
             matrices.pop();
         }
     }
-    /** 刻度、指针和数字共用量程；超量程仅钳制指针，数字保持实际值。 */
+    /** 刻度、指针和数字共用量程；空速数字与小号单位上下居中排列，其他圆表保留同行读数。 */
     private static void gauge(DrawContext ctx,int cx,int cy,int radius,String label,double value,double min,double max,String unit,int color){
         var mc=MinecraftClient.getInstance();
-        for(int y=-radius;y<=radius;y++){int half=(int)Math.sqrt(radius*radius-y*y);ctx.fill(cx-half,cy+y,cx+half+1,cy+y+1,0xdc101c1b);}
-        HeliRadar.circle(ctx,cx,cy,radius,0xff53716a);
+        HudShapes.circle(ctx,cx,cy,radius,0,0xdc101c1b);
+        HudShapes.circle(ctx,cx,cy,radius,1,0xff53716a);
         for(int i=0;i<=8;i++){
             double a=Math.toRadians(135+i*270.0/8);
-            line(ctx,cx+(int)(Math.cos(a)*(radius-3)),cy+(int)(Math.sin(a)*(radius-3)),cx+(int)(Math.cos(a)*(radius-7)),cy+(int)(Math.sin(a)*(radius-7)),color);
+            HudShapes.line(ctx,cx+Math.cos(a)*(radius-3),cy+Math.sin(a)*(radius-3),cx+Math.cos(a)*(radius-7),cy+Math.sin(a)*(radius-7),.8,color);
         }
         var m=ctx.getMatrices();m.push();m.translate(cx,cy-radius/2f,0);m.scale(.85f,.85f,1);
         ctx.drawCenteredTextWithShadow(mc.textRenderer,Text.translatable("hud.no_24_heli."+label),0,0,color);m.pop();
-        m.push();m.translate(cx,cy+radius*.43,0);m.scale(.75f,.75f,1);
-        ctx.drawCenteredTextWithShadow(mc.textRenderer,f(value)+unit,0,0,0xffe6f4ee);m.pop();
+        boolean airspeed=label.equals("airspeed");
+        // 空速数字上移到圆心下方 0.30 倍半径，给其下方的单位和间隔留出独立空间。
+        double numberY=cy+radius*(airspeed?.30:.43);
+        m.push();m.translate(cx,numberY,0);m.scale(GAUGE_READOUT_SCALE,GAUGE_READOUT_SCALE,1);
+        String readout=f(value);double readoutLeft=-(HudShapes.numberWidth(readout)+(airspeed?0:mc.textRenderer.getWidth(unit)))/2;
+        HudShapes.number(ctx,readout,readoutLeft,0,0xffe6f4ee);
+        if(!airspeed){
+            m.push();m.translate(readoutLeft+HudShapes.numberWidth(readout)+1,0,0);
+            ctx.drawText(mc.textRenderer,unit,0,0,0xffe6f4ee,false);m.pop();
+        }
+        m.pop();
+        if(airspeed){
+            m.push();m.translate(cx,numberY+mc.textRenderer.fontHeight*GAUGE_READOUT_SCALE+AIRSPEED_UNIT_GAP,0);
+            m.scale(AIRSPEED_UNIT_SCALE,AIRSPEED_UNIT_SCALE,1);
+            ctx.drawText(mc.textRenderer,unit,-mc.textRenderer.getWidth(unit)/2,0,0xffe6f4ee,false);m.pop();
+        }
         // 数字之后再绘制针与针轴，并提高 GUI 深度；浮点旋转保留平滑动画。
         m.push();m.translate(cx,cy,1);
-        ctx.fill(-2,-2,3,3,0xffffd66b);
+        HudShapes.circle(ctx,0,0,2,0,0xffffd66b);
         m.multiply(RotationAxis.POSITIVE_Z.rotationDegrees((float)(135+Math.clamp((value-min)/(max-min),0,1)*270)));
-        ctx.fill(0,0,radius-8,1,0xffffd66b);m.pop();
-    }
-    private static void line(DrawContext ctx,int x,int y,int ex,int ey,int color){
-        int steps=Math.max(Math.abs(ex-x),Math.abs(ey-y));
-        for(int i=0;i<=steps;i++){int px=x+(ex-x)*i/Math.max(steps,1),py=y+(ey-y)*i/Math.max(steps,1);ctx.fill(px,py,px+1,py+1,color);}
+        HudShapes.rect(ctx,0,-.4,radius-8,.8,0xffffd66b);m.pop();
     }
     private static void warn(DrawContext ctx,String key,int y){text(ctx,"warning.no_24_heli."+key,10,y,0xffff6a58);}
 }

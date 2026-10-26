@@ -191,7 +191,7 @@
   "message.no_24_heli.route_start_enclosed": "规划失败：起点被禁飞区围住，无法通往终点。",
   "message.no_24_heli.route_goal_enclosed": "规划失败：终点被禁飞区围住，无法从起点到达。",
   "message.no_24_heli.route_different_enclosed": "规划失败：起终点位于彼此不连通的封闭区域。",
-  "message.no_24_heli.route_grid_resolution": "当前安全宽度或网格精度无法表示可通行路线，请检查起终点安全间距、通道宽度和 gridCellSize。",
+  "message.no_24_heli.route_grid_resolution": "飞机或导航点距离禁飞区过近",
   "message.no_24_heli.route_cell_limit": "规划失败：所需网格超过 pathMaxCells 预算。",
   "message.no_24_heli.route_node_limit": "规划失败：搜索访问节点超过 pathMaxNodes 预算。",
   "message.no_24_heli.route_geometry_limit": "规划失败：禁飞圆栅格化或封闭区域验证超过几何运算预算。",
@@ -249,5 +249,11 @@
   "hud.no_24_heli.rear_right": "右后排",
   "hud.no_24_heli.cabin_takeover_after": "拖出乘员并坐入此座",
   "message.no_24_heli.seat_occupied": "此门对应座位已有人，按乘降键可拖出并入座",
-  "message.no_24_heli.takeover_unavailable": "需飞机在陆地停稳且原乘员坐稳后才能拖出"
+  "message.no_24_heli.takeover_unavailable": "需飞机在陆地停稳且原乘员坐稳后才能拖出",
+  "key.no_24_heli.seat_pilot": "切换至主驾（按住 Ctrl）",
+  "key.no_24_heli.seat_copilot": "切换至副驾（按住 Ctrl）",
+  "key.no_24_heli.seat_rear_left": "切换至左后座（按住 Ctrl）",
+  "key.no_24_heli.seat_rear_right": "切换至右后座（按住 Ctrl）",
+  "message.no_24_heli.seat_switch_occupied": "该位置已有玩家",
+  "message.no_24_heli.seat_switch_unavailable": "请等待当前乘降动作结束后再切换座位"
 }

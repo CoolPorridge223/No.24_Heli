@@ -20,10 +20,10 @@ import net.minecraft.util.math.Vec3d;
 public final class CockpitTapeRenderer {
     /** 与屏幕 HUD 共用 58×114 外框、14 像素单位栏和 12 像素刻度间隔。 */
     private static final int WIDTH = 58, HEIGHT = 114, HEADER = 14, SPACING = 12;
-    /** 七段数码管的 a/b/c/d/e/f/g 位；刻度和读数采用相同字形。 */
-    private static final int[] DIGITS = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
+    /** 七段数码管的 a/b/c/d/e/f/g 位；机内与第三人称 HUD 的刻度和读数共用字形。 */
+    static final int[] DIGITS = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
     /** 七段笔画只创建一次，避免每架飞机每帧为所有数字重复分配二维数组。 */
-    private static final double[][] BARS = {{.7, 0, 4.3, .7}, {4.3, .7, 5, 4.2}, {4.3, 4.8, 5, 8.3},
+    static final double[][] BARS = {{.7, 0, 4.3, .7}, {4.3, .7, 5, 4.2}, {4.3, 4.8, 5, 8.3},
             {.7, 8.3, 4.3, 9}, {0, 4.8, .7, 8.3}, {0, .7, .7, 4.2}, {.7, 4.15, 4.3, 4.85}};
     /** 中央读数缩为原来的 72%，保留数字鼓行距与四周留白。 */
     private static final double READOUT_SCALE = .90;
