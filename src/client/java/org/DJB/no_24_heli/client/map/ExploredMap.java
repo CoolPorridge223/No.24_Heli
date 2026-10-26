@@ -51,6 +51,11 @@ public final class ExploredMap {
         String key=UUID.nameUUIDFromBytes((source+"|"+next.getRegistryKey().getValue()).getBytes(StandardCharsets.UTF_8)).toString();
         directory=FabricLoader.getInstance().getConfigDir().resolve("no_24_heli_maps").resolve(key);
     }
+    /** 客户端界面读取同一来源/维度的目录，导航点与地形共用隔离键，不混入其他存档。 */
+    public static Path storageDirectory(){
+        selectWorld(MinecraftClient.getInstance().world);
+        return directory;
+    }
     /** 每 tick 在三毫秒内最多采样三十二块，优先玩家附近；读取世界仍在客户端主线程。 */
     public static void tick(){
         var mc=MinecraftClient.getInstance();selectWorld(mc.world);if(world==null)return;
