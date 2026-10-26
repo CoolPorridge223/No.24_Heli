@@ -41,8 +41,8 @@ public final class HelicopterModel {
     private final List<Face> camouflage = new ArrayList<>();
     /** 旧编号 0–5 保留丛林、雪、沙、黑、救援及紫金色；新增默认 6 为参考图蓝白警用色。 */
     private static final int[] PAINT_COLORS = {0xff526b40, 0xffe5ebed, 0xffc3a06c, 0xff252b33, 0xffe97a28, 0xff64389b, 0xff234aa4};
-    /** 整片玻璃约 90% 透明（alpha=26/255），浅蓝灰色与掠射高光在世界合成后按环境光混合。 */
-    private static final int GLASS_COLOR = 0x1aabcbd8;
+    /** 整片玻璃 80% 透明（alpha=51/255），环境光与可用的 LabPBR 反射在世界合成后混合。 */
+    private static final int GLASS_COLOR = 0x33abcbd8;
     /** 地板顶面沿用原 0.64 格高度，厚 3.5 厘米；相对内蒙皮另留 2.5 厘米净距。 */
     private static final double FLOOR_TOP = .64, FLOOR_THICKNESS = .035, FLOOR_CLEARANCE = .025;
     /** 地板限定在后隔舱之前与仪表罩下方，沿机腹按 32 段采样，单位：格。 */
@@ -214,9 +214,14 @@ public final class HelicopterModel {
             double sign=HelicopterCabin.side(door)==0?1:-1;
             double back=HelicopterCabin.doorBack(door),front=HelicopterCabin.doorFront(door);
             List<Face> panel=doors.get("door"+door+"_shell");
-            for(double z:new double[]{back,front})for(int i=0;i<12;i++)
-                doorEdge(panel,bodyVertex(z,sign*(Math.PI/4+i*Math.PI/24)),
-                        bodyVertex(z,sign*(Math.PI/4+(i+1)*Math.PI/24)));
+            // 门后缘与侧窗边界重合时，windowFrame 已生成断面和密封圈，不能再覆盖一层门沿。
+            // 沿用当前模型的周向细分，远景也必须和原窗框的端点一致。
+            double step=Math.PI*2/radialSegments;
+            for(double z:new double[]{back,front})for(int i=0;i<radialSegments/4;i++){
+                double angle=Math.PI/4+i*step,next=angle+step;
+                if(isWindow(z+(z==back?1:-1)*.00001,(angle+next)*.5))continue;
+                doorEdge(panel,bodyVertex(z,sign*angle),bodyVertex(z,sign*next));
+            }
             for(double angle:new double[]{Math.PI/4,3*Math.PI/4})for(int i=0;i<16;i++){
                 double z=back+(front-back)*i/16,next=back+(front-back)*(i+1)/16;
                 doorEdge(panel,bodyVertex(z,sign*angle),bodyVertex(next,sign*angle));
@@ -235,7 +240,8 @@ public final class HelicopterModel {
     private static void doorEdge(List<Face> panel,Vertex a,Vertex b){
         Vertex innerA=inset(a,SHELL_THICKNESS,true),innerB=inset(b,SHELL_THICKNESS,true);
         flat(panel,a.position,b.position,innerB.position,innerA.position,LINER);
-        flat(panel,innerA.position,innerB.position,b.position,a.position,LINER);
+        // 反面保留同一条三角剖分对角线，防止曲面断面的两套三角形交叉。
+        flat(panel,a.position,innerA.position,innerB.position,b.position,LINER);
         tube(panel,a.position,b.position,.006,.006,SEAL);
     }
 
@@ -381,7 +387,7 @@ public final class HelicopterModel {
         Vertex innerA = inset(a, SHELL_THICKNESS, true), innerB = inset(b, SHELL_THICKNESS, true);
         flat(shell, a.position, b.position, innerB.position, innerA.position, SEAL);
         // 断面既有内壁又有外壁，法线不能靠双面渲染伪装出厚度。
-        flat(shell, innerA.position, innerB.position, b.position, a.position, SEAL);
+        flat(shell, a.position, innerA.position, innerB.position, b.position, SEAL);
         tube(shell, a.position, b.position, .007, .007, SEAL);
     }
 

@@ -7,7 +7,12 @@ uniform sampler2D BlockAtlas;
 uniform sampler2D FontAtlas;
 uniform sampler2D LightDepth;
 uniform sampler2D GlassLightmap;
+uniform sampler2D GlassSpecular;
 uniform vec2 GlassLight;
+uniform int GlassPbr;
+uniform vec3 GlassSkyColor;
+uniform vec3 GlassSkyUp;
+uniform mat4 ProjMat;
 uniform mat4 LightMatrix;
 uniform mat4 InverseProjection;
 uniform vec2 ScreenSize;
@@ -29,6 +34,52 @@ in vec4 materialTint;
 in vec4 materialOverlayTint;
 in vec3 surfaceNormal;
 out vec4 fragColor;
+
+// 反射只查询已有场景快照，不能写入天空深度；屏幕外或无命中时由调用方使用天空近似。
+vec4 glassReflection(vec3 normal, float roughness) {
+    vec3 direction = reflect(normalize(viewPosition), normal);
+    vec3 origin = viewPosition + normal * 0.025;
+    float previousDistance = 0.0;
+    // 二十四个递增步长覆盖约四十六格，只在玻璃片元且有 PBR 材质时执行。
+    for (int step = 1; step <= 24; step++) {
+        float distance = 0.08 * float(step * step);
+        vec3 point = origin + direction * distance;
+        vec4 clip = ProjMat * vec4(point, 1.0);
+        if (clip.w <= 0.0) break;
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+        float depth = texture(SceneDepth, uv * DepthScale + DepthJitter).r;
+        vec4 position = InverseProjection * vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+        if (depth < 1.0 && point.z < position.z / position.w) {
+            float low = previousDistance, high = distance;
+            // 二分细化交点后再检查厚度，拒绝跨越轮廓时误命中远处物体。
+            for (int refine = 0; refine < 5; refine++) {
+                float middle = (low + high) * 0.5;
+                point = origin + direction * middle;
+                clip = ProjMat * vec4(point, 1.0);
+                uv = clip.xy / clip.w * 0.5 + 0.5;
+                depth = texture(SceneDepth, uv * DepthScale + DepthJitter).r;
+                position = InverseProjection * vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+                if (depth < 1.0 && point.z < position.z / position.w) high = middle;
+                else low = middle;
+            }
+            float gap = position.z / position.w - point.z;
+            if (depth >= 1.0 || gap < -0.05 || gap > 0.15 + high * 0.01) return vec4(0.0);
+            vec2 border = min(uv, vec2(1.0) - uv);
+            float confidence = smoothstep(0.0, 0.08, min(border.x, border.y));
+            // 光滑度降低时扩大颜色采样范围，避免粗糙玻璃仍然呈现锐利镜像。
+            vec2 radius = vec2(roughness * 0.025);
+            vec3 color = texture(SceneColor, uv).rgb * 0.4;
+            color += (texture(SceneColor, clamp(uv + vec2(radius.x, 0), 0.0, 1.0)).rgb
+                    + texture(SceneColor, clamp(uv - vec2(radius.x, 0), 0.0, 1.0)).rgb
+                    + texture(SceneColor, clamp(uv + vec2(0, radius.y), 0.0, 1.0)).rgb
+                    + texture(SceneColor, clamp(uv - vec2(0, radius.y), 0.0, 1.0)).rgb) * 0.15;
+            return vec4(color, confidence);
+        }
+        previousDistance = distance;
+    }
+    return vec4(0.0);
+}
 
 // 以接收面在阴影纹理中的深度梯度补偿采样位置；避免斜墙自阴影，也不靠大偏移漏过薄墙。
 float lightVisibility() {
@@ -72,7 +123,7 @@ void main() {
     }
     float fogVisibility = 1.0 - smoothstep(FogStart, max(FogStart + 0.001, FogEnd), vertexDistance);
     if (LightMode == 7) {
-        // 整窗保持约 10% 不透明度；高光只改变颜色，不能把掠射角变成挡视野的实心玻璃。
+        // 整窗保持 20% 不透明度；反射在此预算内混合，不把掠射角变成实心玻璃。
         vec3 normal = normalize(surfaceNormal);
         float facing = clamp(abs(dot(normal, normalize(-viewPosition))), 0.0, 1.0);
         float fresnel = pow(1.0 - facing, 5.0);
@@ -81,7 +132,22 @@ void main() {
         // 窗缘使用整窗 UV，不在细分面重复；残骸亮度随顶点色压暗，夜晚由真实光照贴图降亮。
         vec3 tint = materialTint.rgb * (0.78 + 0.22 * max(fresnel, edge));
         vec3 light = texture(GlassLightmap, clamp(GlassLight, vec2(0.5 / 16.0), vec2(15.5 / 16.0))).rgb;
-        fragColor = vec4(tint * light, materialTint.a * fogVisibility);
+        vec3 color = tint * light;
+        if (GlassPbr != 0) {
+            vec2 specular = texture(GlassSpecular, materialUv).rg;
+            float roughness = pow(1.0 - specular.r, 2.0);
+            // 玻璃为非金属，只解释 LabPBR 的 0..229 线性 F0 区间。
+            float f0 = min(specular.g, 229.0 / 255.0);
+            float reflectance = f0 + (1.0 - f0) * fresnel;
+            vec3 direction = reflect(normalize(viewPosition), normal);
+            float skyLight = clamp((GlassLight.y - 0.03125) / 0.9375, 0.0, 1.0);
+            vec3 environment = GlassSkyColor * skyLight
+                    * mix(0.25, 1.0, smoothstep(-0.3, 0.6, dot(direction, GlassSkyUp)));
+            vec4 reflected = glassReflection(normal, roughness);
+            vec3 reflection = mix(environment, reflected.rgb, reflected.a);
+            color = mix(color, reflection, clamp(reflectance * (1.0 - roughness) / materialTint.a, 0.0, 1.0));
+        }
+        fragColor = vec4(color, materialTint.a * fogVisibility);
         return;
     }
     if (LightMode == 2 || LightMode == 3) {

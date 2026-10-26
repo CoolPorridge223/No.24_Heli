@@ -35,6 +35,7 @@ import net.minecraft.client.texture.SpriteAtlasTexture;
 import net.minecraft.client.util.BufferAllocator;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
@@ -98,6 +99,13 @@ public final class SearchlightRenderer {
     private static final List<BacklitLabel> LABELS=new ArrayList<>();
     /** 玻璃复用合成深度，但使用标准透明混合；独立于灯具开关，每帧重新登记。 */
     private static final List<Glass> GLASS=new ArrayList<>();
+    /** 非金属玻璃的 LabPBR 数据：R 为感知光滑度，G 为线性 F0；资源包可覆盖此贴图。 */
+    private static final Identifier GLASS_SPECULAR=No_24_heli.id("textures/entity/heli_glass_s.png");
+    /** 每次资源重载后只检测一次材质；缺少贴图时保留环境光透明玻璃，不采样缺失纹理。 */
+    private static boolean glassMaterialChecked,glassSpecularAvailable;
+    /** 世界阶段保存天空颜色与观察空间竖直轴，屏幕外反射按昼夜/天气及玻璃处的天空光近似。 */
+    private static Vec3d glassSkyColor=Vec3d.ZERO;
+    private static final Vector3f GLASS_SKY_UP=new Vector3f();
     /** 字形缓冲跨帧复用，资源重载、离开世界或退出时释放；字体页仍由原版字体管理器持有。 */
     private static BacklitText backlitText;
     /** 当前光影的像素抖动与低分辨率深度比例；主视图灯具登记时读取，不修改光影选项。 */
@@ -310,6 +318,8 @@ public final class SearchlightRenderer {
             cameraPosition=context.camera().getPos();viewFrustum=context.frustum();
             tickDelta=context.tickCounter().getTickDelta(false);fogStart=RenderSystem.getShaderFogStart();fogEnd=RenderSystem.getShaderFogEnd();
             fogShape=RenderSystem.getShaderFogShape().getId();
+            glassSkyColor=context.world().getSkyColor(cameraPosition,tickDelta);
+            worldView.transformDirection(0,1,0,GLASS_SKY_UP).normalize();
             prepared=true;
         });
         // 方块实体在 AFTER_ENTITIES 之后才绘制；所有不透明与透明实体层提交后再保存深度。
@@ -444,23 +454,33 @@ public final class SearchlightRenderer {
     }
 
     /**
-     * 功能：用 net.minecraft.client.render.LightmapTextureManager 的真实光照贴图绘制高透玻璃。
+     * 功能：用 net.minecraft.client.render.LightmapTextureManager 的真实光照及可用 LabPBR 材质绘制玻璃。
      * 端侧：世界合成后的渲染线程；保留深度快照遮挡但不写深度，剔除背面使六毫米内外表面只混合一次。
      * 排查：夜间发白查光照采样；窗框穿透查片元深度容差；多机重叠按观察空间距离由远到近提交。
      */
     private static void drawGlass(){
         if(GLASS.isEmpty())return;
-        var lightmap=MinecraftClient.getInstance().gameRenderer.getLightmapTextureManager();
+        var client=MinecraftClient.getInstance();
+        if(!glassMaterialChecked){
+            glassSpecularAvailable=client.getResourceManager().getResource(GLASS_SPECULAR).isPresent();
+            glassMaterialChecked=true;
+        }
+        var lightmap=client.gameRenderer.getLightmapTextureManager();
         int previousLightmap=RenderSystem.getShaderTexture(2);
         lightmap.enable();
         try{
             shader.addSampler("GlassLightmap",RenderSystem.getShaderTexture(2));
+            shader.addSampler("GlassSpecular",client.getTextureManager().getTexture(
+                    glassSpecularAvailable?GLASS_SPECULAR:HelicopterRenderer.TEXTURE).getGlId());
             RenderSystem.defaultBlendFunc();RenderSystem.enableCull();
             GLASS.sort(java.util.Comparator.comparingDouble((Glass pane)->
                     pane.modelView.getTranslation(new Vector3f()).lengthSquared()).reversed());
             for(var pane:GLASS){
                 uniforms(pane.modelView,7);
                 shader.getUniform("GlassLight").set(((pane.light&65535)+8)/256f,((pane.light>>>16)+8)/256f);
+                shader.getUniform("GlassPbr").set(glassSpecularAvailable&&!pane.wreck?1:0);
+                shader.getUniform("GlassSkyColor").set((float)glassSkyColor.x,(float)glassSkyColor.y,(float)glassSkyColor.z);
+                shader.getUniform("GlassSkyUp").set(GLASS_SKY_UP);
                 shader.bind();
                 for(var segment:HelicopterMesh.mesh(pane.model,pane.part,pane.paint,pane.wreck,pane.distant)){
                     segment.buffer().bind();segment.buffer().draw();
@@ -703,6 +723,7 @@ public final class SearchlightRenderer {
     /** 功能：释放跨帧几何与屏幕快照；仅资源重载、断线和退出调用，不影响正常帧中的灯芯队列。 */
     private static void reset(){
         clear();GLOWS.clear();LABELS.clear();GLASS.clear();
+        glassMaterialChecked=false;glassSpecularAvailable=false;
         if(backlitText!=null){backlitText.close();backlitText=null;}
         if(sceneSnapshot!=null){sceneSnapshot.delete();sceneSnapshot=null;}
     }
