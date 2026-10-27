@@ -55,6 +55,10 @@ public class HelicopterEntity extends Entity {
     private static final int EXIT_CONFIRM_TICKS=60;
     /** DataTracker 中的 Flight NBT 快照；服务端每 2 tick 或离散乘降时刷新，客户端只读。 */
     private static final TrackedData<NbtCompound> STATUS=DataTracker.registerData(HelicopterEntity.class,TrackedDataHandlerRegistry.NBT_COMPOUND);
+    /** 放置时与机体重叠的玩家 UUID；独立同步给客户端用于移动预测，不写入存档或回收物品。 */
+    private static final TrackedData<NbtCompound> PLACEMENT_PLAYERS=DataTracker.registerData(HelicopterEntity.class,TrackedDataHandlerRegistry.NBT_COMPOUND);
+    /** 离开机体额外保留五厘米净距后恢复碰撞，避免刚擦过盒面就再次卡住；单位格。 */
+    private static final double PLACEMENT_EXIT_MARGIN=.05;
     /** 每架飞机独立的导航任务状态与后台 Future 生命周期，卸载/销毁时必须 reset。 */
     private final NavigationPilot navigation=new NavigationPilot();
     /** 权威飞行状态；所有物理、辅助、损伤和任务字段都在服务端写入。 */
@@ -123,7 +127,43 @@ public class HelicopterEntity extends Entity {
     /** 由 EntityType 构造；intersectionChecked 允许自定义命中盒，难度只初始化辅助默认值。 */
     public HelicopterEntity(EntityType<?> type,World world){super(type,world);intersectionChecked=true;applyDifficulty(HeliConfig.INSTANCE.difficulty);}
     /** 注册同步 NBT；初始为空，首次 saveFlight 后才包含完整飞行快照。 */
-    @Override protected void initDataTracker(DataTracker.Builder builder){builder.add(STATUS,new NbtCompound());}
+    @Override protected void initDataTracker(DataTracker.Builder builder){
+        builder.add(STATUS,new NbtCompound());builder.add(PLACEMENT_PLAYERS,new NbtCompound());
+    }
+    /**
+     * 功能：生成前登记已经位于真实分部盒内的玩家，只对本机临时忽略碰撞。
+     * 引用 net.minecraft.world.World#getOtherEntities 筛选玩家，net.minecraft.entity.data.DataTracker 同步 UUID。
+     * 端侧/线程：服务端主线程，整机放置和停机坪组装共用；不设超时，完全走出前不会重新卡住。
+     * 排查：客户端仍受阻时检查本方法是否在 spawnEntity 前执行，以便首次追踪就带上豁免。
+     */
+    public void preparePlacement(){
+        NbtCompound players=new NbtCompound();
+        var shapes=HelicopterCollision.shapes(this);
+        for(Entity entity:getWorld().getOtherEntities(this,HelicopterCollision.bounds(this),
+                other->other instanceof PlayerEntity&&!other.isSpectator()))
+            if(shapes.stream().anyMatch(shape->shape.intersects(entity.getBoundingBox())))
+                players.putBoolean(entity.getUuidAsString(),true);
+        dataTracker.set(PLACEMENT_PLAYERS,players);
+    }
+    /** 两端通过 net.minecraft.entity.data.DataTracker 读取同一豁免名单，方块和其他飞机仍正常阻挡。 */
+    public boolean ignoresPlacementCollision(Entity entity){
+        return dataTracker.get(PLACEMENT_PLAYERS).contains(entity.getUuidAsString());
+    }
+    /**
+     * 服务端每 tick 用真实分部盒确认玩家完全离开，再通过 net.minecraft.entity.data.DataTracker 恢复两端碰撞。
+     * net.minecraft.world.World#getPlayerByUuid 找不到的离线/跨维度玩家也移除；只修改副本，保证追踪器检测到变化。
+     */
+    private void updatePlacementPlayers(){
+        NbtCompound players=dataTracker.get(PLACEMENT_PLAYERS);
+        if(players.isEmpty())return;
+        NbtCompound remaining=players.copy();var shapes=HelicopterCollision.shapes(this);
+        for(String uuid:players.getKeys()){
+            PlayerEntity player=getWorld().getPlayerByUuid(java.util.UUID.fromString(uuid));
+            if(player==null||player.isRemoved()||shapes.stream().noneMatch(shape->
+                    shape.intersects(player.getBoundingBox().expand(PLACEMENT_EXIT_MARGIN))))remaining.remove(uuid);
+        }
+        if(!players.equals(remaining))dataTracker.set(PLACEMENT_PLAYERS,remaining);
+    }
     @Override public boolean canHit(){return true;}
     /** 实体碰撞由分部有向盒处理；原版不得把整机候选大盒变成隐形墙。 */
     @Override public boolean isCollidable(){return false;}
@@ -166,6 +206,7 @@ public class HelicopterEntity extends Entity {
     @Override public boolean collidesWith(Entity other){return false;}
     private boolean crashObstacle(Entity other){
         return !other.isSpectator()&&!isConnectedThroughVehicle(other)
+                &&!ignoresPlacementCollision(other)
                 &&getWorld().getTime()>=departingPassengers.getOrDefault(other.getUuid(),Long.MIN_VALUE)
                 &&!(other instanceof RopeSeatEntity)&&!(other.getRootVehicle() instanceof RopeSeatEntity)
                 &&(other.isCollidable()||other instanceof LivingEntity||other instanceof HelicopterEntity);
@@ -383,6 +424,7 @@ public class HelicopterEntity extends Entity {
         }
         if(entityImpactCooldown>0)entityImpactCooldown--;
         departingPassengers.values().removeIf(until->until<=getWorld().getTime());
+        updatePlacementPlayers();
         if(collisionCooldown>0)collisionCooldown--;if(repairCooldown>0)repairCooldown--;
         if(getWorld().getTime()-lastInput>10||!(pilot() instanceof PlayerEntity))flight.clearInputs();
 

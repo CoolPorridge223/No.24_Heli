@@ -96,6 +96,8 @@ public final class NavigationPilot {
     private int expandedNodes;
     /** 是否已发出非空预览；取消后保留到下次同步，用空包清除客户端旧线，不保存或全服广播。 */
     private boolean previewSent;
+    /** 航段变化立即刷新地图；其余每十 tick 更新一次，避免每两 tick 重发完整航路。 */
+    private boolean chartDirty=true;
     /** 预览后留四格补偿实体插值，前留七十二格覆盖显示及收包延迟；每米固定采样，单位格。 */
     private static final double PREVIEW_BEHIND = 4, PREVIEW_AHEAD = 72, PREVIEW_SPACING = 1;
     /** 已交接航段的累计弧长，保证每米箭头跨航段仍用同一采样基准；重规划时清零，不影响飞控。 */
@@ -105,11 +107,12 @@ public final class NavigationPilot {
      * 功能：只向当前直升机乘员同步实际三维航路，个人可见开关完全不经过网络。
      * 引用 net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking 定向发送，
      * net.minecraft.server.network.ServerPlayerEntity 限定实际在线乘员；实体每两服务端 tick 调用。
-     * 返回无；副作用仅发包及记录是否需要清除，规划中不制造通向终点的虚构路线。
+     * 返回无；副作用仅发包及记录是否需要清除；地图待定连接由客户端单独用暗色绘制。
      */
     public void syncPreview(HelicopterEntity helicopter) {
-        boolean active = helicopter.flight.autopilot && terrainFollower != null && !stalled;
-        if (!active && !previewSent) return;
+        boolean navigating = helicopter.flight.autopilot && helicopter.flight.waypoint && !helicopter.flight.wreck;
+        boolean active = navigating && terrainFollower != null && !stalled;
+        if (!navigating && !previewSent) return;
         List<Vec3d> points = active ? terrainFollower.preview(PREVIEW_BEHIND, PREVIEW_AHEAD,
                 PREVIEW_SPACING, previewOffset, terrainNext).stream()
                 .map(point -> new Vec3d(point.x(), point.y(), point.z())).toList() : List.of();
@@ -118,12 +121,20 @@ public final class NavigationPilot {
                 ? terrainNext : terrainGoalNode == route.size() - 1 ? terrainRoute : null;
         var end = finalRoute == null ? null : finalRoute.path().getLast();
         Vec3d destination = end == null ? null : new Vec3d(end.x(), end.y(), end.z());
-        var packet = new NavigationPathPayload(helicopter.getId(), points, destination);
+        NavigationPathPayload.Chart chart = null;
+        if (chartDirty || !navigating || !previewSent || helicopter.age % 10 == 0) {
+            List<Vec3d> chartPoints = !navigating ? List.of() : !active ? List.of(helicopter.getPos())
+                    : terrainFollower.chartPreview(NavigationPathPayload.MAX_CHART_POINTS, terrainNext).stream()
+                    .map(point -> new Vec3d(point.x(), 0, point.z())).toList();
+            chart = new NavigationPathPayload.Chart(helicopter.flight.waypointX, helicopter.flight.waypointZ, chartPoints);
+            chartDirty = false;
+        }
+        var packet = new NavigationPathPayload(helicopter.getId(), points, destination, chart);
         for (var passenger : helicopter.getPassengerList())
             if (passenger instanceof net.minecraft.server.network.ServerPlayerEntity player
                     && net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.canSend(player, NavigationPathPayload.ID))
                 net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player, packet);
-        previewSent = active;
+        previewSent = navigating;
     }
 
     /** 功能：读取当前阶段供诊断；服务端，无 MC API，无副作用。 */
@@ -266,7 +277,7 @@ public final class NavigationPilot {
         if(chunkLoader!=null){chunkLoader.close();chunkLoader=null;}
         terrainSnapshot=null;terrainRoute=null;terrainNext=null;terrainFollower=null;wideTerrain=false;blockedAt=-1;
         terrainSafetyRetries=0;terrainRetryPending=false;terrainFailure=null;waitingForChunks=false;
-        previewOffset=0;
+        previewOffset=0;chartDirty=true;
     }
 
     /**
@@ -289,7 +300,7 @@ public final class NavigationPilot {
                         // 采集过慢时飞机可能已靠近接点；不把已飞过或已显示的轨迹倒回去。
                         terrainSnapshot=null;wideTerrain=false;retainChunks();return true;
                     }else {
-                        terrainNext=result;nextGoalNode=planningGoalNode;
+                        terrainNext=result;nextGoalNode=planningGoalNode;chartDirty=true;
                         var prefix=terrainRoute.path().subList(0,planningJoinIndex+1);
                         terrainRoute=new NavigationTerrainRoute.Result(terrainRoute.status(),prefix,terrainRoute.volume(),
                                 terrainRoute.expanded(),terrainRoute.costTicks());
@@ -362,7 +373,7 @@ public final class NavigationPilot {
     private void useTerrain(NavigationTerrainRoute.Result result,int goalNode){
         if(terrainRoute!=null)for(int i=1;i<terrainRoute.path().size();i++)
             previewOffset+=terrainRoute.path().get(i-1).distance(terrainRoute.path().get(i));
-        terrainRoute=result;terrainGoalNode=goalNode;
+        terrainRoute=result;terrainGoalNode=goalNode;chartDirty=true;
         terrainFollower=new NavigationTerrainFollower();
         terrainFollower.bind(result,HeliConfig.INSTANCE.autopilotCruiseKmh/72.0);
         noProgressSince=-1;progressCheckpoint=0;

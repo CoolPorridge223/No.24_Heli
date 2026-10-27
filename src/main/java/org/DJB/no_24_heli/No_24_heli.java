@@ -16,6 +16,8 @@ import org.DJB.no_24_heli.network.AirspacePayload;
 import org.DJB.no_24_heli.network.ControlPayload;
 import org.DJB.no_24_heli.network.DifficultyPayload;
 import org.DJB.no_24_heli.network.HelipadMapPayload;
+import org.DJB.no_24_heli.network.HelipadRenamePayload;
+import org.DJB.no_24_heli.data.HelipadState;
 import org.DJB.no_24_heli.network.NavigationPayload;
 import org.DJB.no_24_heli.network.RadarContactsPayload;
 import org.DJB.no_24_heli.network.RadarPayload;
@@ -106,6 +108,19 @@ public class No_24_heli implements ModInitializer {
         PayloadTypeRegistry.playS2C().register(org.DJB.no_24_heli.network.NavigationPathPayload.ID,
                 org.DJB.no_24_heli.network.NavigationPathPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(HelipadMapPayload.ID,HelipadMapPayload.CODEC);
+        // 地图改名与设点相同，允许本机乘员编辑当前维度已登记停机坪，不加载远处区块。
+        PayloadTypeRegistry.playC2S().register(HelipadRenamePayload.ID,HelipadRenamePayload.CODEC);
+        ServerPlayNetworking.registerGlobalReceiver(HelipadRenamePayload.ID,(packet,context)->context.server().execute(()->{
+            var player=context.player();var world=player.getServerWorld();var state=HelipadState.get(world);
+            if(player.isSpectator()||!(player.getVehicle() instanceof HelicopterEntity heli)||heli.flight.wreck
+                    ||!state.rename(packet.pos(),packet.name())){
+                LOGGER.warn("拒绝玩家 {} 对停机坪 {} 的改名请求",player.getUuid(),packet.pos());
+                player.sendMessage(Text.translatable("message.no_24_heli.pad_rename_failed"),true);
+                ServerPlayNetworking.send(player,HelipadMapPayload.of(state));return;
+            }
+            var snapshot=HelipadMapPayload.of(state);
+            for(var recipient:world.getPlayers())ServerPlayNetworking.send(recipient,snapshot);
+        }));
         PayloadTypeRegistry.playS2C().register(AirspacePayload.ID,AirspacePayload.CODEC);
         PayloadTypeRegistry.playC2S().register(RadarPayload.ID,RadarPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(RadarPayload.ID,RadarPayload.CODEC);

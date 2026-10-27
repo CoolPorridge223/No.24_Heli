@@ -8,6 +8,8 @@ import org.DJB.no_24_heli.client.map.MapTerrainRenderer;
 import org.DJB.no_24_heli.client.map.MapWaypointBook;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
 import org.DJB.no_24_heli.network.HelipadMapPayload;
+import org.DJB.no_24_heli.network.HelipadRenamePayload;
+import org.DJB.no_24_heli.data.HelipadState;
 import org.DJB.no_24_heli.network.NavigationPayload;
 
 
@@ -24,18 +26,18 @@ import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.entity.Entity;
 import net.minecraft.text.Text;
+import net.minecraft.util.Util;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.RotationAxis;
-import net.minecraft.world.Heightmap;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
 
 /**
- * 北向探索地图及本机导航点抽屉；端侧 CLIENT，仅在客户端界面/渲染线程运行。
+ * 北向探索地图及停机坪抽屉；端侧 CLIENT，仅在客户端界面/渲染线程运行。
  * net.minecraft.client.gui.screen.Screen 负责输入，net.minecraft.client.gui.DrawContext 绘制裁切地图。
  * 打开时加载记录，关闭时释放 GPU 页；导航仍经原有 C2S 由服务端复核。
- * 排查：点图失效先查抽屉命中与裁切；名称丢失查本机地图目录；边距查统一 inset。
+ * 排查：点图失效先查抽屉命中与裁切；停机坪名称查服务端快照；边距查统一 inset。
  */
 @Environment(EnvType.CLIENT)
 public final class HeliMapScreen extends Screen {
@@ -43,12 +45,17 @@ public final class HeliMapScreen extends Screen {
     private int left,top,mapWidth,mapHeight;
     /** 标题栏方形按钮、抽屉把手和列表行尺寸，单位均为 GUI 逻辑像素。 */
     private static final int TITLE_BUTTON_SIZE=20,HANDLE_WIDTH=14,HANDLE_HEIGHT=32,ROW_HEIGHT=22,HEADER_HEIGHT=22;
-    /** 地图列表的本机记录及当前服务端停机坪快照，不改飞行状态。 */
+    /** 清单最大宽度为一百四十四 GUI 像素；展开/收起用二百二十毫秒平滑滑动。 */
+    private static final int DRAWER_WIDTH=144,DRAWER_ANIMATION_MS=220;
+    /** 地图列表仅缓存服务端停机坪目录，普通设点不登记到列表。 */
     private MapWaypointBook waypointBook;
     private List<MapWaypointBook.Entry> waypoints=List.of();
     private List<HelipadMapPayload.Entry> padSnapshot=List.of();
     /** 抽屉始终在地图内部左沿；垂直位置按可移动范围的比例保存，适应窗口缩放。 */
     private boolean drawerOpen;
+    /** 动画进度 0..1，以及反向切换时的起点；使用 net.minecraft.util.Util 的单调时钟，与帧率无关。 */
+    private double drawerProgress,drawerAnimationFrom;
+    private long drawerAnimationStarted;
     private double drawerPosition=.25;
     private int drawerY,drawerWidth,drawerHeight,listOffset;
     /** 鼠标手势在按下时选定归属，避免拖抽屉/编辑名称时带动地图或设点。 */
@@ -71,7 +78,7 @@ public final class HeliMapScreen extends Screen {
     /** 点击停机坪后到松开左键期间消费拖动，防止按下按钮同时带动地图。 */
     private boolean padClickConsumed;
     public HeliMapScreen(){super(Text.translatable("screen.no_24_heli.map"));}
-    /** 统一地图四边外距，标题按钮放在上方空隙；Screen 重建布局时保留地图与抽屉位置。 */
+    /** 统一地图四边外距；定位按钮只在点击时读取 net.minecraft.entity.Entity 的当前坐标，缩放窗口保留地图位置。 */
     @Override protected void init(){
         int inset=Math.clamp(Math.min(width,height)/12,24,32);
         left=inset+2;top=inset+2;mapWidth=width-2*left;mapHeight=height-2*top;
@@ -81,13 +88,19 @@ public final class HeliMapScreen extends Screen {
             refreshWaypoints();
         }
         layoutDrawer();
+        addDrawableChild(new MapIconButton(left+mapWidth-3*TITLE_BUTTON_SIZE,top-TITLE_BUTTON_SIZE-3,
+                Text.translatable("screen.no_24_heli.center_helicopter"),MapIcon.CENTER,b->{
+            if(client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity heli){
+                centerX=heli.getX();centerZ=heli.getZ();
+            }
+        }));
         addDrawableChild(new MapIconButton(left+mapWidth-2*TITLE_BUTTON_SIZE,top-TITLE_BUTTON_SIZE-3,
-                Text.translatable("screen.no_24_heli.clear_waypoint"),false,b->{
+                Text.translatable("screen.no_24_heli.clear_waypoint"),MapIcon.CLEAR,b->{
             if(client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity)
                 ClientPlayNetworking.send(new NavigationPayload(0,0,true));
         }));
         addDrawableChild(new MapIconButton(left+mapWidth-TITLE_BUTTON_SIZE,top-TITLE_BUTTON_SIZE-3,
-                Text.translatable("screen.no_24_heli.close_map"),true,b->close()));
+                Text.translatable("screen.no_24_heli.close_map"),MapIcon.CLOSE,b->close()));
         nameField=addSelectableChild(new TextFieldWidget(textRenderer,0,0,drawerWidth-46,18,
                 Text.translatable("screen.no_24_heli.waypoint_name")));
         nameField.setMaxLength(MapWaypointBook.NAME_LIMIT);
@@ -119,8 +132,8 @@ public final class HeliMapScreen extends Screen {
         if(HeliRadar.restricted(pad.pos()))client.player.sendMessage(Text.translatable("message.no_24_heli.pad_restricted"),true);
         else ClientPlayNetworking.send(new NavigationPayload(pad.pos().getX()+.5,pad.pos().getZ()+.5,false));
     }
-    /** 自定义点和列表共用旧导航校验与载荷；保存坐标不会绕过服务端禁区/边界复核。 */
-    private void setWaypoint(double x,double z,boolean remember){
+    /** 右键普通设点仅发送 net.minecraft.network.packet.CustomPayload 导航意图，不写入停机坪清单或缓存。 */
+    private void setWaypoint(double x,double z){
         if(client.player==null||!(client.player.getVehicle() instanceof HelicopterEntity))return;
         if(HeliRadar.zones.stream().anyMatch(zone->Math.hypot(x-zone.pos().getX()-.5,z-zone.pos().getZ()-.5)<=zone.radius())
                 ||HeliRadar.mapHelipads().stream().anyMatch(p->HeliRadar.restricted(p.pos())
@@ -128,14 +141,6 @@ public final class HeliMapScreen extends Screen {
             client.player.sendMessage(Text.translatable("message.no_24_heli.waypoint_restricted"),true);return;
         }
         ClientPlayNetworking.send(new NavigationPayload(x,z,false));
-        if(remember){
-            int bx=(int)Math.floor(x),bz=(int)Math.floor(z);
-            // net.minecraft.client.world.ClientWorld 只用客户端已同步的 WORLD_SURFACE；未知区块高度留空。
-            Integer y=client.world.getChunkManager().isChunkLoaded(bx>>4,bz>>4)
-                    ?client.world.getTopY(Heightmap.Type.WORLD_SURFACE,bx,bz):null;
-            if(!waypointBook.remember(x,y,z))saveErrorTicks=100;
-            waypoints=waypointBook.entries();layoutDrawer();
-        }
     }
     /**
      * 功能：绘制实心圆供停机坪按钮的边框和底色复用，H 保持居中且不随地图缩放。
@@ -183,10 +188,15 @@ public final class HeliMapScreen extends Screen {
         padSnapshot=List.copyOf(HeliRadar.mapHelipads());
         if(!waypointBook.syncPads(padSnapshot))saveErrorTicks=100;
         waypoints=waypointBook.entries();layoutDrawer();
+        if(editing!=null){
+            String id=editing.id();
+            editing=waypoints.stream().filter(entry->entry.id().equals(id)).findFirst().orElse(null);
+            if(editing==null){nameField.setVisible(false);nameField.setFocused(false);setFocused(null);}
+        }
     }
     /** 抽屉宽高与滚动范围随地图尺寸约束，把手在展开和折叠时都留在地图内部。 */
     private void layoutDrawer(){
-        drawerWidth=Math.min(184,mapWidth-HANDLE_WIDTH-8);
+        drawerWidth=Math.min(DRAWER_WIDTH,mapWidth-HANDLE_WIDTH-8);
         int rows=Math.max(1,Math.min(8,waypoints.size()));
         drawerHeight=Math.min(HEADER_HEIGHT+rows*ROW_HEIGHT+6,mapHeight-12);
         drawerY=top+6+(int)Math.round(drawerPosition*Math.max(0,mapHeight-drawerHeight-12));
@@ -194,16 +204,25 @@ public final class HeliMapScreen extends Screen {
     }
     /** 完整行才允许命中，最下方裁切留白不对应下一行。 */
     private int visibleRows(){return Math.max(1,(drawerHeight-HEADER_HEIGHT-6)/ROW_HEIGHT);}
+    /** 平滑步进曲线在两端速度为零；切换方向从当前进度接续，避免快速点击导致位置跳变。 */
+    private void updateDrawerAnimation(){
+        double fraction=Math.clamp((Util.getMeasuringTimeMs()-drawerAnimationStarted)/(double)DRAWER_ANIMATION_MS,0,1);
+        double eased=fraction*fraction*(3-2*fraction);
+        drawerProgress=drawerAnimationFrom+((drawerOpen?1:0)-drawerAnimationFrom)*eased;
+    }
+    /** 抽屉从地图左侧滑入，net.minecraft.client.gui.DrawContext 的裁切隐藏越出地图的部分。 */
+    private int drawerX(){return left-drawerWidth+(int)Math.round(drawerWidth*drawerProgress);}
     /** 抽屉把手随展开位置移动，箭头始终紧邻当前抽屉的右缘。 */
-    private int handleX(){return left+(drawerOpen?drawerWidth:0);}
+    private int handleX(){return drawerX()+drawerWidth;}
     /** 输入消费覆盖抽屉和把手，不允许遮挡下的停机坪或地图收到同一点击。 */
     private boolean insideDrawer(double x,double y){
         return x>=handleX()&&x<handleX()+HANDLE_WIDTH&&y>=drawerY&&y<drawerY+HANDLE_HEIGHT
-                ||drawerOpen&&x>=left&&x<left+drawerWidth&&y>=drawerY&&y<drawerY+drawerHeight;
+                ||x>=left&&x<handleX()&&y>=drawerY&&y<drawerY+drawerHeight;
     }
     /** 只返回清单的完整可见行；标题和留白没有导航操作。 */
     private MapWaypointBook.Entry rowAt(double x,double y){
-        if(!drawerOpen||x<left||x>=left+drawerWidth||y<drawerY+HEADER_HEIGHT)return null;
+        if(!drawerOpen||drawerProgress<1||x<left||x>=handleX()
+                ||y<drawerY+HEADER_HEIGHT||y>=drawerY+drawerHeight)return null;
         int row=(int)(y-drawerY-HEADER_HEIGHT)/ROW_HEIGHT;
         int index=listOffset+row;
         return row<visibleRows()&&index<waypoints.size()?waypoints.get(index):null;
@@ -217,12 +236,17 @@ public final class HeliMapScreen extends Screen {
     /** 输入框位置跟随抽屉和当前行，避免第一次点击时仍用上一帧坐标。 */
     private void positionNameField(){
         if(editing==null)return;
-        nameField.setX(left+6);
+        nameField.setX(drawerX()+6);
         nameField.setY(drawerY+HEADER_HEIGHT+(waypoints.indexOf(editing)-listOffset)*ROW_HEIGHT+2);
     }
-    /** Enter/对勾提交，Esc 放弃；失败保留输入供重试，正常关闭不会留下输入焦点。 */
+    /** Enter/对勾提交停机坪改名，C2S 后等待服务端快照；非法输入保留编辑供修正。 */
     private void finishRename(boolean save){
-        if(save&&!waypointBook.rename(editing,nameField.getText())){saveErrorTicks=100;return;}
+        if(save){
+            String name=nameField.getText().strip();
+            if(!HelipadState.isValidName(name)){saveErrorTicks=100;return;}
+            ClientPlayNetworking.send(new HelipadRenamePayload(
+                    BlockPos.ofFloored(editing.x(),editing.y(),editing.z()),name));
+        }
         editing=null;nameField.setVisible(false);nameField.setFocused(false);setFocused(null);
         waypoints=waypointBook.entries();
     }
@@ -244,43 +268,45 @@ public final class HeliMapScreen extends Screen {
     }
     /** 绘制地图内抽屉和名称编辑；net.minecraft.client.gui.DrawContext 的裁切状态成对恢复。 */
     private void drawDrawer(DrawContext ctx,int mx,int my,float delta){
-        int hx=handleX();
-        if(drawerOpen){
-            ctx.fill(left,drawerY,left+drawerWidth,drawerY+drawerHeight,0xf21c2929);
-            ctx.fill(left,drawerY,left+drawerWidth,drawerY+HEADER_HEIGHT,0xff344541);
-            ctx.drawText(textRenderer,Text.translatable("screen.no_24_heli.waypoints"),left+8,drawerY+7,0xffe2cd98,false);
+        int dx=drawerX(),hx=handleX();
+        ctx.enableScissor(left,top,left+mapWidth,top+mapHeight);
+        if(hx>left){
+            ctx.fill(dx,drawerY,dx+drawerWidth,drawerY+drawerHeight,0xf21c2929);
+            ctx.fill(dx,drawerY,dx+drawerWidth,drawerY+HEADER_HEIGHT,0xff344541);
+            ctx.drawText(textRenderer,Text.translatable("screen.no_24_heli.waypoints"),dx+8,drawerY+7,0xffe2cd98,false);
             // 右侧三条短线标识可拖动区域，不把草图中的说明文字加入页面。
-            for(int i=0;i<3;i++)ctx.fill(left+drawerWidth-16,drawerY+7+i*3,left+drawerWidth-7,drawerY+8+i*3,0xff9baaa1);
-            ctx.enableScissor(left+2,drawerY+HEADER_HEIGHT,left+drawerWidth-2,drawerY+drawerHeight-2);
+            for(int i=0;i<3;i++)ctx.fill(dx+drawerWidth-16,drawerY+7+i*3,dx+drawerWidth-7,drawerY+8+i*3,0xff9baaa1);
+            ctx.enableScissor(dx+2,drawerY+HEADER_HEIGHT,dx+drawerWidth-2,drawerY+drawerHeight-2);
             for(int row=0;row<visibleRows()&&listOffset+row<waypoints.size();row++){
                 var entry=waypoints.get(listOffset+row);int y=drawerY+HEADER_HEIGHT+row*ROW_HEIGHT;
                 boolean hovered=entry.equals(rowAt(mx,my));
-                if(hovered)ctx.fill(left+3,y,left+drawerWidth-3,y+ROW_HEIGHT,0xff40574f);
+                if(hovered)ctx.fill(dx+3,y,dx+drawerWidth-3,y+ROW_HEIGHT,0xff40574f);
                 if(entry.equals(editing)){
                     positionNameField();nameField.render(ctx,mx,my,delta);
-                    line(ctx,left+drawerWidth-26,y+11,left+drawerWidth-23,y+14,0xffe2cd98);
-                    line(ctx,left+drawerWidth-23,y+14,left+drawerWidth-17,y+7,0xffe2cd98);
+                    line(ctx,dx+drawerWidth-26,y+11,dx+drawerWidth-23,y+14,0xffe2cd98);
+                    line(ctx,dx+drawerWidth-23,y+14,dx+drawerWidth-17,y+7,0xffe2cd98);
                 }else{
-                    int color=entry.helipad()&&HeliRadar.restricted(BlockPos.ofFloored(entry.x(),entry.y(),entry.z()))
+                    int color=HeliRadar.restricted(BlockPos.ofFloored(entry.x(),entry.y(),entry.z()))
                             ?0xffff8877:0xfff3ead2;
-                    ctx.drawText(textRenderer,textRenderer.trimToWidth(entry.label().getString(),drawerWidth-42),left+8,y+7,color,false);
-                    line(ctx,left+drawerWidth-25,y+14,left+drawerWidth-18,y+7,0xffb9c6b9);
-                    line(ctx,left+drawerWidth-23,y+15,left+drawerWidth-16,y+8,0xffb9c6b9);
+                    ctx.drawText(textRenderer,textRenderer.trimToWidth(entry.label().getString(),drawerWidth-42),dx+8,y+7,color,false);
+                    drawRenameIcon(ctx,dx+drawerWidth-30,y+4,0xffb9c6b9);
                 }
             }
-            if(waypoints.isEmpty())ctx.drawText(textRenderer,Text.translatable("screen.no_24_heli.waypoints_empty"),left+8,drawerY+HEADER_HEIGHT+7,0xff9baaa1,false);
+            if(waypoints.isEmpty())ctx.drawText(textRenderer,textRenderer.trimToWidth(
+                    Text.translatable("screen.no_24_heli.waypoints_empty").getString(),drawerWidth-16),dx+8,drawerY+HEADER_HEIGHT+7,0xff9baaa1,false);
             ctx.disableScissor();
             if(waypoints.size()>visibleRows()){
                 int track=drawerHeight-HEADER_HEIGHT-6,thumb=Math.max(8,track*visibleRows()/waypoints.size());
                 int y=drawerY+HEADER_HEIGHT+(track-thumb)*listOffset/(waypoints.size()-visibleRows());
-                ctx.fill(left+drawerWidth-4,y,left+drawerWidth-2,y+thumb,0xffbba67a);
+                ctx.fill(dx+drawerWidth-4,y,dx+drawerWidth-2,y+thumb,0xffbba67a);
             }
-            if(saveErrorTicks>0)ctx.drawText(textRenderer,Text.translatable("screen.no_24_heli.save_failed"),left+8,drawerY-11,0xffff8877,true);
+            if(saveErrorTicks>0)ctx.drawText(textRenderer,Text.translatable("screen.no_24_heli.save_failed"),dx+8,drawerY-11,0xffff8877,true);
         }
         ctx.fill(hx,drawerY,hx+HANDLE_WIDTH,drawerY+HANDLE_HEIGHT,0xff344541);
         int cx=hx+HANDLE_WIDTH/2,cy=drawerY+HANDLE_HEIGHT/2,direction=drawerOpen?-1:1;
         line(ctx,cx-direction*2,cy-5,cx+direction*3,cy,0xffe2cd98);
         line(ctx,cx+direction*3,cy,cx-direction*2,cy+5,0xffe2cd98);
+        ctx.disableScissor();
         if(editing==null){
             var hovered=rowAt(mx,my);
             if(hovered!=null){
@@ -290,6 +316,15 @@ public final class HeliMapScreen extends Screen {
             }
         }
     }
+    /** 用 net.minecraft.client.gui.DrawContext 绘制折角纸张及斜放铅笔，保持小尺寸下可辨识的轮廓。 */
+    private static void drawRenameIcon(DrawContext ctx,int x,int y,int color){
+        line(ctx,x,y,x+7,y,color);line(ctx,x,y,x,y+13,color);line(ctx,x,y+13,x+9,y+13,color);
+        line(ctx,x+10,y+9,x+10,y+13,color);
+        line(ctx,x+7,y,x+10,y+3,color);line(ctx,x+7,y,x+7,y+3,color);line(ctx,x+7,y+3,x+10,y+3,color);
+        ctx.fill(x+2,y+4,x+5,y+5,color);ctx.fill(x+2,y+7,x+4,y+8,color);
+        line(ctx,x+5,y+10,x+12,y+3,color);line(ctx,x+7,y+12,x+14,y+5,color);
+        line(ctx,x+12,y+3,x+14,y+5,color);line(ctx,x+5,y+10,x+5,y+12,color);line(ctx,x+5,y+12,x+7,y+12,color);
+    }
     /** 用整数像素连线绘制箭头/铅笔/标题栏图标，不依赖字体字形或外部纹理。 */
     private static void line(DrawContext ctx,int x,int y,int endX,int endY,int color){
         int dx=Math.abs(endX-x),dy=-Math.abs(endY-y),sx=x<endX?1:-1,sy=y<endY?1:-1,error=dx+dy;
@@ -298,22 +333,37 @@ public final class HeliMapScreen extends Screen {
             int twice=2*error;if(twice>=dy){error+=dy;x+=sx;}if(twice<=dx){error+=dx;y+=sy;}
         }
     }
+    /** 标题按钮的定位、取消导航和关闭图标；枚举仅用于客户端绘制，不保存或同步。 */
+    @Environment(EnvType.CLIENT)
+    private enum MapIcon { CENTER, CLEAR, CLOSE }
     /** 标题栏按钮保留原版键盘焦点、提示与朗读；只替换 net.minecraft.client.gui.widget.ButtonWidget 的外观。 */
     @Environment(EnvType.CLIENT)
     private static final class MapIconButton extends ButtonWidget{
-        /** true 绘制关闭叉号，false 绘制环形 Reload 箭头，按钮动作仍为取消导航。 */
-        private final boolean closeIcon;
+        /** 图标与按钮动作在创建时配对，定位使用准星，取消使用环形箭头，关闭使用叉号。 */
+        private final MapIcon icon;
         /** 无可见文字的按钮仍提供本地化名称供 Tooltip 与无障碍朗读使用。 */
-        private MapIconButton(int x,int y,Text label,boolean closeIcon,PressAction action){
+        private MapIconButton(int x,int y,Text label,MapIcon icon,PressAction action){
             super(x,y,TITLE_BUTTON_SIZE,TITLE_BUTTON_SIZE,label,action,DEFAULT_NARRATION_SUPPLIER);
-            this.closeIcon=closeIcon;setTooltip(Tooltip.of(label));
+            this.icon=icon;setTooltip(Tooltip.of(label));
         }
-        /** 标题按钮与地图使用相同纸色边线，取消在左、关闭在右，不绘制文本。 */
+        /** 用 net.minecraft.client.gui.DrawContext 绘制定位、取消和关闭按钮，位置从左至右排列。 */
         @Override protected void renderWidget(DrawContext ctx,int mx,int my,float delta){
             int x=getX(),y=getY(),color=0xffead9af;
+            int background=isHovered()||isFocused()?0xff536358:0xff263731;
             ctx.fill(x,y,x+width,y+height,color);
-            ctx.fill(x+1,y+1,x+width-1,y+height-1,isHovered()||isFocused()?0xff536358:0xff263731);
-            if(closeIcon){
+            ctx.fill(x+1,y+1,x+width-1,y+height-1,background);
+            if(icon==MapIcon.CENTER){
+                int cx=x+width/2,cy=y+height/2,radius=4;
+                // 偶数尺寸按钮的中心落在像素边界；圆环按像素中心采样，中心点和四向线统一用两像素宽。
+                for(int row=-radius;row<radius;row++)for(int column=-radius;column<radius;column++){
+                    double distance=(column+.5)*(column+.5)+(row+.5)*(row+.5);
+                    if(distance>=(radius-1)*(radius-1)&&distance<=radius*radius)
+                        ctx.fill(cx+column,cy+row,cx+column+1,cy+row+1,color);
+                }
+                ctx.fill(cx-1,cy-1,cx+1,cy+1,color);
+                ctx.fill(cx-1,cy-7,cx+1,cy-3,color);ctx.fill(cx-1,cy+3,cx+1,cy+7,color);
+                ctx.fill(cx-7,cy-1,cx-3,cy+1,color);ctx.fill(cx+3,cy-1,cx+7,cy+1,color);
+            }else if(icon==MapIcon.CLOSE){
                 line(ctx,x+6,y+6,x+13,y+13,color);line(ctx,x+13,y+6,x+6,y+13,color);
             }else{
                 // 三百余度圆弧接左上角顺时针箭头，避免原图标的箭头与圆弧不相连而呈 U 形。
@@ -329,13 +379,17 @@ public final class HeliMapScreen extends Screen {
     /** 关闭/切换屏幕释放GPU纹理；区块缓存继续跨次打开复用。 */
     @Override public void removed(){terrain.close();}
     @Override public void render(DrawContext ctx,int mx,int my,float delta){
+        updateDrawerAnimation();
         super.render(ctx,mx,my,delta);
-        ctx.drawText(textRenderer,textRenderer.trimToWidth(title.getString(),mapWidth-2*TITLE_BUTTON_SIZE-8),left,top-17,0xffead9af,false);
+        ctx.drawText(textRenderer,textRenderer.trimToWidth(title.getString(),mapWidth-3*TITLE_BUTTON_SIZE-8),left,top-17,0xffead9af,false);
         // 原版地图色配合羊皮纸底和深色边框；未知区域留纸色，不伪造尚未探索的地形。
         ctx.fill(left-2,top-2,left+mapWidth+2,top+mapHeight+2,0xff6d5030);
         ctx.fill(left-1,top-1,left+mapWidth+1,top+mapHeight+1,0xffe2cd98);
         ctx.enableScissor(left,top,left+mapWidth,top+mapHeight);
         terrain.draw(ctx,left,top,mapWidth,mapHeight,centerX,centerZ,blocksPerPixel);
+        if(client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity heli)
+            org.DJB.no_24_heli.client.render.NavigationChartRenderer.drawMap(ctx,heli,left,top,mapWidth,mapHeight,
+                    centerX,centerZ,blocksPerPixel,delta);
         for(var zone:HeliRadar.zones){
             double radius=zone.radius()/blocksPerPixel;int zx=px(zone.pos().getX()+.5),zy=py(zone.pos().getZ()+.5);
             if(zx+radius<left||zx-radius>left+mapWidth||zy+radius<top||zy-radius>top+mapHeight)continue;
@@ -383,15 +437,15 @@ public final class HeliMapScreen extends Screen {
             var entry=rowAt(x,y);
             if(entry!=null){
                 if(entry.equals(editing)){
-                    if(x>=left+drawerWidth-36)finishRename(true);
+                    if(x>=handleX()-36)finishRename(true);
                     else super.mouseClicked(x,y,button);
                 }else{
                     if(editing!=null)finishRename(false);
-                    if(x>=left+drawerWidth-36)startRename(entry);
+                    if(x>=handleX()-36)startRename(entry);
                     else{
                         centerX=entry.x();centerZ=entry.z();
-                        if(entry.helipad())setPadWaypoint(new HelipadMapPayload.Entry(BlockPos.ofFloored(entry.x(),entry.y(),entry.z())));
-                        else setWaypoint(entry.x(),entry.z(),false);
+                        setPadWaypoint(new HelipadMapPayload.Entry(
+                                BlockPos.ofFloored(entry.x(),entry.y(),entry.z()),entry.number(),entry.name()));
                     }
                 }
             }
@@ -410,7 +464,7 @@ public final class HeliMapScreen extends Screen {
                 var pad=padAt(x,y);
                 if(pad!=null){setPadWaypoint(pad);return true;}
                 double wx=centerX+(x-left-mapWidth/2.0)*blocksPerPixel,wz=centerZ+(y-top-mapHeight/2.0)*blocksPerPixel;
-                setWaypoint(wx,wz,true);
+                setWaypoint(wx,wz);
             }
             return true;
         }
@@ -436,7 +490,10 @@ public final class HeliMapScreen extends Screen {
     @Override public boolean mouseReleased(double x,double y,int button){
         if(button==0&&drawerGesture){
             drawerGesture=false;
-            if(!drawerMoved&&handlePressed){drawerOpen=!drawerOpen;layoutDrawer();}
+            if(!drawerMoved&&handlePressed){
+                updateDrawerAnimation();drawerAnimationFrom=drawerProgress;
+                drawerOpen=!drawerOpen;drawerAnimationStarted=Util.getMeasuringTimeMs();
+            }
             return true;
         }
         if(button==0&&mapDragging){mapDragging=false;return true;}
@@ -464,7 +521,6 @@ public final class HeliMapScreen extends Screen {
     @Override public void tick(){
         if(client.player==null||!(client.player.getVehicle() instanceof HelicopterEntity)){close();return;}
         if(!padSnapshot.equals(HeliRadar.mapHelipads())){
-            if(editing!=null)finishRename(false);
             refreshWaypoints();
         }
         if(saveErrorTicks>0)saveErrorTicks--;

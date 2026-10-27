@@ -22,6 +22,7 @@ public class HelicopterItem extends Item {
         heli.restorePacked(ctx.getStack());heli.flight.yaw=player.getYaw();
         heli.setBoundingBox(HelicopterCollision.bounds(heli));
         if(!HelicopterCollision.isSpaceEmpty(heli,player))return ActionResult.FAIL;
+        heli.preparePlacement();
         if(world.spawnEntity(heli)){if(!player.isCreative()||ctx.getStack().contains(net.minecraft.component.DataComponentTypes.CUSTOM_DATA))ctx.getStack().decrement(1);return ActionResult.CONSUME;}
         return ActionResult.FAIL;
     }

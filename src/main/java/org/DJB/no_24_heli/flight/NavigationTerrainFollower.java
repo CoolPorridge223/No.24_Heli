@@ -242,6 +242,20 @@ final class NavigationTerrainFollower {
     double progress() { return progress; }
 
     /**
+     * 功能：按弧长抽样整个已确认的剩余航段及续段供地图/雷达使用；无 MC API，服务端调用。
+     * 首尾始终保留，最多 maxPoints 个点；不包含尚未采集的全局引导，不改变飞控进度。
+     */
+    List<NavigationTerrainRoute.Point> chartPreview(int maxPoints,NavigationTerrainRoute.Result next) {
+        double total=lengths[lengths.length-1];
+        if(next!=null)for(int i=1;i<next.path().size();i++)
+            total+=next.path().get(i-1).distance(next.path().get(i));
+        int steps=Math.max(1,Math.min(maxPoints-1,(int)Math.ceil((total-progress)/2)));
+        List<NavigationTerrainRoute.Point> result=new java.util.ArrayList<>(steps+1);
+        for(int i=0;i<=steps;i++)result.add(pointAt(progress+(total-progress)*i/steps,next));
+        return List.copyOf(result);
+    }
+
+    /**
      * 功能：按当前单调进度截取前后有界三维预览，跨入已验证续段；无 MC API，仅服务端主线程。
      * 参数为后留距离、前视距离、采样间隔及已交接航段累计弧长，单位格；不推进飞控进度。
      * 采样始终对齐全航路的整数米位置，飞机前进只裁去身后旧点，不让箭头跟随预览起点滑动。

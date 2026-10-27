@@ -76,6 +76,8 @@ public final class NavigationPathRenderer {
     /** 只缓存当前乘坐飞机；实体引用还区分断线重连、跨维度与编号复用。 */
     private static HelicopterEntity helicopter;
     private static List<Vec3d> points = List.of();
+    /** 地图和雷达共用的水平航路，独立于目镜和个人三维导引线开关；按目标校验避免换点残线。 */
+    private static NavigationPathPayload.Chart chart;
     /** 服务端提供已确认的实际目的地三维坐标；空值表示最终航段尚未规划，不以预览尾点代替。 */
     private static Vec3d destination;
     /** 本次导航已接近的目标；按 X/Z 识别同一导航点，终点高度重规划不会重新显示。 */
@@ -104,11 +106,13 @@ public final class NavigationPathRenderer {
                     if (client.world == null || client.player == null
                             || !(client.player.getVehicle() instanceof HelicopterEntity mounted)
                             || mounted.getId() != packet.helicopterId()) return;
+                    if (helicopter != mounted) chart = null;
                     Vec3d nextDestination = packet.destination();
                     if (destination == null || nextDestination == null
                             || destination.x != nextDestination.x || destination.z != nextDestination.z)
                         pinBobStartedAt = Double.NaN;
                     helicopter = mounted; points = packet.points(); destination = nextDestination;
+                    if (packet.chart() != null) chart = packet.chart();
                     receivedAt = client.world.getTime();
                 }));
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> clear());
@@ -129,7 +133,7 @@ public final class NavigationPathRenderer {
 
     /** 功能：释放当前乘骑快照；无世界修改或网络副作用，断线及换机立即调用。 */
     private static void clear() {
-        helicopter = null; points = List.of(); destination = null; reachedDestination = null;
+        helicopter = null; points = List.of(); destination = null; reachedDestination = null; chart = null;
         pinBobStartedAt = Double.NaN;
         discardPending();
         if (buffer != null) { buffer.close(); buffer = null; }
@@ -138,6 +142,12 @@ public final class NavigationPathRenderer {
     /** 功能：释放未被合成阶段消费的当帧 net.minecraft.client.render.BuiltBuffer，防止跨帧残留。 */
     private static void discardPending() {
         if (pendingBuffer != null) { pendingBuffer.close(); pendingBuffer = null; }
+    }
+
+    /** 功能：向地图/雷达提供当前飞机同一目标的已确认水平航路；客户端只读，不受目镜开关影响。 */
+    public static List<Vec3d> chartPoints(HelicopterEntity mounted) {
+        return helicopter == mounted && chart != null && chart.goalX() == mounted.flight.waypointX
+                && chart.goalZ() == mounted.flight.waypointZ ? chart.points() : List.of();
     }
 
     /** 功能：通过 net.minecraft.client.MinecraftClient 检查乘员个人显示条件，供深度采集和几何生成共用。 */

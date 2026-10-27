@@ -18,10 +18,10 @@ import java.util.List;
  * 排查：远处标记消失先检查是否误用了雷达 contacts；数量错误在网络解码边界拒绝。
  */
 public record HelipadMapPayload(List<Entry> helipads) implements CustomPayload {
-    /** 地图仅需要中心；禁用状态结合独立禁飞区快照实时计算。 */
-    public record Entry(BlockPos pos){}
-    /** 每个 net.minecraft.util.math.BlockPos 在线路中固定占八字节。 */
-    private static final int ENTRY_BYTES=Long.BYTES;
+    /** 服务端中心、稳定默认编号及名称；禁用状态结合独立禁飞区快照实时计算。 */
+    public record Entry(BlockPos pos,int number,String name){}
+    /** 每项至少包含八字节 net.minecraft.util.math.BlockPos、一个编号字节和一个字符串长度字节。 */
+    private static final int ENTRY_BYTES=Long.BYTES+2;
     /** 独立地图通道，不复用半径受限的 radar_contacts。 */
     public static final Id<HelipadMapPayload> ID=new Id<>(No_24_heli.id("helipad_map"));
     /** 先按剩余包字节校验目录数量；地图不沿用雷达的五百一十二目标上限。 */
@@ -32,19 +32,26 @@ public record HelipadMapPayload(List<Entry> helipads) implements CustomPayload {
             if(count<0||count>buffer.readableBytes()/ENTRY_BYTES)
                 throw new IllegalArgumentException("停机坪地图数量超过包内可读取数据");
             List<Entry> entries=new ArrayList<>();
-            for(int i=0;i<count;i++)entries.add(new Entry(buffer.readBlockPos()));
+            for(int i=0;i<count;i++){
+                BlockPos pos=buffer.readBlockPos();int number=buffer.readVarInt();String name=buffer.readString(HelipadState.NAME_LIMIT);
+                if(number<1||number==Integer.MAX_VALUE||!HelipadState.isValidName(name))
+                    throw new IllegalArgumentException("停机坪地图编号或名称无效");
+                entries.add(new Entry(pos,number,name));
+            }
             return new HelipadMapPayload(List.copyOf(entries));
         }
         /** 服务端发送完整目录；空目录同样发送，以清除已拆除或其他维度的旧标记。 */
         @Override public void encode(RegistryByteBuf buffer,HelipadMapPayload payload){
             buffer.writeVarInt(payload.helipads.size());
-            for(Entry entry:payload.helipads)buffer.writeBlockPos(entry.pos);
+            for(Entry entry:payload.helipads){
+                buffer.writeBlockPos(entry.pos);buffer.writeVarInt(entry.number);buffer.writeString(entry.name,HelipadState.NAME_LIMIT);
+            }
         }
     };
 
     /** 在服务端主线程复制当前目录，后续保存或区块卸载不会修改已创建的包。 */
     public static HelipadMapPayload of(HelipadState state){
-        return new HelipadMapPayload(state.centers().stream().map(Entry::new).toList());
+        return new HelipadMapPayload(state.pads().stream().map(pad->new Entry(pad.pos(),pad.number(),pad.name())).toList());
     }
 
     /** 返回固定地图通道的 net.minecraft.network.packet.CustomPayload.Id。 */

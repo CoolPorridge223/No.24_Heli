@@ -18,8 +18,10 @@ final class NavigationTerrainRoute {
     static final double ENVELOPE = org.DJB.no_24_heli.entity.HelicopterCollision.QUERY_RADIUS + 1;
     /** 时间单位 tick；升降低于原高度保持的 0.16 上限，留出响应余量。 */
     static final double CLIMB_SPEED = .14, DESCENT_SPEED = .12, COVERED_SPEED = .25;
-    /** 爬升/下降额外计入半倍垂直用时，优先侧绕；禁区外十二格为软余量，不改变硬边界。 */
-    private static final double VERTICAL_WEIGHT=.5, COMFORT_MARGIN=12;
+    /** 升降额外计入一点五倍垂直用时；低于参考巡航净高最多加三成半，避免软净高压过侧绕收益。 */
+    private static final double VERTICAL_WEIGHT=1.5, LOW_ALTITUDE_WEIGHT=.35;
+    /** 禁区外十二格为软余量，不改变整机硬净空或无限高禁区边界。 */
+    private static final double COMFORT_MARGIN=12;
     /** 顶棚内时间按三倍计入，并在每次进入时增加二十秒风险代价，避免轻微捷径诱导穿洞。 */
     private static final double COVERED_WEIGHT = 3, ENTRY_COST = 400;
     /** 单次局部搜索最多展开四十万个节点，不突破用户的 pathMaxNodes。 */
@@ -243,7 +245,7 @@ final class NavigationTerrainRoute {
                 proximitySum+=Byte.toUnsignedInt(proximity[next])/100.0;
                 // 巡航净高是软偏好；必要的起降、洞口脱离和世界顶界仍由硬净空决定是否可飞。
                 double ground=surface[(next/nx%nz)*nx+next%nx];
-                if(Double.isFinite(ground))proximitySum+=2*Math.clamp((ground+CRUISE_CLEARANCE-y-next/(nx*nz)*CELL)/CRUISE_CLEARANCE,0,1);
+                if(Double.isFinite(ground))proximitySum+=LOW_ALTITUDE_WEIGHT*Math.clamp((ground+CRUISE_CLEARANCE-y-next/(nx*nz)*CELL)/CRUISE_CLEARANCE,0,1);
             }
             double speed=roofSteps>0?Math.min(cruise,COVERED_SPEED):cruise;
             double vertical=Math.abs(b.y-a.y)/(b.y>=a.y?CLIMB_SPEED:DESCENT_SPEED);
@@ -287,14 +289,13 @@ final class NavigationTerrainRoute {
         return selected;
     }
     /**
-     * 功能：以共享节点预算规划必要的爬升、定高巡航和最终下降，阶段接点统一圆角化；无 MC API，后台调用。
+     * 功能：直接比较侧绕与升降，不预先强制爬到越障高度；无 MC API，后台调用。
      * 终点最高地表由主线程高度图提供；优先上方三十二格，无净空时在十六至四十八格内选择。
-     * 中途航段保持巡航高度；安全失败返回完整失败，绝不交付省略爬升或下降的残缺路线。
+     * 中途终点净空允许时保持当前高度，否则才选爬升参考；窄走廊遇障碍必须扩大采集后再比较。
      */
     static Result profile(Volume v,Point start,NavigationRoute.Point goal,boolean finalGoal,double ground,boolean directOnly) {
         if(Thread.currentThread().isInterrupted())return failure(NavigationRoute.Status.INTERRUPTED,v,0);
-        double altitude=v.cruiseAltitude(start,goal);
-        Point end=new Point(goal.x(),altitude,goal.z());
+        Point end=new Point(goal.x(),start.y,goal.z());
         if(finalGoal) {
             end=null;
             for(int offset=0;offset<=ARRIVAL_RANGE&&end==null;offset+=CELL) {
@@ -304,20 +305,11 @@ final class NavigationTerrainRoute {
                 }
             }
             if(end==null)return failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
-            altitude=Math.max(altitude,end.y);
+        }else if(!v.clear(end,end)||v.covered(end)) {
+            end=new Point(goal.x(),v.cruiseAltitude(start,goal),goal.z());
         }
-        List<Point> stages=List.of(new Point(start.x,altitude,start.z),new Point(goal.x(),altitude,goal.z()),end);
-        List<Point> path=new ArrayList<>();path.add(start);int expanded=0;
         int budget=Math.min(MAX_NODES,v.settings.maxNodes());
-        for(Point target:stages) {
-            Point from=path.getLast();
-            if(from.distance(target)<1e-6)continue;
-            Result part=directOnly?direct(v,from,target):plan(v,from,target,budget-expanded);
-            expanded+=part.expanded();
-            if(part.status()!=NavigationRoute.Status.SUCCESS)return failure(part.status(),v,expanded);
-            path.addAll(part.path().subList(1,part.path().size()));
-        }
-        return success(v,path,expanded);
+        return directOnly?direct(v,start,end):plan(v,start,end,budget);
     }
 
     /**
@@ -396,9 +388,16 @@ final class NavigationTerrainRoute {
         // 露天空域整段验证后直接交付，不为平直航线分配搜索堆或展开三维网格。
         Result direct=direct(v,start,goal);
         if(direct.status()!=NavigationRoute.Status.GRID_RESOLUTION)return direct;
-        Result level=Math.abs(start.y-goal.y)<1e-6?search(v,start,goal,true,Math.min(PLANAR_NODES,budget/4))
+        // 最终悬停高度可以低于巡航高度；先侧绕再在终点升降，仍应参与同高度方案比较。
+        Point levelGoal=new Point(goal.x,start.y,goal.z);
+        Result level=v.clear(levelGoal,goal)&&!v.covered(levelGoal)
+                ?search(v,start,levelGoal,true,Math.min(PLANAR_NODES,budget/4))
                 :failure(NavigationRoute.Status.GRID_RESOLUTION,v,0);
         if(level.status()==NavigationRoute.Status.INTERRUPTED)return level;
+        if(level.status()==NavigationRoute.Status.SUCCESS&&levelGoal.distance(goal)>1e-6) {
+            List<Point> path=new ArrayList<>(level.path());path.add(goal);
+            level=success(v,path,level.expanded());
+        }
         if(level.status()==NavigationRoute.Status.SUCCESS&&level.costTicks()<=heuristic(start,goal,v.cruise)*SIDE_DETOUR_RATIO)
             return level;
         Result spatial=search(v,start,goal,false,budget-level.expanded());

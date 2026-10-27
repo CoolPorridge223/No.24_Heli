@@ -4,6 +4,7 @@ package org.DJB.no_24_heli.entity;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.projectile.ProjectileEntity;
 import net.minecraft.util.function.BooleanBiFunction;
 import net.minecraft.util.hit.HitResult;
@@ -470,12 +471,13 @@ public final class HelicopterCollision {
         return heli.getWorld().getWorldBorder().contains(area);
     }
 
-    /** 新机和回收整机放置时检查真实分部盒；放置者可从尾梁下退出，不把本人当成生成障碍。 */
+    /** 放置时检查真实分部盒；已经重叠的玩家由 preparePlacement 登记临时豁免，其他实体仍阻挡。 */
     public static boolean isSpaceEmpty(HelicopterEntity heli, Entity placingEntity) {
         List<Shape> shapes = shapes(heli);
         for (Box block : obstacles(heli, bounds(shapes))) for (Shape shape : shapes) if (shape.intersects(block)) return false;
         for (Entity other : heli.getWorld().getOtherEntities(heli, bounds(shapes).expand(QUERY_RADIUS),
-                other -> other != placingEntity && !other.isSpectator() && !heli.isConnectedThroughVehicle(other) && other.canHit())) {
+                other -> other != placingEntity && !(other instanceof PlayerEntity) && !other.isSpectator()
+                        && !heli.isConnectedThroughVehicle(other) && other.canHit())) {
             if (other instanceof HelicopterEntity aircraft) {
                 for (Shape shape : shapes) for (Shape target : shapes(aircraft)) if (shape.intersects(target)) return false;
             } else for (Shape shape : shapes) if (shape.intersects(other.getBoundingBox())) return false;
@@ -515,10 +517,11 @@ public final class HelicopterCollision {
     /**
      * 功能：起降通道共用的外部实体筛选；引用 net.minecraft.entity.Entity#getRootVehicle 识别本机绳索乘员。
      * 端侧：服务端主线程；参数：heli 为本机，other 为候选；返回：是否需检查；副作用：无。
-     * 排查：不能忽略所有玩家或所有绳索，只排除旁观者、已移除实体及本机乘员和本机绳索系统。
+     * 排查：只排除旁观者、已移除实体、本机乘员/绳索，以及放置后尚未走出的特定玩家。
      */
     private static boolean isFlightEntity(HelicopterEntity heli, Entity other) {
         return !other.isRemoved() && !other.isSpectator() && !heli.isConnectedThroughVehicle(other)
+                && !heli.ignoresPlacementCollision(other)
                 && !(other.getRootVehicle() instanceof RopeSeatEntity rope && rope.helicopter() == heli);
     }
 
@@ -761,6 +764,7 @@ public final class HelicopterCollision {
         if (actor.noClip || actor.isSpectator() || actor instanceof RopeSeatEntity || actor.getRootVehicle() instanceof RopeSeatEntity)
             return movement;
         List<HelicopterEntity> aircraft = candidates(actor.getWorld(), actor, actor.getBoundingBox().stretch(movement));
+        aircraft.removeIf(heli -> heli.ignoresPlacementCollision(actor));
         if (aircraft.isEmpty()) return movement;
         Vec3d moved = Vec3d.ZERO;
         for (int axis : new int[]{1, 0, 2}) {

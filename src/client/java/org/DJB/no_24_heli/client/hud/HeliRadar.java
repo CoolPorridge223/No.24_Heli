@@ -83,9 +83,12 @@ public final class HeliRadar {
         ctx.fill(cx-r,cy,cx+r,cy+1,0xff304b42);ctx.fill(cx,cy-r,cx+1,cy+r,0xff304b42);
         double angle=(heli.age+mc.getRenderTickCounter().getTickDelta(false))*.045;
         HudShapes.line(ctx,cx,cy,cx+Math.sin(angle)*r,cy-Math.cos(angle)*r,.8,0xff56aa83);
+        float delta=mc.getRenderTickCounter().getTickDelta(false);
+        var radarPosition=heli.getLerpedPos(delta);double radarYaw=heli.getYaw(delta);
+        org.DJB.no_24_heli.client.render.NavigationChartRenderer.drawRadar(ctx,heli,cx,cy,r,delta);
         // 只绘制落在圆形雷达内的禁飞边界，机外圆心也能显示进入视野的红色弧线。
         for(var zone:zones){
-            double[] center=relative(zone.pos().getX()+.5-heli.getX(),zone.pos().getZ()+.5-heli.getZ(),heli.getYaw());
+            double[] center=relative(zone.pos().getX()+.5-radarPosition.x,zone.pos().getZ()+.5-radarPosition.z,radarYaw);
             double zx=center[0]*r/512.0,zy=center[1]*r/512.0,zr=zone.radius()*r/512.0;
             if(Math.hypot(zx,zy)>r+zr||Math.hypot(zx,zy)+r<zr)continue;
             int steps=Math.max(64,(int)Math.ceil(zr*Math.PI*4));
@@ -96,13 +99,13 @@ public final class HeliRadar {
             }
         }
         for(var e:contacts(heli)){
-            double dx=e.x()-heli.getX(),dz=e.z()-heli.getZ();if(Math.hypot(dx,dz)>512)continue;
-            double[] local=relative(dx,dz,heli.getYaw());
+            double dx=e.x()-radarPosition.x,dz=e.z()-radarPosition.z;if(Math.hypot(dx,dz)>512)continue;
+            double[] local=relative(dx,dz,radarYaw);
             int x=cx+(int)(local[0]/512*r),y=cy+(int)(local[1]/512*r);
             ctx.fill(x-1,y-1,x+2,y+2,e.helicopter()?0xffffba55:0xff70cfff);
         }
         for(var pad:helipads(heli)){
-            double[] local=relative(pad.pos().getX()+.5-heli.getX(),pad.pos().getZ()+.5-heli.getZ(),heli.getYaw());
+            double[] local=relative(pad.pos().getX()+.5-radarPosition.x,pad.pos().getZ()+.5-radarPosition.z,radarYaw);
             if(Math.hypot(local[0],local[1])>RadarContactsPayload.RADIUS)continue;
             int x=cx+(int)(local[0]/RadarContactsPayload.RADIUS*r),y=cy+(int)(local[1]/RadarContactsPayload.RADIUS*r);
             ctx.drawCenteredTextWithShadow(mc.textRenderer,"H",x,y-4,restricted(pad)?0xffff6655:0xff7fffd4);
@@ -110,13 +113,13 @@ public final class HeliRadar {
         // 四个文字沿外圈旋转，文字自身保持正立；中心白色机头指针始终指向屏幕上方。
         double[][] directions={{0,-1},{1,0},{0,1},{-1,0}};String[] names={"north","east","south","west"};
         for(int i=0;i<4;i++){
-            double[] local=relative(directions[i][0],directions[i][1],heli.getYaw());
+            double[] local=relative(directions[i][0],directions[i][1],radarYaw);
             ctx.drawCenteredTextWithShadow(mc.textRenderer,net.minecraft.text.Text.translatable("hud.no_24_heli."+names[i]),cx+(int)(local[0]*(r+9)),cy+(int)(local[1]*(r+9))-4,0xffb9e7cc);
         }
         for(int y=-3;y<=1;y++){int half=Math.max(0,(y+3)/2);ctx.fill(cx-half,cy+y,cx+half+1,cy+y+1,0xffffffff);}
         ctx.fill(cx,cy+1,cx+1,cy+4,0xffffffff);
         if(heli.flight.waypoint){
-            double[] local=relative(heli.flight.waypointX-heli.getX(),heli.flight.waypointZ-heli.getZ(),heli.getYaw());
+            double[] local=relative(heli.flight.waypointX-radarPosition.x,heli.flight.waypointZ-radarPosition.z,radarYaw);
             double distance=Math.hypot(local[0],local[1]);double scale=distance>512?r/Math.max(distance,.001):r/512.0;
             int x=cx+(int)(local[0]*scale),y=cy+(int)(local[1]*scale);
             // 超出扫描范围时钳制到外圈，但保持真实方位；菱形与实体方点明显区分。

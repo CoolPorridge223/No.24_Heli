@@ -39,7 +39,7 @@ final class NavigationTerrainSnapshot {
     private final List<NavigationRoute.Circle> circles;
     private final NavigationRoute.Settings settings;
     private final double cruise;
-    /** 只有全局最终航段允许下降；incoming 是重叠接点之前的切线参考点。 */
+    /** 仅全局最终航段指定目标地表上方的悬停高度；incoming 是重叠接点之前的切线参考点。 */
     private final boolean finalGoal;
     private final NavigationTerrainRoute.Point incoming;
     /** 最终目标所在方块列的精确高度图值，在全部采集完成后由主线程读取。 */

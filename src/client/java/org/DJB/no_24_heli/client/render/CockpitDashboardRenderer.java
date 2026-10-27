@@ -39,6 +39,8 @@ public final class CockpitDashboardRenderer {
     static final double FACE_Z = .002;
     /** 刻线和文字位于面板前三毫米内，指针基准六毫米；文字仍位于刻线前、指针后。 */
     private static final double INK_Z = .0025, TEXT_Z = .003, NEEDLE_Z = .006;
+    /** 雷达导航笔画半宽 1.5 毫米，圆头半径相同；位于网格前、标签和目标后，避免共面闪烁。 */
+    private static final double NAVIGATION_HALF_WIDTH=.0015, NAVIGATION_Z=(INK_Z+TEXT_Z)/2;
     /** 环境光下的外壳、表盘、文字及告警色；屏幕使用同一纯白实体底纹。 */
     private static final int CASE = 0xff343e47, BLACK = 0xff10191c, INK = 0xffd8eadc;
     private static final int GREEN = 0xff7ce3bc, AMBER = 0xffffd66b, RED = 0xffff6655;
@@ -266,8 +268,11 @@ public final class CockpitDashboardRenderer {
         line(m, b, cx, cy - r, cx, cy + r, .001, INK_Z, 0xff3f6559, light);
         double scan = (h.age + delta) * .045;
         line(m, b, cx, cy, cx + Math.sin(scan) * r, cy + Math.cos(scan) * r, .001, INK_Z, GREEN, light);
+        navigationRadar(NavigationChartRenderer.radarStrokes(h,delta),m,b,cx,cy,r,light);
+        Vec3d radarPosition=h.getLerpedPos(delta);
+        double radarYaw=h.getYaw(delta);
         for (var zone : HeliRadar.zones) {
-            double[] local = HeliRadar.relative(zone.pos().getX() + .5 - h.getX(), zone.pos().getZ() + .5 - h.getZ(), h.getYaw());
+            double[] local = HeliRadar.relative(zone.pos().getX() + .5 - radarPosition.x, zone.pos().getZ() + .5 - radarPosition.z, radarYaw);
             double zx = local[0] / 512 * r, zy = -local[1] / 512 * r, zr = zone.radius() / 512.0 * r;
             if (Math.hypot(zx, zy) > r + zr || Math.hypot(zx, zy) + r < zr) continue;
             int steps = Math.max(64, (int) Math.ceil(zr / r * 256));
@@ -280,18 +285,18 @@ public final class CockpitDashboardRenderer {
             }
         }
         for (var contact : HeliRadar.contacts(h)) {
-            double[] local = HeliRadar.relative(contact.x() - h.getX(), contact.z() - h.getZ(), h.getYaw());
+            double[] local = HeliRadar.relative(contact.x() - radarPosition.x, contact.z() - radarPosition.z, radarYaw);
             if (Math.hypot(local[0], local[1]) <= 512)
                 disk(m, b, cx + local[0] / 512 * r, cy - local[1] / 512 * r, .004, NEEDLE_Z, contact.helicopter() ? AMBER : 0xff70cfff, light);
         }
         for (var pad : HeliRadar.helipads(h)) {
-            double[] local = HeliRadar.relative(pad.pos().getX() + .5 - h.getX(), pad.pos().getZ() + .5 - h.getZ(), h.getYaw());
+            double[] local = HeliRadar.relative(pad.pos().getX() + .5 - radarPosition.x, pad.pos().getZ() + .5 - radarPosition.z, radarYaw);
             if (Math.hypot(local[0], local[1]) <= 512)
                 text(m, Text.literal("H"), cx + local[0] / 512 * r, cy - local[1] / 512 * r, .0017f, .025,
                         HeliRadar.restricted(pad) ? RED : GREEN, light);
         }
         if (h.flight.waypoint) {
-            double[] local = HeliRadar.relative(h.flight.waypointX - h.getX(), h.flight.waypointZ - h.getZ(), h.getYaw());
+            double[] local = HeliRadar.relative(h.flight.waypointX - radarPosition.x, h.flight.waypointZ - radarPosition.z, radarYaw);
             double scale = r / Math.max(512, Math.hypot(local[0], local[1]));
             double x = cx + local[0] * scale, y = cy - local[1] * scale;
             quad(m, b, new Vec3d(x, y + .008, NEEDLE_Z), new Vec3d(x - .008, y, NEEDLE_Z),
@@ -302,9 +307,27 @@ public final class CockpitDashboardRenderer {
         String[] directions = {"north", "east", "south", "west"};
         double[][] world = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
         for (int i = 0; i < directions.length; i++) {
-            double[] local = HeliRadar.relative(world[i][0], world[i][1], h.getYaw());
+            double[] local = HeliRadar.relative(world[i][0], world[i][1], radarYaw);
             text(m, Text.translatable("hud.no_24_heli." + directions[i]), cx + local[0] * (r + .024),
                     cy - local[1] * (r + .024), .002f, .025, INK, light);
+        }
+    }
+
+    /**
+     * 功能：将 HUD 共用的单位圆虚线投影到舱内面板，Y 翻转且每划首尾补圆头；仅客户端渲染线程。
+     * 引用 net.minecraft.client.render.VertexConsumer 提交实体几何，沿用仪表光照及世界深度遮挡。
+     * 排查：圆头半径须等于 line 的半宽，标签与目标始终在航路前，不在每个密集采样点重画端帽。
+     */
+    private static void navigationRadar(List<NavigationChartRenderer.RadarStroke> navigation,MatrixStack m,VertexConsumer b,
+                                         double cx,double cy,double r,int light) {
+        for(int i=0;i<navigation.size();i++) {
+            var stroke=navigation.get(i);
+            double ax=cx+stroke.ax()*r,ay=cy-stroke.ay()*r,bx=cx+stroke.bx()*r,by=cy-stroke.by()*r;
+            line(m,b,ax,ay,bx,by,NAVIGATION_HALF_WIDTH,NAVIGATION_Z,stroke.color(),light);
+            if(i==0||!navigation.get(i-1).connectsTo(stroke))
+                disk(m,b,ax,ay,NAVIGATION_HALF_WIDTH,NAVIGATION_Z,stroke.color(),light);
+            if(i+1==navigation.size()||!stroke.connectsTo(navigation.get(i+1)))
+                disk(m,b,bx,by,NAVIGATION_HALF_WIDTH,NAVIGATION_Z,stroke.color(),light);
         }
     }
 
