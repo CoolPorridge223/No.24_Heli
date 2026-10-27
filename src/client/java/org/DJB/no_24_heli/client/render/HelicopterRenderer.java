@@ -98,7 +98,7 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         try {
             RenderLayer painted = RenderLayer.getEntitySolid(PAINT_SURFACE), solid = RenderLayer.getEntityCutout(SURFACE);
             drawPart("shell", selected, matrices, consumers, painted, heli, light, gpu, distant);
-            for(int door=0;door<HelicopterCabin.SEATS;door++){
+            for(int door=0;heli.hasCabinDoors()&&door<HelicopterCabin.SEATS;door++){
                 matrices.push();rotateDoor(matrices,heli,door,delta);
                 String prefix="door"+door+"_";
                 drawPart(prefix+"shell",selected,matrices,consumers,painted,heli,light,gpu,distant);
@@ -167,7 +167,7 @@ public final class HelicopterRenderer extends EntityRenderer<HelicopterEntity> {
         if(!collecting){
             for(int side=0;side<2;side++)
                 SearchlightRenderer.queueGlass(selected,"windshield"+side+"_glass",heli,distant,matrices,light);
-            for(int door=0;door<HelicopterCabin.SEATS;door++){
+            for(int door=0;heli.hasCabinDoors()&&door<HelicopterCabin.SEATS;door++){
                 matrices.push();rotateDoor(matrices,heli,door,delta);
                 SearchlightRenderer.queueGlass(selected,"door"+door+"_glass",heli,distant,matrices,light);
                 matrices.pop();

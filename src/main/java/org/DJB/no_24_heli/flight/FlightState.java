@@ -19,6 +19,10 @@ public final class FlightState {
     public boolean running, armed, altitudeHold, trim, cruise, gear = true;
     /** 残骸标记和绳索部署开关；残骸复用原实体保存，不能按普通载具删除。 */
     public boolean wreck, rope;
+    /** 起火部位位掩码：主旋翼 1、尾桨 2、引擎 4、油箱 8；服务端重算并随 Flight 快照同步。 */
+    public int fireParts;
+    /** 任意部位起火的统一状态；COMMON 只读，无 MC API，HUD、警报和后续起火部位共用。 */
+    public boolean hasFire() { return !wreck && fireParts != 0; }
     /** 起飞升力不足警告；服务端按部件、旋翼处天气和地面支撑实时重算，随快照同步，旧数据默认关闭。 */
     public boolean takeoffPowerLow;
     /** 探照灯开关和相对机头的云台角，单位：度；左右 ±120°，俯仰 -85°～-15°，默认朝前下方。 */

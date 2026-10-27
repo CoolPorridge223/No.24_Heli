@@ -127,8 +127,10 @@ public final class HeliHud {
         boolean takeoverHint = doorTarget != null && !aboard && !mc.player.hasVehicle()
                 && doorTarget.cabin.occupant(doorTarget.cabin.accessDoor(mc.player)) != null;
         if(doorHint)drawKeyHint(ctx,org.DJB.no_24_heli.client.input.CabinDoorClient.keyName(),
-                "hud.no_24_heli.rope_board_before",aboard?"hud.no_24_heli.cabin_exit_after"
-                        :takeoverHint?"hud.no_24_heli.cabin_takeover_after":"hud.no_24_heli.cabin_board_after");
+                "hud.no_24_heli.rope_board_before",aboard
+                        ?doorTarget.hasCabinDoors()?"hud.no_24_heli.cabin_exit_after":"hud.no_24_heli.cabin_exit_no_door_after"
+                        :takeoverHint?"hud.no_24_heli.cabin_takeover_after":doorTarget.hasCabinDoors()
+                        ?"hud.no_24_heli.cabin_board_after":"hud.no_24_heli.rope_board_after");
         if(!(mc.player.getVehicle() instanceof HelicopterEntity h))return;
         // 机内的全部飞行读数、机组、导航、部件与警告由实体仪表板呈现，不叠加屏幕 HUD。
         if(mc.options.getPerspective().isFirstPerson())return;
@@ -177,6 +179,7 @@ public final class HeliHud {
         m.pop();
         m.pop();
         int warningY=10;
+        if(s.hasFire()){fireWarning(ctx,10,warningY);warningY+=20;}
         if(s.landingBlocked){warn(ctx,"landing_blocked",warningY);warningY+=11;}
         if(s.tail<20){warn(ctx,"tail",warningY);warningY+=11;}
         if(s.rotor<50){warn(ctx,"rotor",warningY);warningY+=11;}
@@ -430,4 +433,13 @@ public final class HeliHud {
         HudShapes.rect(ctx,0,-.4,radius-8,.8,0xffffd66b);m.pop();
     }
     private static void warn(DrawContext ctx,String key,int y){text(ctx,"warning.no_24_heli."+key,10,y,0xffff6a58);}
+    /** 绘制持续红色火焰图标和火灾文字；net.minecraft.client.gui.DrawContext 与 HudShapes 提交 GUI 几何。 */
+    private static void fireWarning(DrawContext ctx,int x,int y){
+        ctx.fill(x-2,y-2,x+16,y+16,0xcc501b18);
+        HudShapes.triangle(ctx,x+2,y+12,x+12,y+12,x+7,y,0xffff6a36);
+        HudShapes.triangle(ctx,x,y+10,x+6,y+12,x+2,y+4,0xffff6a36);
+        HudShapes.triangle(ctx,x+7,y+12,x+14,y+11,x+12,y+3,0xffff6a36);
+        HudShapes.triangle(ctx,x+4,y+12,x+10,y+12,x+7,y+6,0xffffde7a);
+        text(ctx,"warning.no_24_heli.fire",x+21,y+3,0xffff6a58);
+    }
 }

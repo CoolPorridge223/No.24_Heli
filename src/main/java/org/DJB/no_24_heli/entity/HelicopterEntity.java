@@ -63,6 +63,8 @@ public class HelicopterEntity extends Entity {
     private final NavigationPilot navigation=new NavigationPilot();
     /** 权威飞行状态；所有物理、辅助、损伤和任务字段都在服务端写入。 */
     public final FlightState flight=new FlightState();
+    /** 低血量燃烧和两个独立爆炸计时器；只在服务端结算，随 Flight 存档保存。 */
+    private final HelicopterDamageEffects damageEffects=new HelicopterDamageEffects();
     /** 19 格货仓：0 号是燃料槽，其余为普通货物；随实体原版库存 NBT 保存。 */
     public final SimpleInventory cargo=new SimpleInventory(19);
     /** 桨叶角度单位为度；实体快照同步相位，使停转桨叶的选取与显示仍一致。 */
@@ -109,6 +111,8 @@ public class HelicopterEntity extends Entity {
     private static final double ROTOR_BREAK_RPM=.5;
     /** 低于 10 m/s 的实体机身碰撞不反伤本机；旋翼仍按接触强度磨损，高速机身撞击按事故阈值处理。 */
     public static final double ENTITY_DAMAGE_SPEED=.5;
+    /** 机身完全损坏时，引擎/油箱受到的事件伤害最多放大到 1.25 倍；完整机身为 1 倍。 */
+    private static final double MAX_COMPONENT_DAMAGE_MULTIPLIER=1.25;
     /** 连续离开方块支撑三 tick 后才启用实体事故，防止放置接地前误判。 */
     private int airborneTicks;
     /** 本 tick 是否启用实体撞击结算；离地三 tick 或旋翼已转起才为 true。 */
@@ -254,6 +258,8 @@ public class HelicopterEntity extends Entity {
     }
     /** 舱门与乘降判断共用真实支撑，net.minecraft.entity.Entity#isOnGround 之外兼顾停机坪和水面。 */
     public boolean isCabinGrounded() { return isOnGround() || hasBlockSupport() || isTouchingWater(); }
+    /** 非爆炸机身耐久归零只脱落四门，维修恢复耐久后复原；残骸继续显示原有烧毁门板。COMMON 只读。 */
+    public boolean hasCabinDoors() { return flight == null || flight.wreck || flight.hull > 0; }
     /** 离散舱门/座位动作立即同步，避免等待原有每两 tick 的飞行快照。 */
     public void syncCabin() { if (!getWorld().isClient) dataTracker.set(STATUS, saveFlight()); }
     /** 返回 null，避免原版载具移动包接管权威位置；驾驶权由固定 0 号座位另行判断。 */
@@ -485,7 +491,8 @@ public class HelicopterEntity extends Entity {
         if(flight.landingBlocked)flight.vy=Math.max(0,flight.vy);
         flight.takeoffPowerLow=!flight.wreck&&grounded&&flight.fuel>0&&flight.engine>0
                 &&!FlightPhysics.hasTakeoffPower(flight,rain);
-        if(!flight.wreck&&flight.hull<=0)destroy(false);
+        // 结构磨损归零保留可维修机体；高速事故及爆炸仍由 destroy(true) 生成残骸。
+        flight.hull=Math.max(0,flight.hull);
         var allowedPose=HelicopterCollision.limitRotation(this,previousPose,
                 new HelicopterCollision.Pose(flight.yaw,flight.pitch,flight.roll));
         if(Math.abs(MathHelper.wrapDegrees(allowedPose.yaw()-flight.yaw))>.001)flight.yawRate=0;
@@ -544,6 +551,8 @@ public class HelicopterEntity extends Entity {
         if(verticalCollision&&velocity.y<0)flight.gear=true;
         if(horizontalCollision){if(Math.abs(velocity.x-moved.x)>.001)flight.vx=0;if(Math.abs(velocity.z-moved.z)>.001)flight.vz=0;}
         if(verticalCollision)flight.vy=0;
+        // 本 tick 的自然磨损和碰撞均已完成，再结算低血量燃烧/爆炸；只走既有一次性事故入口。
+        if(damageEffects.tick(this))destroy(true);
         // 残骸沉降：只按实际支撑点倾倒，接地当 tick 清除水平动量，避免残骸继续滑行。
         if(flight.wreck)HelicopterCollision.settleWreck(this,verticalCollision&&velocity.y<0);
         if(flight.wreck&&isOnGround()){flight.vx=0;flight.vz=0;}
@@ -593,18 +602,21 @@ public class HelicopterEntity extends Entity {
         collisionCooldown=10;
         damagePart(part,impact*(flight.hardcoreMode?30:14),false);
     }
-    /** 统一碰撞与攻击的分部耐久，尾桨受击不再误扣引擎或主旋翼。 */
+    /** 统一碰撞与攻击的分部耐久；普通机身归零保留可维修破损，爆炸导致归零仍生成残骸。 */
     private void damagePart(HelicopterCollision.Part part,double damage,boolean explosive){
+        // 使用本次受击前的机身耐久；只放大引擎/油箱实际扣血，不放大附带机身伤害或日常磨损。
+        double componentDamage=damage*(1+(MAX_COMPONENT_DAMAGE_MULTIPLIER-1)*(1-Math.clamp(flight.hull/100,0,1)));
         switch(part){
             case CABIN -> flight.hull-=damage;
-            case ENGINE -> {flight.engine=Math.max(0,flight.engine-damage);flight.hull-=damage*.25;}
-            case FUEL_TANK -> {flight.tank=Math.max(0,flight.tank-damage);flight.hull-=damage*.25;}
+            case ENGINE -> {flight.engine=Math.max(0,flight.engine-componentDamage);flight.hull-=damage*.25;}
+            case FUEL_TANK -> {flight.tank=Math.max(0,flight.tank-componentDamage);flight.hull-=damage*.25;}
             case MAIN_ROTOR -> {flight.rotor=Math.max(0,flight.rotor-damage);flight.hull-=damage*.1;}
             case TAIL_ROTOR -> {flight.tail=Math.max(0,flight.tail-damage);flight.hull-=damage*.1;}
             case TAIL_BOOM -> {flight.tail=Math.max(0,flight.tail-damage*.5);flight.hull-=damage*.5;}
-            case LANDING_GEAR -> {flight.hull-=damage*.35;if(!flight.gear)flight.tank=Math.max(0,flight.tank-damage*.5);}
+            case LANDING_GEAR -> {flight.hull-=damage*.35;if(!flight.gear)flight.tank=Math.max(0,flight.tank-componentDamage*.5);}
         }
-        if(flight.hull<=0)destroy(explosive);
+        flight.hull=Math.max(0,flight.hull);
+        if(flight.hull<=0&&explosive)destroy(true);
     }
     /**
      * 功能：按真实射线命中的分部结算伤害；非定向环境/爆炸才用来源位置就近选部位。
@@ -653,6 +665,8 @@ public class HelicopterEntity extends Entity {
             org.DJB.no_24_heli.registry.ModAdvancements.grant(driver,
                     org.DJB.no_24_heli.registry.ModAdvancements.LEGEND_NEVER_FALLS);
         flight.wreck=true;flight.running=false;flight.rope=false;flight.clearInputs();
+        damageEffects.clear();
+        flight.fireParts=0;
         var occupants=List.copyOf(getPassengerList());removeAllPassengers();
         if(explosive)for(Entity occupant:occupants)occupant.damage(getDamageSources().genericKill(),Float.MAX_VALUE);
         ItemScatterer.spawn(getWorld(),this,cargo);cargo.clear();
@@ -683,6 +697,7 @@ public class HelicopterEntity extends Entity {
             double gain=major?30:3;
             flight.rotor=Math.min(100,flight.rotor+gain);flight.tail=Math.min(100,flight.tail+gain);flight.engine=Math.min(100,flight.engine+gain);flight.hull=Math.min(100,flight.hull+gain);
             if(major)flight.tank=Math.min(100,flight.tank+gain);
+            damageEffects.refresh(this);
             repairCooldown=major?20:200;if(!player.isCreative())stack.decrement(1);message(player,major?"repaired":"emergency_repair");return ActionResult.CONSUME;
         }
         for(int i=0;i<No_24_heli.PAINTS.length;i++)if(stack.isOf(No_24_heli.PAINTS[i])){
@@ -740,9 +755,9 @@ public class HelicopterEntity extends Entity {
     }
     @Override public void onTrackedDataSet(TrackedData<?> data){super.onTrackedDataSet(data);if(STATUS.equals(data)&&getWorld().isClient)loadFlight(dataTracker.get(STATUS));}
 
-    /** 存档版本 3：显式字段，旧存档缺少部件字段时默认完整，损毁状态绝不重置。 */
+    /** 存档版本 4：显式飞行与可选火灾字段，旧存档缺少部件字段时默认完整，损毁状态绝不重置。 */
     private NbtCompound saveFlight(){
-        NbtCompound n=new NbtCompound();n.putInt("Version",4);cabin.write(n);
+        NbtCompound n=new NbtCompound();n.putInt("Version",4);cabin.write(n);damageEffects.write(n);
         // 供主副驾联动摇杆和远端握杆姿态读取；读档结束仍由 clearInputs 清除，不恢复控制意图。
         n.putFloat("CyclicPitch",flight.stickPitch);n.putFloat("CyclicRoll",flight.stickRoll);
         n.putFloat("RotorAngle",rotorAngle);
@@ -752,6 +767,7 @@ public class HelicopterEntity extends Entity {
         n.putInt("DifficultyMode",flight.difficultyMode);n.putInt("AutoPhase",flight.autoPhase);
         n.putBoolean("LandingBlocked",flight.landingBlocked);
         n.putBoolean("TakeoffPowerLow",flight.takeoffPowerLow);
+        n.putInt("FireParts",flight.fireParts);
         n.putInt("RadioTrack",flight.radioTrack);n.putInt("RadioRevision",flight.radioRevision);n.putLong("RadioStarted",flight.radioStartedTick);
         n.putBoolean("Waypoint",flight.waypoint);n.putDouble("WaypointX",flight.waypointX);n.putDouble("WaypointZ",flight.waypointZ);
         n.putBoolean("Autopilot",flight.autopilot);n.putBoolean("Restricted",flight.restricted);n.putBoolean("HardcoreMode",flight.hardcoreMode);n.putInt("AbandonedTicks",flight.abandonedTicks);
@@ -793,6 +809,8 @@ public class HelicopterEntity extends Entity {
         flight.fuel=number(n,"Fuel",0,0,100000);flight.rotor=number(n,"Rotor",100,0,100);flight.tail=number(n,"Tail",100,0,100);flight.engine=number(n,"Engine",100,0,100);flight.tank=number(n,"Tank",100,0,100);flight.hull=number(n,"Hull",100,0,100);
         flight.vx=number(n,"Vx",0,-3,3);flight.vy=number(n,"Vy",0,-3,3);flight.vz=number(n,"Vz",0,-3,3);flight.targetAltitude=number(n,"TargetAltitude",getY(),-2048,2048);flight.targetSpeed=number(n,"TargetSpeed",0,0,3);
         flight.running=n.getBoolean("Running");flight.armed=n.getBoolean("Armed");flight.altitudeHold=n.getBoolean("Altitude");flight.trim=n.contains("Trim")?n.getBoolean("Trim"):!flight.hardcoreMode;flight.cruise=n.getBoolean("Cruise");flight.gear=!n.contains("Gear")||n.getBoolean("Gear");flight.wreck=n.getBoolean("Wreck");flight.rope=n.getBoolean("Rope");flight.paint=Math.clamp(n.contains("Paint")?n.getInt("Paint"):FlightState.POLICE_PAINT,0,FlightState.POLICE_PAINT);ropeLength=Math.clamp(n.getInt("RopeLength"),0,24);
+        damageEffects.read(n,flight);
+        flight.fireParts=flight.wreck?0:n.getInt("FireParts")&15;
     }
     /**
      * K为可撤销的起降任务：地面开始二十格起飞，空中尝试垂直降落，再按一次取消。

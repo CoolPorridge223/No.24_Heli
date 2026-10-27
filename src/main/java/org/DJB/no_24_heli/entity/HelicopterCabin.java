@@ -7,6 +7,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityPose;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.text.Text;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
@@ -181,8 +182,8 @@ public final class HelicopterCabin {
         return doors[door] ? t : 1 - t;
     }
 
-    /** 完全打开才放行；门动画中不能穿过仍覆盖入口的蒙皮。 */
-    public boolean canPass(int door) { return doors[door] && doorProgress(door, 0) >= .99f; }
+    /** 有门时完全打开才放行；机身归零脱落的门不会阻挡登机、夺座或救援绳。 */
+    public boolean canPass(int door) { return !heli.hasCabinDoors() || doors[door] && doorProgress(door, 0) >= .99f; }
 
     /** F 的统一乘降入口：机外登机，机内请求下机；服务端复核范围，空中确认交给实体。 */
     public void interact(PlayerEntity player) {
@@ -194,11 +195,18 @@ public final class HelicopterCabin {
 
     /** 自动乘降设置门状态；反向开门沿已有进度继续，避免地面下机后立即登机时门板跳变。 */
     private void setDoor(int door, boolean open) {
+        if (!heli.hasCabinDoors()) open = false;
         if (doors[door] == open) return;
         long now = heli.getWorld().getTime();
         long elapsed = Math.clamp(now - doorChanged[door], 0L, (long) DOOR_TICKS);
         doorChanged[door] = now - (DOOR_TICKS - elapsed);
         doors[door] = open;
+    }
+
+    /** 无门时动作立即开始；有门时等待十 tick 开门，与现有乘降/夺座的动画时序共用。 */
+    private long doorReady(int door) {
+        long now = heli.getWorld().getTime();
+        return heli.hasCabinDoors() ? Math.max(now, doorChanged[door] + DOOR_TICKS) : now;
     }
 
     /** 普通上机固定使用最近门的对应座；占座时仅 F 入口可以发起拖拽，本方法不强行换人。 */
@@ -268,7 +276,7 @@ public final class HelicopterCabin {
         Vec3d target = findExit(occupant(seat), seat, false);
         if (target == null) { pullers[seat] = null; tell(player, "door_exit_blocked"); return; }
         setDoor(seat, true); outside[seat] = target; motions[seat] = PULL;
-        started[seat] = Math.max(heli.getWorld().getTime(), doorChanged[seat] + DOOR_TICKS);
+        started[seat] = doorReady(seat);
         ((CabinPlayerState) player).cabinPull(heli.getId(), seat);
         if (seat == 0) { heli.stopAutopilot(); heli.flight.cancelAutoFlight(); heli.flight.clearInputs(); }
         heli.syncCabin();
@@ -327,7 +335,7 @@ public final class HelicopterCabin {
         outside[seat] = rope ? new Vec3d(side(seat) == 0 ? 1.65 : -1.65, .05, seatPosition(seat).z) : entry;
         setDoor(seat, animate);
         motions[seat] = animate ? BOARD : SEATED;
-        started[seat] = Math.max(heli.getWorld().getTime(), doorChanged[seat] + DOOR_TICKS);
+        started[seat] = doorReady(seat);
         entity.fallDistance = 0; heli.syncCabin(); return true;
     }
 
@@ -429,7 +437,7 @@ public final class HelicopterCabin {
     }
 
     /**
-     * 功能：确认离机后自动开门，等待门全开再起身；动画期间保留座位。
+     * 功能：确认离机后有门等待开门与离座动画，无门直接离座；有门动画期间保留座位。
      * 地面或水面出口被地形卡住时不再播放动画，直接按原版下载具离开，避免乘员被困；
      * 空中没有安全落点仍保留座位并提示，不能把跃出改成自由落体。
      * 引用 net.minecraft.entity.player.PlayerEntity 只传玩家；服务端调用。
@@ -444,9 +452,10 @@ public final class HelicopterCabin {
             tell(player, "door_exit_blocked"); return;
         }
         ropeExits[seat] = false;
+        if (!heli.hasCabinDoors()) { leaveSeat(player, seat, target, airborne); return; }
         setDoor(seat, true);
         outside[seat] = target; motions[seat] = airborne ? JUMP : EXIT;
-        started[seat] = Math.max(heli.getWorld().getTime(), doorChanged[seat] + DOOR_TICKS);
+        started[seat] = doorReady(seat);
         heli.syncCabin();
     }
 
@@ -473,18 +482,52 @@ public final class HelicopterCabin {
             Vec3d local = new Vec3d(side(seat) == 0 ? distance : -distance, .10, seatPosition(seat).z + offset);
             Vec3d target = toWorld(local);
             if (!heli.getWorld().isChunkLoaded(BlockPos.ofFloored(target))) continue;
-            if (!airborne && !heli.isTouchingWater()) {
-                var hit = heli.getWorld().raycast(new RaycastContext(
-                        new Vec3d(target.x, heli.getY() + EXIT_STEP_UP, target.z),
-                        new Vec3d(target.x, heli.getY() - EXIT_STEP_DOWN, target.z),
-                        RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, passenger));
-                if (hit.getType() == HitResult.Type.MISS) continue;
-                target = new Vec3d(target.x, hit.getPos().y + EXIT_FLOOR_GAP, target.z);
+            if (!airborne) {
+                target = findExitSurface(passenger, target, EXIT_STEP_UP, EXIT_STEP_DOWN);
+                if (target == null) continue;
             }
             if (exitClear(passenger, seat, side(seat), target))
                 return target.subtract(heli.getPos()).rotateY((float) Math.toRadians(heli.getYaw()));
         }
         return null;
+    }
+
+    /**
+     * 功能：求指定水柱的真实液面，飞机/候选脚位已经浸水时也沿水柱向上找，不能把当前位置或水底当液面。
+     * 引用 net.minecraft.world.World#getFluidState 和 net.minecraft.registry.tag.FluidTags.WATER 只识别水，
+     * net.minecraft.fluid.FluidState#getHeight 返回静水/流水的实际表面高度；仅服务端下机选点时调用。
+     * 返回：水面上方两厘米的世界脚位，无水返回 null；不产生浮水能力，离座后继续正常水中物理。
+     */
+    private Vec3d waterSurface(Vec3d target) {
+        BlockPos pos = BlockPos.ofFloored(target);
+        if (!heli.getWorld().getFluidState(pos).isIn(FluidTags.WATER)) return null;
+        while (heli.getWorld().getFluidState(pos.up()).isIn(FluidTags.WATER)) pos = pos.up();
+        double height = heli.getWorld().getFluidState(pos).getHeight(heli.getWorld(), pos);
+        return new Vec3d(target.x, pos.getY() + height + EXIT_FLOOR_GAP, target.z);
+    }
+
+    /**
+     * 功能：正常下机与兜底共用水面/方块顶面选点，优先命中水面，避免 NONE 射线穿过水落到河床。
+     * 引用 net.minecraft.world.World#raycast 与 RaycastContext.FluidHandling.ANY 读取最近表面；
+     * 非水流体仍按原 COLLIDER/NONE 读取实体方块，未加载区块由调用者拒绝；服务端主线程。
+     * 返回：保持候选 X/Z 的脚位，探测范围内无支撑则返回 null；空中跃出不调用本方法。
+     */
+    private Vec3d findExitSurface(Entity passenger, Vec3d target, double up, double down) {
+        Vec3d water = waterSurface(target);
+        if (water != null) return water;
+        Vec3d start = new Vec3d(target.x, heli.getY() + up, target.z);
+        water = waterSurface(start);
+        if (water != null) return water;
+        Vec3d end = new Vec3d(target.x, heli.getY() - down, target.z);
+        var hit = heli.getWorld().raycast(new RaycastContext(start, end,
+                RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.ANY, passenger));
+        if (hit.getType() == HitResult.Type.MISS) return null;
+        var fluid = heli.getWorld().getFluidState(hit.getBlockPos());
+        if (!fluid.isEmpty() && !fluid.isIn(FluidTags.WATER))
+            hit = heli.getWorld().raycast(new RaycastContext(start, end,
+                    RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, passenger));
+        return hit.getType() == HitResult.Type.MISS ? null
+                : new Vec3d(target.x, hit.getPos().y + EXIT_FLOOR_GAP, target.z);
     }
 
     /**
@@ -524,8 +567,8 @@ public final class HelicopterCabin {
      * 功能：在机身两侧按由近到远的距离寻找可站立落点，供机门被卡住时直接下机。
      *
      * 引用 MC API：
-     *   - net.minecraft.world.World#raycast(RaycastContext)：按真实方块碰撞顶面确定脚位，
-     *     水面跳过地面探测，与正常下机共用同一高度语义；
+     *   - net.minecraft.world.World#raycast(RaycastContext)：按真实方块顶面或水面确定脚位，
+     *     与正常下机共用 findExitSurface，已浸水时沿水柱上探真实水面；
      *   - net.minecraft.world.World#isChunkLoaded(BlockPos)：未加载区块不能作为落点判定依据。
      *
      * 端侧/线程：仅逻辑服务端，主线程只读世界。
@@ -541,14 +584,8 @@ public final class HelicopterCabin {
                 Vec3d local = new Vec3d(exitSide == 0 ? distance : -distance, .10, seatPosition(seat).z + offset);
                 Vec3d target = toWorld(local);
                 if (!heli.getWorld().isChunkLoaded(BlockPos.ofFloored(target))) continue;
-                if (!heli.isTouchingWater()) {
-                    var hit = heli.getWorld().raycast(new RaycastContext(
-                            new Vec3d(target.x, heli.getY() + FALLBACK_STEP_UP, target.z),
-                            new Vec3d(target.x, heli.getY() - FALLBACK_STEP_DOWN, target.z),
-                            RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, passenger));
-                    if (hit.getType() == HitResult.Type.MISS) continue;
-                    target = new Vec3d(target.x, hit.getPos().y + EXIT_FLOOR_GAP, target.z);
-                }
+                target = findExitSurface(passenger, target, FALLBACK_STEP_UP, FALLBACK_STEP_DOWN);
+                if (target == null) continue;
                 if (exitClear(passenger, seat, exitSide, target))
                     return target.subtract(heli.getPos()).rotateY((float) Math.toRadians(heli.getYaw()));
             }
@@ -576,6 +613,8 @@ public final class HelicopterCabin {
             // 额外抬起 EXIT_FLOOR_GAP，避免脚位正好贴在旋翼/蒙皮顶面产生一帧相交。
             // 只作为扩展搜索也失败时的最后保险，保证玩家一定离开载具。
             local = new Vec3d(0, heli.getBoundingBox().maxY - heli.getY() + EXIT_FLOOR_GAP, 0);
+            Vec3d water = waterSurface(toWorld(local));
+            if (water != null) local = water.subtract(heli.getPos()).rotateY((float) Math.toRadians(heli.getYaw()));
         }
         entity.stopRiding();
         entity.refreshPositionAfterTeleport(toWorld(local));
@@ -591,6 +630,10 @@ public final class HelicopterCabin {
     public void tick() {
         if (heli.getWorld().isClient) return;
         for (int seat = 0; seat < SEATS; seat++) {
+            if (!heli.hasCabinDoors()) {
+                doors[seat] = false;
+                started[seat] = Math.min(started[seat], heli.getWorld().getTime());
+            }
             Entity entity = occupant(seat);
             // 原版不把离线玩家作为乘员实体保存；重载后没有实际乘员的 UUID 必须释放。
             if(entity==null){
@@ -602,7 +645,8 @@ public final class HelicopterCabin {
                 ropeExits[seat] = false; heli.rappel(player);
                 if (!heli.hasPassenger(entity)) continue;
             }
-            if (motions[seat] == SEATED || progress(entity, 0) < 1) continue;
+            if (motions[seat] == SEATED || progress(entity, 0) < 1
+                    && (heli.hasCabinDoors() || motions[seat] == BOARD)) continue;
             int motion = motions[seat];
             if (motion == BOARD) { motions[seat] = SEATED; setDoor(seat, false); heli.syncCabin(); continue; }
             Vec3d local = findExit(entity, seat, motion == JUMP);
@@ -613,17 +657,26 @@ public final class HelicopterCabin {
                 if (entity instanceof PlayerEntity player) tell(player, "door_exit_blocked");
                 heli.syncCabin(); continue;
             }
-            outside[seat] = local;
-            Vec3d target = toWorld(local);
-            entity.stopRiding(); entity.refreshPositionAfterTeleport(target);
-            setDoor(seat, false); heli.syncCabin();
-            if (motion == JUMP) {
-                Vec3d push = new Vec3d(side(seat) == 0 ? .18 : -.18, .12, 0)
-                        .rotateY((float) -Math.toRadians(heli.getYaw()));
-                entity.setVelocity(heli.flight.vx + push.x, heli.flight.vy + push.y, heli.flight.vz + push.z);
-                entity.velocityModified = true;
-                if (entity instanceof PlayerEntity player) ParachuteEntity.startFreefall(player, heli, seat);
-            }
+            leaveSeat(entity, seat, local, motion == JUMP);
+        }
+    }
+
+    /**
+     * 功能：在已复核的出口完成真实离座，无门直接调用，有门在动画末尾调用。
+     * 引用 net.minecraft.entity.Entity#stopRiding/#refreshPositionAfterTeleport 解除乘骑并放置脚位。
+     * 端侧/线程：服务端主线程；空中保留原有推出速度与 ParachuteEntity 自由落体规则。
+     */
+    private void leaveSeat(Entity entity, int seat, Vec3d local, boolean airborne) {
+        outside[seat] = local;
+        Vec3d target = toWorld(local);
+        entity.stopRiding(); entity.refreshPositionAfterTeleport(target);
+        setDoor(seat, false); heli.syncCabin();
+        if (airborne) {
+            Vec3d push = new Vec3d(side(seat) == 0 ? .18 : -.18, .12, 0)
+                    .rotateY((float) -Math.toRadians(heli.getYaw()));
+            entity.setVelocity(heli.flight.vx + push.x, heli.flight.vy + push.y, heli.flight.vz + push.z);
+            entity.velocityModified = true;
+            if (entity instanceof PlayerEntity player) ParachuteEntity.startFreefall(player, heli, seat);
         }
     }
 

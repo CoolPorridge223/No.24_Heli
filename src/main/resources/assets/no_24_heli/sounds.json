@@ -62,6 +62,14 @@
     "subtitle": "subtitles.no_24_heli.voice_stall",
     "sounds": [{"name": "no_24_heli:voice/stall", "stream": false}]
   },
+  "fire_alarm": {
+    "subtitle": "subtitles.no_24_heli.fire_alarm",
+    "sounds": [{"name": "no_24_heli:fire_alarm", "stream": false}]
+  },
+  "voice.fire_warning": {
+    "subtitle": "subtitles.no_24_heli.voice_fire_warning",
+    "sounds": [{"name": "no_24_heli:voice/fire_warning", "stream": false}]
+  },
   "radio": {
     "sounds": []
   }

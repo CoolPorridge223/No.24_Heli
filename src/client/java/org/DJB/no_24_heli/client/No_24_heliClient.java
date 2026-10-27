@@ -4,6 +4,7 @@ package org.DJB.no_24_heli.client;
 import org.DJB.no_24_heli.No_24_heli;
 import org.DJB.no_24_heli.client.audio.RadioLibrary;
 import org.DJB.no_24_heli.client.audio.FlightVoiceManager;
+import org.DJB.no_24_heli.client.audio.FireWarningManager;
 import org.DJB.no_24_heli.client.audio.RadioManager;
 import org.DJB.no_24_heli.client.audio.RotorSound;
 import org.DJB.no_24_heli.client.camera.HeliView;
@@ -191,6 +192,7 @@ public class No_24_heliClient implements ClientModInitializer {
         // 客户端每 tick：先迁移旧按键和推进相机/地图/音频，再按乘骑状态分派输入；最后只发意图。
         ClientTickEvents.END_CLIENT_TICK.register(client->{
             migrateTrimKey(client);migrateViewKey(client); HeliView.tick(client);ExploredMap.tick();ServerRadioCache.tick();RadioManager.tick(client);FlightVoiceManager.tick(client);
+            FireWarningManager.tick(client);
             org.DJB.no_24_heli.client.camera.CabinActionView.tick(client);
             while(VIEW.wasPressed()){
                 if(client.currentScreen==null&&client.player!=null&&client.player.getVehicle() instanceof HelicopterEntity)
@@ -223,7 +225,8 @@ public class No_24_heliClient implements ClientModInitializer {
             ropeBoardHeld=ropeBoard;
             if(!(client.player.getVehicle() instanceof HelicopterEntity heli))return;
 
-            if(heli.age%40==0&&(heli.flight.restricted||((heli.flight.engine<20||heli.flight.fuel<40)&&heli.flight.running)))
+            // 火灾已由独立循环音源持续告警，避免与原间歇警报叠音；无火时沿用既有提示。
+            if(!heli.flight.hasFire()&&heli.age%40==0&&(heli.flight.restricted||((heli.flight.engine<20||heli.flight.fuel<40)&&heli.flight.running)))
                 client.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(No_24_heli.ALARM,1,.6f));
 
             if(heli.age%25==0&&heli.flight.rotor<50&&heli.flight.rpm>.3)client.player.playSound(No_24_heli.DAMAGE_SOUND,.3f,1);

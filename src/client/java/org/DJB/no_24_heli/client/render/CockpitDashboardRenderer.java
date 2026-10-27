@@ -44,6 +44,16 @@ public final class CockpitDashboardRenderer {
     /** 环境光下的外壳、表盘、文字及告警色；屏幕使用同一纯白实体底纹。 */
     private static final int CASE = 0xff343e47, BLACK = 0xff10191c, INK = 0xffd8eadc;
     private static final int GREEN = 0xff7ce3bc, AMBER = 0xffffd66b, RED = 0xffff6655;
+    /** 图标的完整笔画宽度，单位为 -1..1 图标坐标；仅影响图标，不改变仪表刻线和表针。 */
+    private static final double SYMBOL_STROKE_WIDTH = .07;
+    /** 火焰六段三次贝塞尔轮廓：每段为起点、两控制点和终点，局部坐标约 -1..1，避免直角折线。 */
+    private static final double[][] FIRE_CURVES = {
+            {0,-.85, -.55,-.85, -.90,-.45, -.75,.02},
+            {-.75,.02, -.70,.35, -.42,.40, -.43,.70},
+            {-.43,.70, -.22,.50, -.26,.19, -.12,.10},
+            {-.12,.10, .16,.48, .25,.74, .09,1.05},
+            {.09,1.05, .58,.86, .87,.24, .78,-.25},
+            {.78,-.25, .74,-.65, .38,-.85, 0,-.85}};
     /** 残骸为低反照率焦黑材质，破口和裂纹也只使用环境光，不使用满亮或自发光图层。 */
     private static final int WRECK_CASE = 0xff242321, WRECK_FACE = 0xff0b0d0e, WRECK_EDGE = 0xff39352e;
     /** 面板朝向舱内 +Z，转换到机体后朝 -Z，保证两种驾驶视角看到同一套仪表。 */
@@ -360,7 +370,7 @@ public final class CockpitDashboardRenderer {
     }
 
     /**
-     * 功能：在右侧双框排列十一种异常与九种控制图标；引用 MC API：net.minecraft.util.math.Vec3d 绘制实体指示器。
+     * 功能：在右侧双框排列十二种异常与九种控制图标；引用 MC API：net.minecraft.util.math.Vec3d 绘制实体指示器。
      * 端侧：渲染线程；参数：h/m/b/light 为飞机及环境；返回：无；副作用：提交状态图标。
      * 排查：异常发生才点亮红/琥珀灯，控制启用显示绿色；近地警告只读取当前乘坐飞机。
      */
@@ -369,11 +379,11 @@ public final class CockpitDashboardRenderer {
         var player = MinecraftClient.getInstance().player;
         boolean sink = player != null && player.getVehicle() == h && GroundProximityWarning.warning();
         boolean[] faults = {s.engine < 20, s.rotor < 50, s.tail < 20, s.fuel < 80, s.hull < 35, s.tank < 35,
-                !s.running && !h.isOnGround() && s.armed, s.running && !s.armed, s.restricted, sink, s.landingBlocked};
-        String[] warningKeys = {"engine", "rotor", "tail", "fuel", "hull", "tank", "autorotation", "spooling", "restricted", "sink", "landing_blocked"};
+                !s.running && !h.isOnGround() && s.armed, s.running && !s.armed, s.restricted, sink, s.landingBlocked, s.hasFire()};
+        String[] warningKeys = {"engine", "rotor", "tail", "fuel", "hull", "tank", "autorotation", "spooling", "restricted", "sink", "landing_blocked", "fire"};
         roundedPanel(m, b, .26, -.17, .80, .015, FACE_Z - .001, 0xff586775, light);
         rectangle(m, b, .27, -.16, .79, .005, FACE_Z, BLACK, light);
-        // 上框改为两排六列容纳独立的降落占用灯，保持原框尺寸及下方控制灯的位置。
+        // 上框两排六列的最后一格加入统一火灾灯，不挪动已有指示器。
         for (int i = 0; i < faults.length; i++) icon(m, b, warningKeys[i], .315 + i % 6 * .086,
                 -.035 - i / 6 * .075, .044, faults[i], i == 7 ? AMBER : RED, light);
         boolean[] enabled = {s.altitudeHold, s.trim, s.cruise, s.gear, s.autopilot, s.autoPhase == 1 || s.autoPhase == 2,
@@ -412,96 +422,201 @@ public final class CockpitDashboardRenderer {
      */
     private static void faultSymbol(MatrixStack m, VertexConsumer b, String key, int color, int light) {
         switch (key) {
+            case "fire" -> fireOutline(m, b, color, light);
             case "engine" -> {
-                stroke(m, b, -.85, -.55, -.85, .5, color, light); stroke(m, b, -.85, .5, .55, .5, color, light);
-                stroke(m, b, .55, .5, .85, .15, color, light); stroke(m, b, .85, .15, .85, -.55, color, light);
-                stroke(m, b, .85, -.55, -.85, -.55, color, light); ring(m, b, 0, 0, .27, color, light);
+                // 发动机缸体、上部进气和右侧排气，采用常见的发动机故障轮廓。
+                path(m,b,color,light, -.66,.38, -.38,.38, -.38,.63, .28,.63, .28,.38, .62,.38,
+                        .62,.12, .87,.27, .87,-.35, .62,-.20, .62,-.57, -.45,-.57, -.66,-.33, -.66,.38);
+                path(m,b,color,light, -.9,.22, -.9,-.25);
+                stroke(m,b,-.9,-.02,-.66,-.02,color,light);
+                stroke(m,b,-.27,.86,.23,.86,color,light);
             }
-            case "rotor", "spooling" -> {
-                rotorSymbol(m, b, 0, 0, .84, color, light);
-                if (key.equals("spooling")) ring(m, b, 0, 0, .98, color, light);
-                else stroke(m, b, -.2, -.3, .35, .25, color, light);
+            case "rotor" -> rotorSymbol(m,b,0,0,.9,color,light);
+            case "spooling" -> {
+                rotorSymbol(m,b,0,0,.58,color,light);
+                arc(m,b,0,0,.91,25,330,color,light);
+                path(m,b,color,light, .46,-.55, .79,-.46, .83,-.81);
             }
             case "tail" -> {
-                stroke(m, b, -.9, 0, .55, 0, color, light);
-                rotorSymbol(m, b, .5, .05, .55, color, light);
-                stroke(m, b, -.9, -.2, -.9, .25, color, light);
+                path(m,b,color,light, -.9,-.20, -.9,.2, -.45,.2, .28,.04);
+                stroke(m,b,-.45,-.20,.28,-.04,color,light);
+                path(m,b,color,light, -.57,.19, -.67,.64, -.82,.64, -.78,.2);
+                rotorSymbol(m,b,.45,0,.46,color,light);
             }
             case "fuel" -> {
-                stroke(m, b, -.75, -.8, -.75, .75, color, light); stroke(m, b, -.75, .75, .3, .75, color, light);
-                stroke(m, b, .3, .75, .3, -.8, color, light); stroke(m, b, -.9, -.8, .45, -.8, color, light);
-                stroke(m, b, .35, .35, .85, .05, color, light); stroke(m, b, .85, .05, .85, -.55, color, light);
-                rectangle(m, b, -.5, .1, .05, .48, 0, color, light);
+                path(m,b,color,light, -.74,-.77, -.74,.64, -.61,.78, .15,.78, .28,.64, .28,-.77);
+                path(m,b,color,light, -.56,.5, .08,.5, .08,.12, -.56,.12, -.56,.5);
+                stroke(m,b,-.91,-.8,.45,-.8,color,light);
+                curve(m,b,.28,-.22,.7,-.22,.34,-.65,.73,-.65,color,light);
+                path(m,b,color,light, .73,-.65, .84,-.52, .84,.37, .57,.65, .43,.52, .65,.24);
             }
-            case "hull", "tank" -> {
-                stroke(m, b, -.8, -.65, -.8, .65, color, light); stroke(m, b, -.8, .65, .8, .65, color, light);
-                stroke(m, b, .8, .65, .8, -.65, color, light); stroke(m, b, .8, -.65, -.8, -.65, color, light);
-                stroke(m, b, -.25, .65, .18, .1, color, light); stroke(m, b, .18, .1, -.15, -.2, color, light);
-                stroke(m, b, -.15, -.2, .25, -.65, color, light);
-                if (key.equals("tank")) stroke(m, b, -.4, .85, .4, .85, color, light);
+            case "hull" -> {
+                helicopterSymbol(m,b,color,light);
+                path(m,b,color,light, -.17,.12, -.33,-.06, -.1,-.17, -.27,-.37);
+            }
+            case "tank" -> {
+                path(m,b,color,light, -.68,-.52, -.68,.47, -.47,.69, .35,.69, .61,.45, .61,-.52, -.68,-.52);
+                path(m,b,color,light, -.32,.69, -.32,.9, .12,.9, .12,.69);
+                path(m,b,color,light, -.47,.39, -.27,.16, -.4,-.03, -.15,-.31);
+                // 单独滴落的油滴区别于低燃油的加油机，避免两种故障看起来一样。
+                curve(m,b,.36,-.55,.14,-.80,.12,-.95,.35,-.95,color,light);
+                curve(m,b,.35,-.95,.58,-.95,.56,-.80,.36,-.55,color,light);
             }
             case "autorotation" -> {
-                ring(m, b, 0, 0, .82, color, light); arrow(m, b, -.2, .55, -.2, -.55, color, light);
-                stroke(m, b, .15, .72, .8, .72, color, light);
+                rotorSymbol(m,b,-.28,.22,.57,color,light);
+                arrow(m,b,.64,.66,.64,-.65,color,light);
+                arc(m,b,-.28,.22,.79,65,300,color,light);
             }
             case "restricted" -> {
-                ring(m, b, 0, 0, .82, color, light); stroke(m, b, -.6, -.6, .6, .6, color, light);
+                ring(m,b,0,0,.89,color,light);
+                stroke(m,b,-.62,-.62,.62,.62,color,light);
             }
             case "sink" -> {
-                stroke(m, b, -.95, -.8, 0, .9, color, light); stroke(m, b, 0, .9, .95, -.8, color, light);
-                stroke(m, b, .95, -.8, -.95, -.8, color, light); arrow(m, b, 0, .35, 0, -.45, color, light);
+                arrow(m,b,0,.86,0,-.39,color,light);
+                path(m,b,color,light, -.38,.26, 0,-.1, .38,.26);
+                path(m,b,color,light, -.88,-.83, -.61,-.60, -.3,-.77, .04,-.6, .41,-.79, .85,-.6);
             }
             case "landing_blocked" -> {
-                arrow(m, b, 0, .95, 0, .05, color, light);
-                stroke(m, b, -.9, -.15, .9, -.15, color, light);
-                stroke(m, b, -.45, -.4, .45, -.4, color, light); stroke(m, b, .45, -.4, .45, -.9, color, light);
-                stroke(m, b, .45, -.9, -.45, -.9, color, light); stroke(m, b, -.45, -.9, -.45, -.4, color, light);
+                arrow(m,b,-.47,.85,-.47,.02,color,light);
+                path(m,b,color,light, -.9,-.84, .9,-.84);
+                path(m,b,color,light, -.61,-.7, -.61,-.22, -.19,-.22, -.19,-.7);
+                stroke(m,b,-.61,-.46,-.19,-.46,color,light);
+                stroke(m,b,.19,.07,.79,.67,color,light);
+                stroke(m,b,.19,.67,.79,.07,color,light);
             }
         }
     }
 
+    /** 逐段连接轮廓点；net.minecraft.client.render.VertexConsumer 由 stroke 写入，CLIENT 渲染线程，无填充面。 */
+    private static void path(MatrixStack m, VertexConsumer b, int color, int light, double... xy) {
+        for (int i=2;i<xy.length;i+=2) stroke(m,b,xy[i-2],xy[i-1],xy[i],xy[i+1],color,light);
+    }
+
     /**
-     * 功能：绘制辅助、起降和导航的八种控制象形符号；引用 MC API：net.minecraft.client.render.VertexConsumer 提交形状。
+     * 功能：按切线法向构造十六段连续细线带，油管、机身和火焰共用，避免短矩形拼接的锯齿缝隙。
+     * 引用 net.minecraft.client.render.VertexConsumer 经 quad 提交；仅 CLIENT 渲染线程，无状态副作用。
+     */
+    private static void curve(MatrixStack m, VertexConsumer b, double x0, double y0, double x1, double y1,
+            double x2, double y2, double x3, double y3, int color, int light) {
+        double px=x0,py=y0,half=SYMBOL_STROKE_WIDTH/2;
+        double length=Math.hypot(x1-x0,y1-y0);
+        double nx=-(y1-y0)/length*half,ny=(x1-x0)/length*half;
+        for (int i=1;i<=16;i++) {
+            double t=i/16.0,u=1-t;
+            double x=u*u*u*x0+3*u*u*t*x1+3*u*t*t*x2+t*t*t*x3;
+            double y=u*u*u*y0+3*u*u*t*y1+3*u*t*t*y2+t*t*t*y3;
+            double tx=u*u*(x1-x0)+2*u*t*(x2-x1)+t*t*(x3-x2);
+            double ty=u*u*(y1-y0)+2*u*t*(y2-y1)+t*t*(y3-y2);
+            length=Math.hypot(tx,ty);
+            double nextX=-ty/length*half,nextY=tx/length*half;
+            quad(m,b,new Vec3d(px+nx,py+ny,.001),new Vec3d(px-nx,py-ny,.001),
+                    new Vec3d(x-nextX,y-nextY,.001),new Vec3d(x+nextX,y+nextY,.001),color,light);
+            px=x;py=y;nx=nextX;ny=nextY;
+        }
+    }
+
+    /** 以度数定义圆弧，半径为图标局部单位；CLIENT 渲染线程，用于预转、自动驾驶和速度表轮廓。 */
+    private static void arc(MatrixStack m, VertexConsumer b, double x, double y, double radius,
+            double from, double to, int color, int light) {
+        int steps=(int)Math.ceil(Math.abs(to-from)/12);
+        double inner=radius-SYMBOL_STROKE_WIDTH/2,outer=radius+SYMBOL_STROKE_WIDTH/2;
+        for (int i=0;i<steps;i++) {
+            double a=Math.toRadians(from+(to-from)*i/steps),next=Math.toRadians(from+(to-from)*(i+1)/steps);
+            quad(m,b,new Vec3d(x+Math.cos(a)*inner,y+Math.sin(a)*inner,.001),
+                    new Vec3d(x+Math.cos(a)*outer,y+Math.sin(a)*outer,.001),
+                    new Vec3d(x+Math.cos(next)*outer,y+Math.sin(next)*outer,.001),
+                    new Vec3d(x+Math.cos(next)*inner,y+Math.sin(next)*inner,.001),color,light);
+        }
+    }
+
+    /** 侧视直升机的机舱、风挡、尾梁、主桨和滑橇轮廓；CLIENT 绘制，作为机身损伤及自动起降的实物识别基础。 */
+    private static void helicopterSymbol(MatrixStack m, VertexConsumer b, int color, int light) {
+        curve(m,b,-.28,.24,-.69,.30,-.91,.04,-.86,-.18,color,light);
+        curve(m,b,-.86,-.18,-.79,-.43,-.20,-.42,.18,-.25,color,light);
+        path(m,b,color,light, .18,-.25, .34,.08, .79,.07, .94,.41, .78,.41, .65,.20, -.28,.24);
+        path(m,b,color,light, -.37,.22, -.45,-.02, -.79,-.02);
+        path(m,b,color,light, -.20,.25, -.20,.53, -.70,.53, .43,.53);
+        stroke(m,b,-.53,-.36,-.53,-.59,color,light);
+        stroke(m,b,.05,-.30,.05,-.59,color,light);
+        curve(m,b,-.84,-.49,-.85,-.64,-.58,-.61,.30,-.61,color,light);
+    }
+
+    /**
+     * 功能：用统一细线勾勒火焰外轮廓及一条内焰，不填充色块，避免卡通贴纸观感。
+     * 引用 net.minecraft.client.render.VertexConsumer 通过曲线笔画提交轮廓；CLIENT 渲染线程。
+     * 排查：线条粗细由 stroke 统一控制，不能重新改用三角扇填充。
+     */
+    private static void fireOutline(MatrixStack m, VertexConsumer b, int color, int light) {
+        for (double[] c : FIRE_CURVES) curve(m,b,c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7],color,light);
+        curve(m,b,-.15,-.55,-.34,-.28,.02,-.03,.04,.27,color,light);
+        curve(m,b,.04,.27,.41,-.18,.30,-.56,-.15,-.55,color,light);
+    }
+
+    /**
+     * 功能：绘制辅助、起降、导航与探照灯九种简笔图标；引用 MC API：net.minecraft.client.render.VertexConsumer 提交形状。
      * 端侧：渲染线程；参数：m/b/key/color/light 为环境及符号；返回：无；副作用：提交控制图形。
      * 排查：起飞与降落箭头朝向相反，起落架使用双轮，不用 ON/OFF 字串代替状态。
      */
     private static void controlSymbol(MatrixStack m, VertexConsumer b, String key, int color, int light) {
         switch (key) {
             case "altitude" -> {
-                stroke(m, b, -.85, 0, .85, 0, color, light);
-                stroke(m, b, -.6, -.65, -.6, .65, color, light); stroke(m, b, .6, -.65, .6, .65, color, light);
+                stroke(m,b,-.79,-.8,-.79,.8,color,light);
+                for (int tick=0;tick<5;tick++) stroke(m,b,-.79,-.8+tick*.4,-.55,-.8+tick*.4,color,light);
+                m.push();m.translate(.18,.03,0);m.scale(.65f,.65f,1);helicopterSymbol(m,b,color,light);m.pop();
             }
             case "trim" -> {
-                stroke(m, b, -.9, 0, -.25, 0, color, light); stroke(m, b, .25, 0, .9, 0, color, light);
-                stroke(m, b, 0, -.55, 0, .55, color, light); ring(m, b, 0, 0, .22, color, light);
+                // 正面机身与两侧水平基准，直接表达姿态配平。
+                arc(m,b,0,-.02,.29,0,360,color,light);
+                path(m,b,color,light, -.84,.47, .84,.47);
+                stroke(m,b,0,.47,0,.26,color,light);
+                path(m,b,color,light, -.84,-.55, -.84,-.12, -.44,-.12);
+                path(m,b,color,light, .84,-.55, .84,-.12, .44,-.12);
+                stroke(m,b,-.84,-.55,.84,-.55,color,light);
             }
             case "cruise" -> {
-                arrow(m, b, -.85, .35, .85, .35, color, light);
-                arrow(m, b, -.85, -.35, .85, -.35, color, light);
+                arc(m,b,0,-.13,.81,0,180,color,light);
+                stroke(m,b,-.81,-.13,.81,-.13,color,light);
+                stroke(m,b,0,-.13,.45,.43,color,light);
+                for (double angle:new double[]{25,90,155}) {
+                    double a=Math.toRadians(angle);
+                    stroke(m,b,Math.cos(a)*.62,Math.sin(a)*.62-.13,
+                            Math.cos(a)*.76,Math.sin(a)*.76-.13,color,light);
+                }
+                arrow(m,b,-.52,-.58,.60,-.58,color,light);
             }
             case "gear" -> {
-                stroke(m, b, 0, .8, 0, -.3, color, light); stroke(m, b, -.65, -.25, .65, -.25, color, light);
-                ring(m, b, -.6, -.55, .3, color, light); ring(m, b, .6, -.55, .3, color, light);
+                // 侧视双滑橇及斜撑，不使用轮式起落架或类似警铃的正面剪影。
+                stroke(m,b,-.52,.72,.42,.72,color,light);
+                path(m,b,color,light, -.37,.72, -.51,-.12, -.15,-.55);
+                path(m,b,color,light, .29,.72, .17,-.12, .52,-.55);
+                stroke(m,b,-.85,-.12,.55,-.12,color,light);
+                curve(m,b,.55,-.12,.78,-.12,.81,.02,.84,.13,color,light);
+                stroke(m,b,-.53,-.55,.79,-.55,color,light);
+                curve(m,b,.79,-.55,.95,-.55,.99,-.39,.99,-.30,color,light);
             }
             case "autopilot" -> {
-                ring(m, b, 0, 0, .85, color, light); stroke(m, b, -.7, 0, .7, 0, color, light);
-                stroke(m, b, 0, -.7, 0, .7, color, light); rotorSymbol(m, b, 0, 0, .35, color, light);
+                m.push();m.scale(.65f,.65f,1);helicopterSymbol(m,b,color,light);m.pop();
+                arc(m,b,0,0,.96,20,320,color,light);
+                path(m,b,color,light, .52,-.57, .75,-.62, .81,-.88);
             }
             case "takeoff", "landing" -> {
-                stroke(m, b, -.9, -.85, .9, -.85, color, light);
-                arrow(m, b, 0, key.equals("takeoff") ? -.5 : .8, 0, key.equals("takeoff") ? .8 : -.5, color, light);
+                m.push();m.translate(-.27,.19,0);m.scale(.64f,.64f,1);helicopterSymbol(m,b,color,light);m.pop();
+                stroke(m,b,-.90,-.82,.90,-.82,color,light);
+                arrow(m,b,.65,key.equals("takeoff")?-.51:.82,.65,key.equals("takeoff")?.82:-.51,color,light);
             }
             case "waypoint" -> {
-                ring(m, b, 0, .25, .5, color, light); stroke(m, b, -.4, -.05, 0, -.9, color, light);
-                stroke(m, b, 0, -.9, .4, -.05, color, light);
+                curve(m,b,0,-.92,-.18,-.57,-.65,-.04,-.65,.31,color,light);
+                curve(m,b,-.65,.31,-.65,1.08,.65,1.08,.65,.31,color,light);
+                curve(m,b,.65,.31,.65,-.04,.18,-.57,0,-.92,color,light);
+                ring(m,b,0,.31,.23,color,light);
             }
             case "searchlight" -> {
-                ring(m,b,-.55,.2,.42,color,light);
-                stroke(m,b,-.25,.5,.85,.8,color,light);
-                stroke(m,b,-.15,.2,.95,.2,color,light);
-                stroke(m,b,-.25,-.1,.85,-.4,color,light);
-                stroke(m,b,-.75,-.2,-.75,-.75,color,light);
-                stroke(m,b,-.75,-.75,.15,-.75,color,light);
+                curve(m,b,-.25,.57,-1.12,.57,-1.12,-.42,-.25,-.42,color,light);
+                stroke(m,b,-.25,-.42,-.25,.57,color,light);
+                path(m,b,color,light, -.66,-.4, -.66,-.76, -.03,-.76);
+                stroke(m,b,.03,.40,.85,.72,color,light);
+                stroke(m,b,.03,.06,.95,.06,color,light);
+                stroke(m,b,.03,-.27,.85,-.58,color,light);
             }
         }
     }
@@ -511,11 +626,12 @@ public final class CockpitDashboardRenderer {
      * 参数：m/b/x/y/r/color/light 为环境和符号尺寸；返回：无；副作用：提交桨叶与轴圈；排查：四臂需相隔 90°。
      */
     private static void rotorSymbol(MatrixStack m, VertexConsumer b, double x, double y, double r, int color, int light) {
-        ring(m, b, x, y, r * .23, color, light);
+        ring(m, b, x, y, r * .16, color, light);
         for (int i = 0; i < 4; i++) {
-            double angle = Math.PI / 4 + i * Math.PI / 2;
-            stroke(m, b, x + Math.cos(angle) * r * .23, y + Math.sin(angle) * r * .23,
-                    x + Math.cos(angle) * r, y + Math.sin(angle) * r, color, light);
+            m.push();m.translate(x,y,0);m.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(i*90));
+            path(m,b,color,light, .16*r,.07*r, .77*r,.16*r, .95*r,.07*r,
+                    .92*r,-.11*r, .19*r,-.07*r, .16*r,.07*r);
+            m.pop();
         }
     }
 
@@ -524,11 +640,7 @@ public final class CockpitDashboardRenderer {
      * 参数：m/b/x/y/r/color/light 为绘制环境和半径；返回：无；副作用：提交环线；排查：不填满中心以保留内部象形图。
      */
     private static void ring(MatrixStack m, VertexConsumer b, double x, double y, double r, int color, int light) {
-        for (int i = 0; i < 24; i++) {
-            double a = i * Math.PI / 12, next = (i + 1) * Math.PI / 12;
-            stroke(m, b, x + Math.cos(a) * r, y + Math.sin(a) * r,
-                    x + Math.cos(next) * r, y + Math.sin(next) * r, color, light);
-        }
+        arc(m,b,x,y,r,0,360,color,light);
     }
 
     /**
@@ -545,10 +657,10 @@ public final class CockpitDashboardRenderer {
     /**
      * 功能：绘制统一粗细的符号笔画；引用 MC API：net.minecraft.client.render.VertexConsumer 接收面板条带。
      * 端侧：渲染线程；参数：m/b/x0/y0/x1/y1/color/light 为环境与线段；返回：无；副作用：提交图标线。
-     * 排查：逻辑线宽为 .065，随单个图标矩阵缩放，不随 GUI 比例变化。
+     * 排查：完整线宽为 SYMBOL_STROKE_WIDTH，line 接收半宽；随图标矩阵缩放，不使用实心填充图形。
      */
     private static void stroke(MatrixStack m, VertexConsumer b, double x0, double y0, double x1, double y1, int color, int light) {
-        line(m, b, x0, y0, x1, y1, .065, .001, color, light);
+        line(m, b, x0, y0, x1, y1, SYMBOL_STROKE_WIDTH/2, .001, color, light);
     }
 
     /**
