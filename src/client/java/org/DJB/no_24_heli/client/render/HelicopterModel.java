@@ -15,6 +15,7 @@ import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.Vec3d;
 import org.DJB.no_24_heli.entity.HelicopterEntity;
 import org.DJB.no_24_heli.entity.HelicopterCabin;
+import org.DJB.no_24_heli.entity.HelicopterGeometry;
 
 /**
  * 职责：缓存圆滑机身、锥形尾梁、弧形滑橇与旋翼的顶点，不以立方体拼接机身。
@@ -39,8 +40,10 @@ public final class HelicopterModel {
     private final List<Face> number = new ArrayList<>(), wordmark = new ArrayList<>();
     /** 迷彩只缓存外壳喷漆面，不覆盖金属、窗框、板缝和内饰；三种环境共用连续 UV。 */
     private final List<Face> camouflage = new ArrayList<>();
+    /** 救援橙外漆采用用户指定的国际橙；白斜带与其他涂装的横向腰带分开生成。 */
+    private static final int RESCUE_ORANGE = 0xffff4f00, RESCUE_WHITE = 0xffffffff;
     /** 旧编号 0–5 保留丛林、雪、沙、黑、救援及紫金色；新增默认 6 为参考图蓝白警用色。 */
-    private static final int[] PAINT_COLORS = {0xff526b40, 0xffe5ebed, 0xffc3a06c, 0xff252b33, 0xffe97a28, 0xff64389b, 0xff234aa4};
+    private static final int[] PAINT_COLORS = {0xff526b40, 0xffe5ebed, 0xffc3a06c, 0xff252b33, RESCUE_ORANGE, 0xff64389b, 0xff234aa4};
     /** 普通玻璃 80% 透明（alpha=51/255），颜色按环境光在世界合成后混合。 */
     private static final int GLASS_COLOR = 0x33abcbd8;
     /** 地板顶面沿用原 0.64 格高度，厚 3.5 厘米；相对内蒙皮另留 2.5 厘米净距。 */
@@ -51,22 +54,19 @@ public final class HelicopterModel {
     /** 色带按高度平面裁切，机腹分界低于字样下缘，防止金色字样落在金色底漆上。 */
     private static final double BELLY_TOP = .56, BELT_BOTTOM = .79, BELT_TOP = 1.10, TRIM_TOP = 1.15;
     /** 六种涂装的外漆/起落架颜色；迷彩外壳由独立贴图提供，不再保留白色底壳。 */
-    private static final int[] LIVERY_COLORS = {0xff4b623d, 0xffe8edf0, 0xffcbb485, 0xff111214, 0xfff07721, 0xff552583};
+    private static final int[] LIVERY_COLORS = {0xff4b623d, 0xffe8edf0, 0xffcbb485, 0xff111214, RESCUE_ORANGE, 0xff552583};
     private static final int[] GEAR_COLORS = {0xff293628, 0xff697780, 0xff8a704d, 0xff111214, 0xff30363b, 0xfffdb927};
-    /** 紫金采用饱和金色饰带，救援白腰带保留高可见度，三款迷彩每格约重复 0.36 次。 */
-    private static final int GOLD = 0xfffdb927, RESCUE_WHITE = 0xfff2f4ee, RESCUE_DARK = 0xff30363b;
+    /** 紫金采用饱和金色饰带，三款迷彩每格约重复 0.36 次。 */
+    private static final int GOLD = 0xfffdb927;
     private static final double CAMOUFLAGE_SCALE = .36;
+    /** 白带沿 Z+0.72Y 裁切，保留前缘 -0.04 格，后缘延至 -1.55 格，连续覆盖尾梁前段。 */
+    private static final double RESCUE_BAND_SLOPE = .72, RESCUE_BAND_BACK = -1.55, RESCUE_BAND_FRONT = -.04;
     /** 迷彩投影的横向斜率，保留 X 正负；两轴均混入横向位移，避免机鼻前视挤成条纹及左右镜像。 */
     private static final double CAMOUFLAGE_U_SKEW = .47, CAMOUFLAGE_V_SKEW = 1.6;
-    /** 各纵截面依次为 Z、半宽、中心高度、半高；形状按参考图的圆鼻、宽舱和收腰机尾采样。 */
-    private static final double[][] BODY_PROFILE = {
-            {-5.06, .075, 1.87, .075}, {-3.40, .14, 1.68, .14}, {-2.10, .20, 1.49, .20},
-            {-1.78, .25, 1.40, .25}, {-1.55, .43, 1.21, .38}, {-1.15, .83, 1.23, .68},
-            {-.65, .97, 1.24, .80}, {0, .98, 1.24, .83}, {.50, .91, 1.23, .80},
-            {.95, .79, 1.16, .67}, {1.40, .60, 1.03, .47}, {1.75, .36, .91, .28},
-            {1.97, .025, .86, .035}};
     /** 静态网格只构建一次，透明蒙皮与滑橇、旋翼分开绘制。 */
     private final List<Face> shell = new ArrayList<>(), glass = new ArrayList<>(), gear = new ArrayList<>();
+    /** 仅救援橙使用的外壳分区；保留原始 shell，避免改变其他六款涂装的面与 UV。 */
+    private final List<Face> rescueShell;
     private final List<Face> rotor = new ArrayList<>(), tailRotor = new ArrayList<>();
     /** 内衬与座椅仅近距离绘制，灯罩单独自发光；漆面不再叠加影响光影深度的透明高光层。 */
     private final List<Face> interior = new ArrayList<>(), lamp = new ArrayList<>();
@@ -103,7 +103,7 @@ public final class HelicopterModel {
     /**
      * 功能：建立机身及机舱；引用 MC API：net.minecraft.util.math.Vec3d 描述部件轴线。
      * 端侧/线程：客户端渲染线程；参数/返回：无；副作用：填充只读视觉网格。
-     * 排查：机鼻形状查 BODY_PROFILE；部件错位查是否误用了旧模型的反向 Y 坐标。
+     * 排查：机鼻形状查 HelicopterGeometry 的共享截面；部件错位查是否误用了旧模型的反向 Y 坐标。
      */
     public HelicopterModel() {
         this(false);
@@ -152,6 +152,9 @@ public final class HelicopterModel {
             camouflage.add(new Face(camouflageVertex(face.a), camouflageVertex(face.b),
                     camouflageVertex(face.c), camouflageVertex(face.d), WHITE));
         }
+        rescueShell = rescueSurfaces(shell);
+        for (int door = 0; door < HelicopterCabin.SEATS; door++)
+            doors.put("door" + door + "_rescue_shell", rescueSurfaces(doors.get("door" + door + "_shell")));
     }
 
     /**
@@ -541,21 +544,12 @@ public final class HelicopterModel {
     }
 
     /**
-     * 功能：插值截面参数，半宽和半高使用平滑三次插值；引用 MC API：无。
+     * 功能：插值截面参数，尾根直接跨过凹陷控制点，以两端原切线平滑连接；引用 MC API：无。
      * 端侧/线程：构造期；参数：z 为纵向位置，column 为截面参数列；返回：对应形状值；副作用：无。
      * 排查：截面鼓包查插值切线，而非提高面数掩盖轮廓折线。
      */
     private static double profile(double z, int column) {
-        int index = 0;
-        while (index < BODY_PROFILE.length - 2 && z > BODY_PROFILE[index + 1][0]) index++;
-        double[] a = BODY_PROFILE[index], b = BODY_PROFILE[index + 1];
-        double t = Math.clamp((z - a[0]) / (b[0] - a[0]), 0, 1);
-        double[] before = BODY_PROFILE[Math.max(0, index - 1)];
-        double[] after = BODY_PROFILE[Math.min(BODY_PROFILE.length - 1, index + 2)];
-        double tangentA = (b[column] - before[column]) / (b[0] - before[0]) * (b[0] - a[0]);
-        double tangentB = (after[column] - a[column]) / (after[0] - a[0]) * (b[0] - a[0]);
-        return (2 * t * t * t - 3 * t * t + 1) * a[column] + (t * t * t - 2 * t * t + t) * tangentA
-                + (-2 * t * t * t + 3 * t * t) * b[column] + (t * t * t - t * t) * tangentB;
+        return HelicopterGeometry.profile(z, column);
     }
 
     /**
@@ -585,9 +579,13 @@ public final class HelicopterModel {
      * 排查：尾梁根部必须在后隔舱之后；薄尾翼需封闭上下端面，水平尾翼后缘需避开完整尾桨扫掠范围。
      */
     private void buildTail() {
-        int stations = distant ? 8 : 16;
-        for (int z = 0; z < stations; z++) for (int a = 0; a < radialSegments; a++) {
-            double back = -5.06 + 3.28 * z / stations, front = -5.06 + 3.28 * (z + 1) / stations;
+        int sections = distant ? 8 : 16, rootSections = distant ? 2 : 4;
+        List<Double> stations = new ArrayList<>();
+        for (int i = 0; i <= sections; i++) stations.add(-5.06 + 2.96 * i / sections);
+        // 尾根与机舱使用相近的纵向步长，并在 -1.78 格接缝共用整圈位置及法线。
+        for (int i = 1; i <= rootSections; i++) stations.add(-2.10 + .32 * i / rootSections);
+        for (int z = 0; z < stations.size() - 1; z++) for (int a = 0; a < radialSegments; a++) {
+            double back = stations.get(z), front = stations.get(z + 1);
             double angle = a * Math.PI * 2 / radialSegments, next = (a + 1) * Math.PI * 2 / radialSegments;
             shell.add(new Face(bodyVertex(back, angle), bodyVertex(front, angle),
                     bodyVertex(front, next), bodyVertex(back, next), PAINT));
@@ -768,14 +766,60 @@ public final class HelicopterModel {
     }
 
     /**
+     * 功能：为救援橙独立裁出舱后白斜带，机头、尾翼及整片机腹保持橙色；引用 MC API：无。
+     * 端侧/线程：客户端构造期；参数：source 为关门坐标下的外壳或门；返回：救援涂装分区。
+     * 副作用：无；排查：门缝错色查是否共用机体坐标，其他涂装必须继续使用原始网格。
+     */
+    private static List<Face> rescueSurfaces(List<Face> source) {
+        List<Face> result = new ArrayList<>();
+        for (Face face : source) {
+            if (!paintedMaterial(face.material) || face.material == BELLY) {
+                result.add(face);
+                continue;
+            }
+            List<Vertex> points = List.of(face.a, face.b, face.c, face.d);
+            polygon(result, clipRescueBand(points, RESCUE_BAND_BACK, false), PAINT);
+            polygon(result, clipRescueBand(clipRescueBand(points, RESCUE_BAND_BACK, true), RESCUE_BAND_FRONT, false), BELT);
+            polygon(result, clipRescueBand(points, RESCUE_BAND_FRONT, true), PAINT);
+        }
+        return result;
+    }
+
+    /**
+     * 功能：按白带斜平面裁切凸多边形；引用 net.minecraft.util.math.Vec3d#lerp 保留位置与连续法线。
+     * 端侧/线程：客户端构造期；参数：points/bound/forward 为轮廓、斜平面截距与保留方向。
+     * 返回：裁切顶点；副作用：无；排查：边界必须插值原 UV，不能按面中心选色造成阶梯边。
+     */
+    private static List<Vertex> clipRescueBand(List<Vertex> points, double bound, boolean forward) {
+        if (points.isEmpty()) return points;
+        List<Vertex> output = new ArrayList<>();
+        Vertex previous = points.getLast();
+        double previousDistance = previous.position.z + RESCUE_BAND_SLOPE * previous.position.y - bound;
+        for (Vertex point : points) {
+            double distance = point.position.z + RESCUE_BAND_SLOPE * point.position.y - bound;
+            boolean inside = forward ? distance >= 0 : distance <= 0;
+            boolean previousInside = forward ? previousDistance >= 0 : previousDistance <= 0;
+            if (inside != previousInside) {
+                double t = previousDistance / (previousDistance - distance);
+                output.add(new Vertex(previous.position.lerp(point.position, t),
+                        previous.normal.lerp(point.normal, t).normalize(),
+                        (float) (previous.u + (point.u - previous.u) * t),
+                        (float) (previous.v + (point.v - previous.v) * t)));
+            }
+            if (inside) output.add(point);
+            previous = point;
+            previousDistance = distance;
+        }
+        return output;
+    }
+
+    /**
      * 功能：按涂装名称为外漆和起落架选色；端侧：渲染线程；参数：paint/material/gear 为编号、材质与起落架标记。
      * 返回：ARGB；无 MC API 与副作用；排查：默认警用色不调用此方法，紫金字样下方保持紫色。
      */
     private static int liveryColor(int paint, int material, boolean gear) {
         if (gear) return GEAR_COLORS[paint];
-        if (paint == 4) return switch (material) {
-            case BELT -> RESCUE_WHITE; case BELLY, STRIPE -> RESCUE_DARK; default -> LIVERY_COLORS[paint];
-        };
+        if (paint == 4) return material == BELT ? RESCUE_WHITE : RESCUE_ORANGE;
         if (paint == 5 && (material == BELLY || material == STRIPE)) return GOLD;
         return LIVERY_COLORS[paint];
     }
@@ -984,6 +1028,8 @@ public final class HelicopterModel {
         };
         boolean decal = part.endsWith("number") || part.endsWith("wordmark"), camo = part.endsWith("camouflage");
         boolean body = part.endsWith("shell"), undercarriage = part.equals("gear") || part.equals("strut");
+        if (paint == 4 && body)
+            faces = part.equals("shell") ? rescueShell : doors.get(part.replace("_shell", "_rescue_shell"));
         boolean cabin = part.endsWith("interior"), emitting = part.equals("lamp") && !wreck;
         for (Face face : faces) {
             if (blockLightFilter >= 0 && face.blockLight != blockLightFilter << 4) continue;

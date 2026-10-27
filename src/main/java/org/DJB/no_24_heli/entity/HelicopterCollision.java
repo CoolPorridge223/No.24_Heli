@@ -224,8 +224,8 @@ public final class HelicopterCollision {
         addDoors(result,heli,origin,body);
         add(result, Part.ENGINE, new Box(-.43, 2.02, -1.23, .43, 2.54, .20), origin, body);
         add(result, Part.ENGINE, new Box(-.065, 2.18, -.235, .065, 2.71, -.105), origin, body);
-        add(result, Part.TAIL_BOOM, new Box(-.38, 1.01, -1.78, .38, 1.65, -1.30), origin, body);
-        add(result, Part.TAIL_BOOM, new Box(-.23, 1.15, -2.18, .23, 1.74, -1.78), origin, body);
+        // 只同步尾根曲面对应的四段包络，继续使用原 TAIL_BOOM 模块及扫掠算法。
+        for (Box box : HelicopterGeometry.TAIL_ROOT_BOUNDS) add(result, Part.TAIL_BOOM, box, origin, body);
         add(result, Part.TAIL_BOOM, new Box(-.18, 1.36, -3.40, .18, 1.85, -2.18), origin, body);
         add(result, Part.TAIL_BOOM, new Box(-.13, 1.56, -4.35, .13, 1.95, -3.40), origin, body);
         add(result, Part.TAIL_BOOM, new Box(-.10, 1.72, -5.07, .10, 1.98, -4.35), origin, body);
