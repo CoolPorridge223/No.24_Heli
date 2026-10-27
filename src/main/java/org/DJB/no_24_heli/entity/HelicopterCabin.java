@@ -35,6 +35,8 @@ public final class HelicopterCabin {
     /** 沿用原机身的两块侧窗；中柱宽 0.07 格，前后门均以前缘为轴向外打开 78 度。 */
     public static final double DOOR_BACK = -1.15, REAR_DOOR_FRONT = -.38,
             FRONT_DOOR_BACK = -.31, DOOR_FRONT = .50, DOOR_ANGLE = 78;
+    /** 前后排乘降判定与门外出口统一向机尾偏移 0.25 格，减轻前门附近误选后排；局部 +Z 为机头。 */
+    private static final double ACCESS_REAR_OFFSET = .25;
     public static final int DOOR_TICKS = 10, BOARD_TICKS = 24, EXIT_TICKS = 20, JUMP_TICKS = 12;
     /** 动作编号：静坐、迈入、地面走下、空中跃出、被拖出；夺座先开门，再播放拎起、左肘击和倒地。 */
     public static final int SEATED = 0, BOARD = 1, EXIT = 2, JUMP = 3, PULL = 4;
@@ -127,7 +129,7 @@ public final class HelicopterCabin {
         return seat >= 0 ? side(seat) : localPosition(entity).x >= 0 ? 0 : 1;
     }
 
-    /** 舱内使用本座门，绳顶保留后排优先；舱外按真实门面中心距离选门，不因占座改选别座。 */
+    /** 舱内使用本座门，绳顶保留后排优先；舱外按后移后的门面判定中心选门，不因占座改选别座。 */
     public int accessDoor(Entity entity) {
         int seat = seat(entity);
         if (seat >= 0) return seat;
@@ -137,8 +139,10 @@ public final class HelicopterCabin {
         }
         Vec3d local = localPosition(entity);
         int side = accessSide(entity), rear = side + 2;
-        Vec3d frontCenter = new Vec3d(side == 0 ? .94 : -.94, 0, (doorBack(side) + doorFront(side)) / 2);
-        Vec3d rearCenter = new Vec3d(side == 0 ? .94 : -.94, 0, (doorBack(rear) + doorFront(rear)) / 2);
+        Vec3d frontCenter = new Vec3d(side == 0 ? .94 : -.94, 0,
+                (doorBack(side) + doorFront(side)) / 2 - ACCESS_REAR_OFFSET);
+        Vec3d rearCenter = new Vec3d(side == 0 ? .94 : -.94, 0,
+                (doorBack(rear) + doorFront(rear)) / 2 - ACCESS_REAR_OFFSET);
         return local.squaredDistanceTo(frontCenter) <= local.squaredDistanceTo(rearCenter) ? side : rear;
     }
 
@@ -157,7 +161,7 @@ public final class HelicopterCabin {
         if(player.hasVehicle())return false;
         Vec3d local = localPosition(player);
         return Math.abs(local.x) >= .55 && Math.abs(local.x) <= 3
-                && local.z >= DOOR_BACK - .65 && local.z <= DOOR_FRONT + .65
+                && local.z >= DOOR_BACK - .65 - ACCESS_REAR_OFFSET && local.z <= DOOR_FRONT + .65 - ACCESS_REAR_OFFSET
                 && local.y >= -1.5 && local.y <= 2.5;
     }
 
@@ -404,7 +408,7 @@ public final class HelicopterCabin {
                     .add(0, .30 * lift * (1 - fall), 0); // 双手拎起三十厘米，受击后才落向地面。
         }
         double t = motions[seat] == BOARD ? p : 1 - p;
-        Vec3d threshold = new Vec3d(side(seat) == 0 ? .90 : -.90, .38, seated.z);
+        Vec3d threshold = new Vec3d(side(seat) == 0 ? .90 : -.90, .38, seated.z - ACCESS_REAR_OFFSET);
         Vec3d point = t < .55 ? outside[seat].lerp(threshold, smooth(t / .55))
                 : threshold.lerp(seated, smooth((t - .55) / .45));
         if (motions[seat] == JUMP) point = point.add(0, Math.sin(p * Math.PI) * .32, 0);
@@ -479,7 +483,8 @@ public final class HelicopterCabin {
      */
     private Vec3d findExit(Entity passenger, int seat, boolean airborne) {
         for (double distance : EXIT_DISTANCES) for (double offset : EXIT_OFFSETS) {
-            Vec3d local = new Vec3d(side(seat) == 0 ? distance : -distance, .10, seatPosition(seat).z + offset);
+            Vec3d local = new Vec3d(side(seat) == 0 ? distance : -distance, .10,
+                    seatPosition(seat).z - ACCESS_REAR_OFFSET + offset);
             Vec3d target = toWorld(local);
             if (!heli.getWorld().isChunkLoaded(BlockPos.ofFloored(target))) continue;
             if (!airborne) {
@@ -539,7 +544,7 @@ public final class HelicopterCabin {
     private boolean exitClear(Entity passenger, int seat, int side, Vec3d target) {
         var dimensions = passenger.getDimensions(EntityPose.STANDING);
         Box standing = dimensions.getBoxAt(target);
-        Vec3d threshold = toWorld(new Vec3d(side == 0 ? 1.3 : -1.3, .4, seatPosition(seat).z));
+        Vec3d threshold = toWorld(new Vec3d(side == 0 ? 1.3 : -1.3, .4, seatPosition(seat).z - ACCESS_REAR_OFFSET));
         threshold = new Vec3d(threshold.x, Math.max(threshold.y, target.y), threshold.z);
         Vec3d outside = new Vec3d(target.x, threshold.y, target.z);
         Box passage = dimensions.getBoxAt(threshold).stretch(outside.subtract(threshold));
@@ -581,7 +586,8 @@ public final class HelicopterCabin {
         for (int attempt = 0; attempt < 2; attempt++) {
             int exitSide = attempt == 0 ? preferred : 1 - preferred;
             for (double distance : FALLBACK_DISTANCES) for (double offset : FALLBACK_OFFSETS) {
-                Vec3d local = new Vec3d(exitSide == 0 ? distance : -distance, .10, seatPosition(seat).z + offset);
+                Vec3d local = new Vec3d(exitSide == 0 ? distance : -distance, .10,
+                        seatPosition(seat).z - ACCESS_REAR_OFFSET + offset);
                 Vec3d target = toWorld(local);
                 if (!heli.getWorld().isChunkLoaded(BlockPos.ofFloored(target))) continue;
                 target = findExitSurface(passenger, target, FALLBACK_STEP_UP, FALLBACK_STEP_DOWN);
