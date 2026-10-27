@@ -203,7 +203,7 @@ public final class HelicopterCollision {
     }
 
     /**
-     * 功能：按机模包络分段构造机舱、鼻锥、动力罩、油箱、五段尾梁、尾翼、双桨及滑橇。
+     * 功能：按机模包络分段构造机舱、鼻锥、动力罩、油箱及尾根、尾梁、尾翼、双桨及滑橇。
      * 引用 net.minecraft.util.math.Box 保存局部几何；仅查询状态，COMMON 主线程，不写实体位置。
      * 旋翼转动时使用九条薄盒近似扫掠圆盘，停转时保留四片实际桨叶，圆盘角落不会充满整方盒。
      */
@@ -227,8 +227,8 @@ public final class HelicopterCollision {
         addDoors(result,heli,origin,body);
         add(result, Part.ENGINE, new Box(-.43, 2.02, -1.23, .43, 2.54, .20), origin, body);
         add(result, Part.ENGINE, new Box(-.065, 2.18, -.235, .065, 2.71, -.105), origin, body);
-        // 只同步尾根曲面对应的四段包络，继续使用原 TAIL_BOOM 模块及扫掠算法。
-        for (Box box : HelicopterGeometry.TAIL_ROOT_BOUNDS) add(result, Part.TAIL_BOOM, box, origin, body);
+        // 紧接机舱的四段尾根归入油箱命中区，沿用油箱附带机身损伤；复用原曲面包络。
+        for (Box box : HelicopterGeometry.TAIL_ROOT_BOUNDS) add(result, Part.FUEL_TANK, box, origin, body);
         add(result, Part.TAIL_BOOM, new Box(-.18, 1.36, -3.40, .18, 1.85, -2.18), origin, body);
         add(result, Part.TAIL_BOOM, new Box(-.13, 1.56, -4.35, .13, 1.95, -3.40), origin, body);
         add(result, Part.TAIL_BOOM, new Box(-.10, 1.72, -5.07, .10, 1.98, -4.35), origin, body);

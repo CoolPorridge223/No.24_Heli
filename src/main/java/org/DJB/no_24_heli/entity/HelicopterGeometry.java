@@ -23,7 +23,7 @@ public final class HelicopterGeometry {
             {-.65, .97, 1.24, .80}, {0, .98, 1.24, .83}, {.50, .91, 1.23, .80},
             {.95, .79, 1.16, .67}, {1.40, .60, 1.03, .47}, {1.75, .36, .91, .28},
             {1.97, .025, .86, .035}};
-    /** 尾根四段包络，仍属于原 TAIL_BOOM 模块。 */
+    /** 紧接机舱的四段尾根包络，命中映射为 FUEL_TANK，同时损伤油箱和机身。 */
     public static final List<Box> TAIL_ROOT_BOUNDS = tailRootBounds();
 
     /** 只读几何工具，不创建实例。 */
@@ -52,7 +52,7 @@ public final class HelicopterGeometry {
     /**
      * 功能：从共享椭圆截面建立四段尾根包络；引用 net.minecraft.util.math.Box 保存边界。
      * 返回：只读局部盒；端侧：COMMON 静态初始化；不访问世界或修改实体状态。
-     * 排查：与原 CABIN/TAIL_BOOM 分界 -1.30 格相接，其他尾梁和旋翼模块沿用原盒。
+     * 排查：前端 -1.30 格与后隔舱相接，四段尾根整体归入油箱命中区，后续细尾梁沿用原盒。
      */
     private static List<Box> tailRootBounds() {
         List<Box> result = new ArrayList<>();
